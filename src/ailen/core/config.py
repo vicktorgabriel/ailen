@@ -47,6 +47,9 @@ class AudioConfig:
     input_volume: int = 80
     output_volume: int = 80
     music_volume: int = 60
+    sample_rate: int = 16000
+    channels: int = 1
+    frame_ms: float = 20.0
 
 
 @dataclass
@@ -64,8 +67,17 @@ class SpeechConfig:
     """STT and TTS engine configuration."""
     stt_engine: str = "mock"  # "mock", "whisper_cpp", "vosk", "cloud"
     stt_language: str = "es"
+    stt_model_path: str = ""
     tts_engine: str = "mock"  # "mock", "piper", "coqui", "cloud"
     tts_voice: str = "es_ES-standard"
+    tts_model_path: str = ""
+    tts_config_path: str = ""
+    vad_engine: str = "energy"  # "energy", "mock"
+    vad_threshold: float = 0.02
+    silence_timeout_ms: int = 700
+    min_speech_ms: int = 250
+    max_utterance_seconds: float = 15.0
+    half_duplex: bool = True
     vad_sensitivity: int = 2
 
 
@@ -353,6 +365,20 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("audio.output_volume must be between 0 and 100")
     if not (0 <= config.audio.input_volume <= 100):
         errors.append("audio.input_volume must be between 0 and 100")
+    if config.audio.sample_rate not in {8000, 16000, 22050, 44100, 48000}:
+        errors.append("audio.sample_rate must be a standard rate (8000, 16000, 22050, 44100, 48000)")
+    if config.audio.channels not in {1, 2}:
+        errors.append("audio.channels must be 1 (mono) or 2 (stereo)")
+    if config.audio.frame_ms <= 0:
+        errors.append("audio.frame_ms must be positive")
+    if not (0.0 <= config.speech.vad_threshold <= 1.0):
+        errors.append("speech.vad_threshold must be between 0.0 and 1.0")
+    if config.speech.silence_timeout_ms <= 0:
+        errors.append("speech.silence_timeout_ms must be positive")
+    if config.speech.min_speech_ms <= 0:
+        errors.append("speech.min_speech_ms must be positive")
+    if config.speech.max_utterance_seconds <= 0:
+        errors.append("speech.max_utterance_seconds must be positive")
     if config.vision.fps < 1:
         errors.append("vision.fps must be >= 1")
     if config.vision.presence_debounce_seconds < 0:

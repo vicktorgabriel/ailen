@@ -40,6 +40,17 @@
 - Debounce temporal (`VisionDebouncer`): se separa la observación instantánea de cámara del estado estable de presencia usando `vision.presence_debounce_seconds` (2.0s), previniendo falsos positivos de un solo frame y dropouts momentáneos.
 - `InteractionCoordinator` integra la presencia debounced con `StateManager`, `SocialEngine` y actualiza la mirada (`gaze`) y expresiones en `FaceController`.
 
+### Audio Local, VAD, STT y TTS (R2B)
+
+- **Formato canónico**: se establece PCM 16-bit signed LE, 1 canal (mono), 16000 Hz en `ailen.audio.pcm`. Es el estándar de intercambio para VAD, STT, TTS y utilidades de energía.
+- **Audio I/O**: en Debian 13 minimal se adopta ALSA (`arecord` y `aplay`) mediante subprocesos seguros con timeouts y pipes. Cero dependencias C adicionales en el Core. Para testing y CI se proveen backends `FakeAudioInputBackend` y `FakeAudioOutputBackend`.
+- **VAD liviano y Utterance Collection**: `EnergyVad` en Python puro sin dependencias ML calcula RMS en frames de 20 ms; los benchmarks DEV se registran sin extrapolar porcentajes de CPU. `UtteranceCollector` usa defaults actuales de pre-roll 200 ms, mínimo de voz 250 ms, timeout de silencio 700 ms y corte máximo 15 s.
+- **Half-Duplex obligatorio**: se crea `AudioTurnGate` con estados `LISTENING_ALLOWED` y `SPEAKING_BLOCKED` más settling cooldown acústico (200 ms) para evitar que el bot transcriba su propia voz o se auto-escuche.
+- **STT local offline**: `VoskSttBackend` queda como candidato principal de hardware limitado y `WhisperCppSttBackend` como alternativa; `whisper-cli` es el nombre actual del binario y no se fabrican valores de confidence cuando el motor no los reporta.
+- **TTS local y rostro**: `PiperTtsBackend` se adapta al CLI actual generando WAV temporal y extrayendo sample-rate/canales reales. El `AudioInteractionCoordinator` aplica por ahora un nivel RMS global durante el playback; lip-sync dinámico por chunks queda pendiente.
+- **Coordinación de audio**: `AudioInteractionCoordinator` conecta el pipeline micrófono -> VAD -> STT -> EventBus y TTS -> Mouth Sync -> Speakers.
+- **Benchmark y Hardware**: se crea `tools/benchmark_audio.py` con mediciones reproducibles en DEV machine (`docs/benchmarks/dev_audio_benchmark.md`), señalando explícitamente que la validación en hardware target (Banghó Zero G05 / SF20BA) queda pendiente de ejecución física.
+
 ### Web / Admin / Seguridad
 
 - El panel web deja de depender de `AILEN_ADMIN_PASSWORD`: la credencial administrativa de **usuario + contraseña** es persistente en SQLite (tabla `admin_credentials`, migración 0002, fila única) y se gestiona con `ailen admin set-password` vía getpass (nunca password en argv). Detalle completo en `ADR-007-local-admin-auth.md`.
@@ -51,11 +62,13 @@
 - Se agrega sección `[identity]` a la configuración (`display_name` default neutro "Asistente"): AILEN es marca/plataforma, nunca nombre hardcodeado del personaje.
 - Auditoría de integración: se corrige wake desde `SLEEP`, se hace efectivo el username del login, SQLite pasa a `0600` en POSIX, SettingsService adopta patch parcial, y rutas de configuración explícitas inexistentes dejan de caer silenciosamente a defaults.
 
-### Distribución
+### Sistema base / Distribución
 
-- Las actualizaciones se diseñarán desde temprano con releases versionadas, verificación, health check y rollback.
-- Los clientes usarán canal `stable`; prototipos, `beta`; desarrollo podrá usar `nightly`.
-- No se inicializa Git ni se hacen commits hasta que el propietario cree/defina el repositorio y lo autorice.
+- ADR-008 acepta **Debian 13 stable amd64 netinst/minimal** como baseline del appliance.
+- No se instala escritorio completo. Con el POC Tkinter, un nodo con pantalla usa sólo stack gráfico mínimo (Xorg/xinit/python3-tk); un nodo headless no instala X. Un futuro renderer SDL2/DRM-KMS podrá retirar Xorg sin cambiar Debian.
+- Alpine queda como experimento futuro únicamente para Satellites extremos si un benchmark demuestra ventaja suficiente para justificar una segunda plataforma soportada.
+- Las actualizaciones se diseñarán con releases versionadas, verificación, health check y rollback. Clientes: `stable`; prototipos: `beta`; desarrollo: `nightly`.
+- Git local y remoto ya existen; commits sólo se realizan tras auditoría y no se hace push sin autorización explícita.
 
 ### Desarrollo paralelo
 

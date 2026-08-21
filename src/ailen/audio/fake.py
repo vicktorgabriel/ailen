@@ -4,6 +4,7 @@ import time
 
 from ailen.audio.contracts import (
     AudioBackendHealth,
+    AudioDevice,
     AudioSegment,
     SpeechOutput,
     SpeechRequest,
@@ -59,6 +60,92 @@ class FakeTtsBackend(TtsBackend):
         return SpeechOutput(
             audio_data=audio,
             sample_rate=sample_rate,
+            channels=1,
             duration_ms=duration_ms,
             latency_ms=(time.monotonic() - start) * 1000.0,
         )
+
+
+class FakeAudioInputBackend:
+    """Fake audio input backend that yields injected or empty PCM frames."""
+
+    def __init__(self, frame_size: int = 640) -> None:
+        self.frame_size = frame_size
+        self._frames: list[bytes] = []
+        self._running = False
+
+    def push_frame(self, frame: bytes) -> None:
+        """Inject a frame into the read queue."""
+        self._frames.append(frame)
+
+    def push_frames(self, frames: list[bytes]) -> None:
+        """Inject multiple frames into the read queue."""
+        self._frames.extend(frames)
+
+    def start(self) -> None:
+        self._running = True
+
+    def stop(self) -> None:
+        self._running = False
+        self._frames.clear()
+
+    def read_frame(self, timeout_seconds: float = 0.1) -> bytes | None:
+        if not self._running:
+            return None
+        if self._frames:
+            return self._frames.pop(0)
+        return None
+
+    def health(self) -> AudioBackendHealth:
+        return AudioBackendHealth(status=ServiceStatus.HEALTHY, detail="fake audio input")
+
+
+class FakeAudioOutputBackend:
+    """Fake audio output backend that captures played audio in memory."""
+
+    def __init__(self) -> None:
+        self.played_chunks: list[bytes] = []
+
+    def play(
+        self,
+        audio_data: bytes,
+        sample_rate: int = 16000,
+        channels: int = 1,
+    ) -> None:
+        if audio_data:
+            self.played_chunks.append(audio_data)
+
+    def stop(self) -> None:
+        pass
+
+    def health(self) -> AudioBackendHealth:
+        return AudioBackendHealth(status=ServiceStatus.HEALTHY, detail="fake audio output")
+
+
+class FakeDeviceEnumerator:
+    """Fake device enumerator returning deterministic mock devices."""
+
+    def list_devices(self) -> list[AudioDevice]:
+        return [
+            AudioDevice(
+                id="default",
+                name="Default System Audio",
+                is_input=True,
+                is_output=True,
+                is_default=True,
+            ),
+            AudioDevice(
+                id="hw:0,0",
+                name="Built-in Microphone",
+                is_input=True,
+                is_output=False,
+                is_default=False,
+            ),
+            AudioDevice(
+                id="hw:0,1",
+                name="Built-in Speaker",
+                is_input=False,
+                is_output=True,
+                is_default=False,
+            ),
+        ]

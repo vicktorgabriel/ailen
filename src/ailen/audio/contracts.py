@@ -47,6 +47,7 @@ class SpeechOutput:
     audio_data: bytes | None = None
     ref: str | None = None
     sample_rate: int = 22050
+    channels: int = 1
     duration_ms: float = 0.0
     latency_ms: float = 0.0
 
@@ -56,6 +57,89 @@ class AudioBackendHealth:
     """Health of an audio backend."""
     status: ServiceStatus = ServiceStatus.UNKNOWN
     detail: str = ""
+
+
+@dataclass
+class AudioDevice:
+    """Information about an audio input or output device."""
+    id: str
+    name: str
+    is_input: bool = True
+    is_output: bool = False
+    is_default: bool = False
+
+
+@dataclass
+class VadResult:
+    """Output of voice activity analysis on a PCM frame."""
+    is_speech: bool
+    rms: float = 0.0
+    energy: float = 0.0
+
+
+@runtime_checkable
+class AudioDeviceEnumerator(Protocol):
+    """Protocol for discovering available audio devices."""
+
+    def list_devices(self) -> list[AudioDevice]:
+        """Return list of detected audio devices."""
+        ...
+
+
+@runtime_checkable
+class AudioInputBackend(Protocol):
+    """Audio capture backend contract."""
+
+    def start(self) -> None:
+        """Start capturing audio."""
+        ...
+
+    def stop(self) -> None:
+        """Stop capturing audio."""
+        ...
+
+    def read_frame(self, timeout_seconds: float = 0.1) -> bytes | None:
+        """Read a PCM frame of audio or return None if timeout/empty."""
+        ...
+
+    def health(self) -> AudioBackendHealth:
+        """Return backend health status."""
+        ...
+
+
+@runtime_checkable
+class AudioOutputBackend(Protocol):
+    """Audio playback backend contract."""
+
+    def play(
+        self,
+        audio_data: bytes,
+        sample_rate: int = 16000,
+        channels: int = 1,
+    ) -> None:
+        """Play PCM audio data."""
+        ...
+
+    def stop(self) -> None:
+        """Stop playback immediately."""
+        ...
+
+    def health(self) -> AudioBackendHealth:
+        """Return backend health status."""
+        ...
+
+
+@runtime_checkable
+class VoiceActivityDetector(Protocol):
+    """Voice activity detection contract."""
+
+    def process_frame(self, frame: bytes) -> VadResult:
+        """Analyze a PCM frame and determine if voice is present."""
+        ...
+
+    def reset(self) -> None:
+        """Reset internal state/hangover counters."""
+        ...
 
 
 @runtime_checkable

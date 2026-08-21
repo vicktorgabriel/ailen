@@ -6,9 +6,9 @@
 
 Versión: `0.1.0-dev.0`
 
-Milestone activo: `R2B — Audio local, VAD, STT y TTS baseline`.
+Milestone activo: `R3A — AI Router híbrido y proveedores`.
 
-El slice de software de R1 quedó integrado y auditado. Permanecen en `ROADMAP.md` tareas físicas/deploy de R1 (systemd, instalación Debian en Banghó y benchmark real) que no bloquean los POC de R2A.
+Los slices de software de R1, R2A y R2B quedaron integrados y auditados. R2B cerró con 213 tests verdes antes de su commit.
 
 ## Bloque 0 — Antes de código
 
@@ -156,16 +156,33 @@ Debe quedar funcionando:
 - [ ] benchmark LLM local pequeño en hardware objetivo.
 - [ ] medir baseline RAM Python/runtime en Banghó cuando esté disponible físicamente.
 
-## Bloque 8 — Próximos pasos (R2B y posteriores)
+## Bloque 8 — Audio Local, VAD, STT y TTS (R2B)
 
-- [ ] audio enumerate/play/record.
-- [ ] STT baseline.
-- [ ] TTS baseline.
-- [ ] AI Router v1.
-- [ ] cloud provider v1.
-- [ ] Memory API completa.
-- [ ] Personality Engine v1.
-- [ ] tools útiles.
+- [x] Formato canónico de audio: PCM 16-bit signed LE, mono, 16000 Hz (`src/ailen/audio/pcm.py`).
+- [x] Contratos y dataclasses de audio I/O, VAD, STT y TTS (`src/ailen/audio/contracts.py`).
+- [x] VAD liviano en Python puro con cálculo de RMS y hangover (`EnergyVad`).
+- [x] `UtteranceCollector` con pre-roll buffer, umbral mínimo de voz y timeout de silencio.
+- [x] `AudioTurnGate` con compuerta Half-Duplex y cooldown acústico para evitar feedback de parlantes.
+- [x] Backends reales ALSA (`AlsaAudioInputBackend`, `AlsaAudioOutputBackend`, `AlsaDeviceEnumerator`).
+- [x] Backends simulados para CI y headless (`FakeAudioInputBackend`, `FakeAudioOutputBackend`, `FakeSttBackend`, `FakeTtsBackend`).
+- [x] Wrappers STT offline (`VoskSttBackend` y `WhisperCppSttBackend`) con degradación limpia; benchmark real de modelos sigue pendiente.
+- [x] Wrapper TTS offline `PiperTtsBackend` compatible con el CLI actual; benchmark real de voces/modelos sigue pendiente.
+- [x] `AudioInteractionCoordinator` integrando captura, compuerta half-duplex, VAD, STT, TTS y publicación en `EventBus`.
+- [x] Comandos CLI `ailen diagnose audio`, `ailen demo vad`, `ailen demo stt`, `ailen demo tts`.
+- [x] Benchmark reproducible de audio y VAD en DEV machine (`docs/benchmarks/dev_audio_benchmark.md`).
+- [x] Documentos de investigación (`docs/research/AUDIO_IO_POC.md`, `docs/research/STT_BACKEND_POC.md`, `docs/research/TTS_BACKEND_POC.md`).
+
+## Bloque 9 — Próximos pasos (R3A / AI Router híbrido)
+
+- [ ] AI Router v1 con rutas `RULE_ONLY`, `LOCAL`, `LAN`, `CLOUD` y fallback explícito.
+- [ ] Cloud provider rápido/económico detrás de contrato genérico, sin acoplar identidad al proveedor.
+- [ ] Local LLM backend mediante proceso/HTTP local intercambiable (llama.cpp/Ollama como candidatos, no dependencia obligatoria).
+- [ ] LAN Brain backend opcional con health/timeout/fallback.
+- [ ] Presupuesto cloud, métricas de tokens/costo/latencia y reason codes.
+- [ ] Construcción de contexto mínimo respetando `SocialPrivacyPolicy` antes de cualquier llamada remota.
+- [ ] Integración Transcript -> AI Router -> TTS usando fakes en tests.
+- [ ] Memory API completa y Personality Engine evolutivo se separan para R3B después de estabilizar routing.
+- [ ] Medición y benchmarks físicos en Banghó Zero G05 y SF20BA.
 
 ## Reglas del board
 

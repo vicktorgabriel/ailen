@@ -1,0 +1,75 @@
+{
+  "environment": "DEV MACHINE — NO HARDWARE TARGET",
+  "system_info": {
+    "os": "Linux",
+    "release": "7.0.0-28-generic",
+    "machine": "x86_64"
+  },
+  "timestamp": "2026-08-21T20:13:47Z",
+  "logical_benchmarks": {
+    "pcm_rms": {
+      "component": "compute_pcm_rms",
+      "iterations": 50000,
+      "total_time_sec": 1.2954,
+      "throughput_frames_per_sec": 38596.9,
+      "avg_frame_time_us": 25.72,
+      "p50_frame_time_us": 23.22,
+      "p95_frame_time_us": 28.07
+    },
+    "energy_vad": {
+      "component": "EnergyVad",
+      "iterations": 50000,
+      "total_time_sec": 1.1419,
+      "throughput_frames_per_sec": 43787.0,
+      "avg_frame_time_us": 22.5,
+      "p50_frame_time_us": 17.72,
+      "p95_frame_time_us": 28.21,
+      "p99_frame_time_us": 36.51
+    },
+    "utterance_collector": {
+      "component": "UtteranceCollector",
+      "iterations": 20000,
+      "total_time_sec": 0.7119,
+      "throughput_frames_per_sec": 28092.9,
+      "avg_frame_time_us": 35.4,
+      "p50_frame_time_us": 16.77,
+      "p95_frame_time_us": 28.25
+    },
+    "turn_gate": {
+      "component": "AudioTurnGate",
+      "iterations": 50000,
+      "total_time_sec": 0.0365,
+      "throughput_frames_per_sec": 1370650.1,
+      "avg_frame_time_us": 0.58,
+      "p50_frame_time_us": 0.58,
+      "p95_frame_time_us": 0.69
+    },
+    "coordinator_turn": {
+      "component": "AudioInteractionCoordinator (Turn Cycle)",
+      "iterations": 1000,
+      "total_time_sec": 0.9183,
+      "throughput_cycles_per_sec": 1089.0,
+      "avg_cycle_time_us": 917.76,
+      "p50_cycle_time_us": 931.15,
+      "p95_cycle_time_us": 1224.53
+    }
+  },
+  "real_engines_status": {
+    "vosk_stt": {
+      "status": "DISABLED",
+      "detail": "vosk not installed (optional dependency [stt-vosk])",
+      "benchmark_status": "NOT RUN (MODEL NOT CONFIGURED)"
+    },
+    "whisper_cpp_stt": {
+      "status": "DISABLED",
+      "detail": "whisper.cpp binary not found: whisper-cli",
+      "benchmark_status": "NOT RUN (BINARY/MODEL NOT CONFIGURED)"
+    },
+    "piper_tts": {
+      "status": "DISABLED",
+      "detail": "Piper binary not found: piper",
+      "benchmark_status": "NOT RUN (BINARY/MODEL NOT CONFIGURED)"
+    }
+  },
+  "process_rss_mb": 73.07
+}

@@ -58,6 +58,10 @@ class TestConfig(unittest.TestCase):
         cfg.node.node_id = "   "
         cfg.display.width = -100
         cfg.audio.output_volume = 150
+        cfg.audio.sample_rate = 12345
+        cfg.audio.channels = 5
+        cfg.speech.vad_threshold = -0.5
+        cfg.speech.silence_timeout_ms = -10
         cfg.vision.fps = 0
         cfg.vision.presence_debounce_seconds = -1.0
         cfg.vision.min_confidence = 2.0
@@ -68,6 +72,10 @@ class TestConfig(unittest.TestCase):
         self.assertTrue(any("node.node_id" in e for e in errors))
         self.assertTrue(any("display width" in e for e in errors))
         self.assertTrue(any("audio.output_volume" in e for e in errors))
+        self.assertTrue(any("audio.sample_rate" in e for e in errors))
+        self.assertTrue(any("audio.channels" in e for e in errors))
+        self.assertTrue(any("speech.vad_threshold" in e for e in errors))
+        self.assertTrue(any("speech.silence_timeout_ms" in e for e in errors))
         self.assertTrue(any("vision.fps" in e for e in errors))
         self.assertTrue(any("presence_debounce" in e for e in errors))
         self.assertTrue(any("min_confidence" in e for e in errors))

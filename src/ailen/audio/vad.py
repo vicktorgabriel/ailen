@@ -1,0 +1,167 @@
+"""Voice Activity Detection (VAD) and Utterance Collection for AILEN.
+
+Provides energy/RMS-based voice detection and temporal utterance grouping
+without requiring heavy external machine learning dependencies.
+"""
+
+from collections import deque
+
+from ailen.audio.contracts import AudioSegment, VadResult, VoiceActivityDetector
+from ailen.audio.pcm import compute_pcm_duration_ms, compute_pcm_rms
+
+
+class EnergyVad(VoiceActivityDetector):
+    """Lightweight pure-Python Energy/RMS-based Voice Activity Detector."""
+
+    def __init__(
+        self,
+        threshold_rms: float = 0.02,
+        hangover_frames: int = 15,
+    ) -> None:
+        """Initialize Energy VAD.
+
+        :param threshold_rms: Normalized RMS threshold [0.0..1.0] above which a frame is voice.
+        :param hangover_frames: Number of hangover frames to prevent clipping short inter-word pauses.
+        """
+        self.threshold_rms = threshold_rms
+        self.hangover_frames = hangover_frames
+        self._hangover_counter = 0
+
+    def process_frame(self, frame: bytes) -> VadResult:
+        """Analyze a PCM frame and return VadResult."""
+        rms = compute_pcm_rms(frame)
+        energy = rms * rms
+
+        if rms >= self.threshold_rms:
+            self._hangover_counter = self.hangover_frames
+            is_speech = True
+        elif self._hangover_counter > 0:
+            self._hangover_counter -= 1
+            is_speech = True
+        else:
+            is_speech = False
+
+        return VadResult(is_speech=is_speech, rms=rms, energy=energy)
+
+    def reset(self) -> None:
+        """Reset hangover counters."""
+        self._hangover_counter = 0
+
+
+class UtteranceCollector:
+    """Collects PCM frames into complete AudioSegments based on VAD activity.
+
+    Handles:
+    - Pre-roll circular buffer to prevent cutting off the onset of words.
+    - Continuous speech accumulation.
+    - Silence timeout (post-roll) before concluding an utterance.
+    - Minimum speech duration validation (discarding short transient clicks).
+    - Maximum utterance timeout (protecting against runaway recording).
+    """
+
+    def __init__(
+        self,
+        vad: VoiceActivityDetector | None = None,
+        sample_rate: int = 16000,
+        channels: int = 1,
+        frame_ms: float = 20.0,
+        min_speech_ms: float = 250.0,
+        silence_timeout_ms: float = 700.0,
+        max_utterance_seconds: float = 15.0,
+        pre_roll_ms: float = 200.0,
+    ) -> None:
+        self.vad = vad or EnergyVad()
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.frame_ms = frame_ms
+        self.min_speech_ms = min_speech_ms
+        self.silence_timeout_ms = silence_timeout_ms
+        self.max_utterance_seconds = max_utterance_seconds
+
+        # Buffer configurations
+        self._pre_roll_frame_count = max(1, int(pre_roll_ms / frame_ms))
+        self._silence_frames_needed = max(1, int(silence_timeout_ms / frame_ms))
+        self._min_speech_frames_needed = max(1, int(min_speech_ms / frame_ms))
+        self._max_frames = int((max_utterance_seconds * 1000.0) / frame_ms)
+
+        # Internal state
+        self._pre_roll_buffer: deque[bytes] = deque(maxlen=self._pre_roll_frame_count)
+        self._collected_frames: list[bytes] = []
+        self._is_in_utterance = False
+        self._consecutive_speech_frames = 0
+        self._consecutive_silence_frames = 0
+
+    @property
+    def is_in_utterance(self) -> bool:
+        """Return True if currently accumulating speech."""
+        return self._is_in_utterance
+
+    def process_frame(self, frame: bytes) -> tuple[AudioSegment | None, bool]:
+        """Process a single PCM frame.
+
+        Returns a tuple:
+        - `segment`: Completed `AudioSegment` if an utterance just finished, or None.
+        - `is_active_speech`: True if the current frame is considered active voice.
+        """
+        vad_res = self.vad.process_frame(frame)
+
+        if not self._is_in_utterance:
+            # IDLE state: maintain pre-roll ring buffer
+            self._pre_roll_buffer.append(frame)
+
+            if vad_res.is_speech:
+                self._consecutive_speech_frames += 1
+                if self._consecutive_speech_frames >= self._min_speech_frames_needed:
+                    # Speech confirmed! Transition to active utterance
+                    self._is_in_utterance = True
+                    self._consecutive_silence_frames = 0
+                    self._collected_frames = list(self._pre_roll_buffer)
+            else:
+                self._consecutive_speech_frames = 0
+
+            return None, self._is_in_utterance
+
+        # Currently in active utterance
+        self._collected_frames.append(frame)
+
+        if vad_res.is_speech:
+            self._consecutive_silence_frames = 0
+        else:
+            self._consecutive_silence_frames += 1
+
+        # Check termination conditions:
+        # 1. Sustained silence after speech
+        # 2. Maximum utterance length reached
+        is_silence_timeout = self._consecutive_silence_frames >= self._silence_frames_needed
+        is_max_length_reached = len(self._collected_frames) >= self._max_frames
+
+        if is_silence_timeout or is_max_length_reached:
+            completed_segment = self._build_segment()
+            self.reset()
+            return completed_segment, False
+
+        return None, True
+
+    def _build_segment(self) -> AudioSegment:
+        """Combine accumulated frames into an AudioSegment."""
+        raw_pcm = b"".join(self._collected_frames)
+        duration_ms = compute_pcm_duration_ms(
+            data_len_bytes=len(raw_pcm),
+            sample_rate=self.sample_rate,
+            channels=self.channels,
+        )
+        return AudioSegment(
+            data=raw_pcm,
+            sample_rate=self.sample_rate,
+            channels=self.channels,
+            duration_ms=duration_ms,
+        )
+
+    def reset(self) -> None:
+        """Reset utterance collector to initial state."""
+        self._is_in_utterance = False
+        self._consecutive_speech_frames = 0
+        self._consecutive_silence_frames = 0
+        self._collected_frames.clear()
+        self._pre_roll_buffer.clear()
+        self.vad.reset()

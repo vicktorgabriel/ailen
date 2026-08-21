@@ -6,16 +6,22 @@ Convertir Debian 13 minimal en un appliance que arranque directamente al asisten
 
 ## Instalación objetivo
 
+Baseline aceptado: **Debian 13 stable amd64 netinst/minimal**, según ADR-008. No se instala un entorno de escritorio completo.
+
 1. Debian 13 minimal.
 2. Usuario dedicado de servicio.
 3. Dependencias mínimas según perfil.
 4. Configuración de audio/cámara/display.
-5. AILEN instalado bajo `/opt/ailen/releases/<version>`.
-6. Datos persistentes fuera de `/opt`.
-7. Servicios systemd.
-8. Autoinicio del rostro/Core.
-9. Panel web sólo LAN por defecto.
-10. Health check.
+5. Si el nodo tiene pantalla y usa el POC Tkinter: Xorg mínimo + `xinit` + `python3-tk`, sin GNOME/KDE/XFCE ni navegador kiosk.
+6. Si el nodo es headless/Satellite: sin servidor gráfico.
+7. AILEN instalado bajo `/opt/ailen/releases/<version>`.
+8. Datos persistentes fuera de `/opt`.
+9. Servicios systemd.
+10. Autoinicio de Core y, cuando corresponda, sesión gráfica directa del rostro.
+11. Panel web sólo LAN por defecto.
+12. Health check.
+
+Si un futuro renderer SDL2/DRM-KMS resulta superior en hardware objetivo, se podrá quitar Xorg sin cambiar Debian como OS base.
 
 ## Layout previsto
 

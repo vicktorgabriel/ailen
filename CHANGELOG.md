@@ -8,6 +8,22 @@ El proyecto usa versionado semántico durante desarrollo, con prereleases cuando
 
 ### Added
 
+- **R2B Audio Local, VAD, STT Baseline, TTS Baseline y Half-Duplex Turn Gate**:
+  - Formato canónico de audio establecido: PCM 16-bit signed LE, mono, 16000 Hz (`src/ailen/audio/pcm.py`) con cálculo matemático de energía RMS y utilidades para tests de tonos/silencios.
+  - Contratos formales y dataclasses de audio I/O, VAD, STT y TTS (`src/ailen/audio/contracts.py`).
+  - VAD liviano en Python puro (`EnergyVad`) con umbral configurable y hangover para detección robusta sin dependencias de ML pesado; benchmark lógico DEV documentado sin extrapolar CPU a hardware objetivo.
+  - Agrupador de audio `UtteranceCollector` con defaults actuales de pre-roll 200 ms, mínimo de habla 250 ms, timeout de silencio 700 ms y corte máximo de 15 s.
+  - Compuerta Half-Duplex `AudioTurnGate` con control de estados `LISTENING_ALLOWED` y `SPEAKING_BLOCKED`, protegiendo el VAD del feedback acústico de los parlantes mediante cooldown acústico de asentamiento.
+  - Backends reales de audio I/O para Debian 13 minimal basados en ALSA (`AlsaAudioInputBackend`, `AlsaAudioOutputBackend`, `AlsaDeviceEnumerator`), con lectura respetando timeout y sin inventar dispositivos cuando `alsa-utils` no está disponible.
+  - Backends simulados completos (`FakeAudioInputBackend`, `FakeAudioOutputBackend`, `FakeDeviceEnumerator`, `FakeSttBackend`, `FakeTtsBackend`) para tests unitarios deterministas y ejecución en entornos CI.
+  - Backend STT local offline `VoskSttBackend` con extra opcional `stt-vosk`; los valores de confidence sólo se informan si el motor los provee realmente.
+  - Backend STT local alternativo `WhisperCppSttBackend` usando el CLI actual `whisper-cli` con compatibilidad best-effort para nombres legacy.
+  - Backend TTS local offline `PiperTtsBackend` adaptado al CLI actual de Piper: WAV temporal, extracción del PCM/sample-rate/canales reales y control de velocidad/volumen.
+  - `AudioInteractionCoordinator` integrando captura, turn gate, VAD, STT, TTS, playback y nivel de boca RMS básico; recupera estado/gate ante excepciones de STT/TTS/playback.
+  - Publicación de eventos de audio de bajo peso en `EventBus` (`VOICE_STARTED`, `VOICE_ENDED`, `SPEECH_CAPTURED`, `TRANSCRIPT_READY`, `SPEECH_STARTED`, `SPEECH_FINISHED`, `AUDIO_ERROR`) sin transportar PCM.
+  - Comandos CLI nuevos: `ailen diagnose audio`, `ailen demo vad`, `ailen demo stt`, `ailen demo tts`.
+  - Suite de benchmark reproducible `tools/benchmark_audio.py` y reportes en `docs/benchmarks/dev_audio_benchmark.md` y `.json` etiquetados explícitamente con `DEV MACHINE — NO HARDWARE TARGET`.
+  - Documentos de investigación: `docs/research/AUDIO_IO_POC.md`, `docs/research/STT_BACKEND_POC.md`, `docs/research/TTS_BACKEND_POC.md`.
 - **R2A Presencia Física y Face POC**:
   - Motor lógico `FaceAnimator` y modelo `FacePose` completamente desacoplados de librerías gráficas, con parpadeo no periódico con jitter, micro-saccades, interpolación suave de mirada y apertura de boca proporcional a `speech_level`.
   - Backend gráfico POC `TkinterFaceController` usando canvas 2D vectorial, sin dependencia pip obligatoria pero con `python3-tk`/stack gráfico del sistema; consumo real pendiente de benchmark físico.
@@ -56,6 +72,7 @@ El proyecto usa versionado semántico durante desarrollo, con prereleases cuando
 
 ### Decisions
 
+- Debian 13 stable amd64 netinst/minimal queda aceptado como baseline del appliance (ADR-008). Sin desktop completo; con Tkinter se usa sólo stack gráfico mínimo y los nodos headless no instalan X.
 - `web.host`/`web.port` NO son editables desde el panel: cambiar el bind en caliente puede exponer el panel o dejar afuera al operador; se administran por archivo/CLI y aplican al reiniciar (ver ADR-007).
 - La credencial administrativa vive en SQLite (tabla dedicada, fila única) y no en variables de entorno ni en el TOML versionado (ver ADR-007).
 - PBKDF2-HMAC-SHA256 (stdlib) como KDF baseline del panel: sin dependencias externas sobre hardware objetivo; reemplazable por Argon2 vía ADR si se justifica.

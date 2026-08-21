@@ -76,3 +76,28 @@ La decisión definitiva queda sujeta a benchmark en la Banghó y cierre de este 
    - `VisionDebouncer` desacopla la presencia instantánea de la presencia estable para evitar oscilaciones espurias.
    - Degrada a modo deshabilitado/simulado si la cámara o OpenCV no están presentes.
    - Documentación de alternativas: `docs/research/VISION_BACKEND_POC.md`.
+
+## Nota de implementación provisional (Audio Local, VAD, STT y TTS POC R2B, 2026-08-21)
+
+1. **Formato canónico y Audio I/O:**
+   - Formato canónico: PCM 16-bit signed LE, mono, 16000 Hz.
+   - Backend I/O por defecto en Debian 13 minimal: ALSA (`arecord` y `aplay` vía pipes de subprocess seguros con timeouts). Zero dependencias wheel en el Core.
+   - Backends de prueba/simulación: `FakeAudioInputBackend` y `FakeAudioOutputBackend` para tests deterministas y entornos CI.
+   - Documentación de investigación: `docs/research/AUDIO_IO_POC.md`.
+
+2. **VAD y Utterance Collection (Half-Duplex):**
+   - VAD liviano en Python puro (`EnergyVad`) calculando RMS sobre frames de 20 ms sin dependencias ML. El benchmark DEV mide latencia lógica, no porcentaje de CPU en hardware objetivo.
+   - `UtteranceCollector` con defaults actuales de pre-roll 200 ms, mínimo de voz 250 ms, timeout de silencio 700 ms y corte máximo 15 s.
+   - `AudioTurnGate` con compuerta Half-Duplex (`SPEAKING_BLOCKED` mientras el asistente habla + settling cooldown acústico configurable de 200 ms) para prevenir feedback acústico y auto-transcripción.
+
+3. **STT (Speech-to-Text):**
+   - Backend local preferente inicial para perfiles ligeros: `VoskSttBackend` (`vosk` como extra opcional `[stt-vosk]`), pendiente de benchmark físico.
+   - Backend alternativo: `WhisperCppSttBackend`, usando el CLI actual `whisper-cli` y modelos GGML/ggml compatibles; rendimiento real pendiente de benchmark.
+   - Degrada limpiamente a `DISABLED`/`UNHEALTHY` si los binarios o modelos no están presentes.
+   - Documentación de investigación: `docs/research/STT_BACKEND_POC.md`.
+
+4. **TTS (Text-to-Speech) y Mouth Sync:**
+   - Backend preferente POC: `PiperTtsBackend` sobre el CLI actual de Piper; genera WAV temporal y AILEN conserva sample-rate/canales reales del archivo.
+   - Baseline de boca: un nivel RMS global durante el playback y retorno a 0.0 al finalizar. Lip-sync dinámico por chunks queda pendiente.
+   - `AudioInteractionCoordinator` integra el pipeline y emite eventos livianos (`VOICE_STARTED`, `VOICE_ENDED`, `SPEECH_CAPTURED`, `TRANSCRIPT_READY`, `SPEECH_STARTED`, `SPEECH_FINISHED`, `AUDIO_ERROR`) sin PCM.
+   - Documentación de investigación: `docs/research/TTS_BACKEND_POC.md`.

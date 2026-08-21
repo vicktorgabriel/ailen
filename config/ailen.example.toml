@@ -31,6 +31,9 @@ output_device = "default"
 input_volume = 80
 output_volume = 80
 music_volume = 60
+sample_rate = 16000
+channels = 1
+frame_ms = 20.0
 
 [vision]
 enabled = true
@@ -42,8 +45,17 @@ min_confidence = 0.5
 [speech]
 stt_engine = "mock"            # mock, whisper_cpp, vosk, cloud
 stt_language = "es"
+stt_model_path = ""            # path to vosk/whisper model directory or file
 tts_engine = "mock"            # mock, piper, coqui, cloud
-tts_voice = "es_ES-standard"
+tts_voice = "es_ES-standard"   # e.g. es_ES-davefx-medium
+tts_model_path = ""            # path to piper .onnx model
+tts_config_path = ""           # path to piper .onnx.json
+vad_engine = "energy"          # energy, mock
+vad_threshold = 0.02           # normalized RMS [0.0..1.0]
+silence_timeout_ms = 700       # silence duration to conclude utterance
+min_speech_ms = 250            # minimum voice duration to trigger utterance
+max_utterance_seconds = 15.0   # maximum utterance duration limit
+half_duplex = true             # block mic listening during TTS playback
 vad_sensitivity = 2
 
 [ai]

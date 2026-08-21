@@ -6,6 +6,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 from ailen.core.config import dump_config_toml, load_config, validate_config
 from ailen.core.diagnostics import HardwareDiagnostics, format_hardware_report
@@ -47,10 +48,12 @@ def create_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
 
     # Command: diagnose
-    diag_parser = subparsers.add_parser("diagnose", help="Hardware diagnostics and discovery")
+    diag_parser = subparsers.add_parser("diagnose", help="Hardware and audio diagnostics")
     diag_sub = diag_parser.add_subparsers(dest="diag_target", help="Diagnostics target")
     hw_parser = diag_sub.add_parser("hardware", help="Inspect system hardware and recommend profile")
     hw_parser.add_argument("--json", action="store_true", help="Output report as JSON")
+    audio_diag_parser = diag_sub.add_parser("audio", help="Inspect audio I/O devices, ALSA status, and STT/TTS health")
+    audio_diag_parser.add_argument("--json", action="store_true", help="Output report as JSON")
 
     # Command: config
     cfg_parser = subparsers.add_parser("config", help="Inspect and validate configuration")
@@ -92,7 +95,7 @@ def create_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--port", type=int, help="Override web port")
 
     # Command: demo
-    demo_parser = subparsers.add_parser("demo", help="Interactive physical presence and face demos")
+    demo_parser = subparsers.add_parser("demo", help="Interactive physical presence, face, and audio demos")
     demo_sub = demo_parser.add_subparsers(dest="demo_target", help="Demo target component")
 
     # Subcommand: demo face
@@ -107,6 +110,27 @@ def create_parser() -> argparse.ArgumentParser:
     demo_vis.add_argument("--camera", default="/dev/video0", help="Camera device path or index (default: /dev/video0)")
     demo_vis.add_argument("--debounce", type=float, default=2.0, help="Debounce window in seconds (default: 2.0)")
     demo_vis.add_argument("--duration", type=float, default=10.0, help="Run duration in seconds (default: 10.0)")
+
+    # Subcommand: demo vad
+    demo_vad = demo_sub.add_parser("vad", help="Real-time Voice Activity Detection (VAD) demo")
+    demo_vad.add_argument("--device", default="default", help="Input device (default: default)")
+    demo_vad.add_argument("--threshold", type=float, default=0.02, help="VAD RMS threshold (default: 0.02)")
+    demo_vad.add_argument("--duration", type=float, default=5.0, help="Run duration in seconds (default: 5.0)")
+
+    # Subcommand: demo stt
+    demo_stt = demo_sub.add_parser("stt", help="Speech-to-Text transcription demo")
+    demo_stt.add_argument("--device", default="default", help="Input device (default: default)")
+    demo_stt.add_argument("--engine", default="mock", help="STT engine (mock, vosk, whisper_cpp)")
+    demo_stt.add_argument("--model", default="", help="STT model path")
+    demo_stt.add_argument("--duration", type=float, default=6.0, help="Listen duration in seconds (default: 6.0)")
+
+    # Subcommand: demo tts
+    demo_tts = demo_sub.add_parser("tts", help="Text-to-Speech synthesis demo")
+    demo_tts.add_argument("text", help="Text string to synthesize and speak")
+    demo_tts.add_argument("--engine", default="mock", help="TTS engine (mock, piper)")
+    demo_tts.add_argument("--voice", default="es_ES-standard", help="Voice ID")
+    demo_tts.add_argument("--model", default="", help="TTS model path (.onnx)")
+    demo_tts.add_argument("--rate", type=float, default=1.0, help="Speech rate (default: 1.0)")
 
     return parser
 
@@ -421,6 +445,261 @@ def cmd_demo_vision(args: argparse.Namespace, config_path: str | None) -> int:
     return 0
 
 
+def cmd_diagnose_audio(args: argparse.Namespace, config_path: str | None) -> int:
+    """Run audio input, output, ALSA, and speech engine diagnostics."""
+    import shutil
+
+    from ailen.audio.alsa_backend import AlsaDeviceEnumerator
+    from ailen.audio.piper_backend import PiperTtsBackend
+    from ailen.audio.vosk_backend import VoskSttBackend
+    from ailen.audio.whisper_backend import WhisperCppSttBackend
+    from ailen.core.config import load_config
+
+    cfg = load_config(config_path)
+    enumerator = AlsaDeviceEnumerator()
+    devices = enumerator.list_devices()
+
+    has_arecord = shutil.which("arecord") is not None
+    has_aplay = shutil.which("aplay") is not None
+
+    vosk_health = VoskSttBackend(model_path=cfg.speech.stt_model_path).health()
+    whisper_health = WhisperCppSttBackend(model_path=cfg.speech.stt_model_path).health()
+    piper_health = PiperTtsBackend(model_path=cfg.speech.tts_model_path).health()
+
+    report: dict[str, Any] = {
+        "alsa_system": {
+            "arecord_available": has_arecord,
+            "aplay_available": has_aplay,
+            "canonical_format": "PCM 16-bit LE, 1 channel (mono), 16000 Hz",
+        },
+        "devices": [
+            {
+                "id": d.id,
+                "name": d.name,
+                "is_input": d.is_input,
+                "is_output": d.is_output,
+                "is_default": d.is_default,
+            }
+            for d in devices
+        ],
+        "speech_engines": {
+            "configured_stt": cfg.speech.stt_engine,
+            "configured_tts": cfg.speech.tts_engine,
+            "configured_voice": cfg.speech.tts_voice,
+            "vosk_stt": {"status": vosk_health.status.value, "detail": vosk_health.detail},
+            "whisper_stt": {"status": whisper_health.status.value, "detail": whisper_health.detail},
+            "piper_tts": {"status": piper_health.status.value, "detail": piper_health.detail},
+        },
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+
+    print("==================================================================")
+    print(" AILEN Audio Diagnostics — Audio I/O & Speech Engines")
+    print("==================================================================")
+    print(f" ALSA arecord (Input)   : {'DISPONIBLE' if has_arecord else 'NO ENCONTRADO (alsa-utils)'}")
+    print(f" ALSA aplay (Output)    : {'DISPONIBLE' if has_aplay else 'NO ENCONTRADO (alsa-utils)'}")
+    print(f" Canonical Audio Format : {report['alsa_system']['canonical_format']}")
+    print("------------------------------------------------------------------")
+    print(" Dispositivos de Audio detectados:")
+    for d in devices:
+        dtype = "IN/OUT" if (d.is_input and d.is_output) else ("INPUT " if d.is_input else "OUTPUT")
+        default_tag = " (DEFAULT)" if d.is_default else ""
+        print(f"   [{dtype}] {d.id:20} : {d.name}{default_tag}")
+    print("------------------------------------------------------------------")
+    print(f" STT Configurado: {cfg.speech.stt_engine} | Vosk: {vosk_health.status.value} | Whisper: {whisper_health.status.value}")
+    print(f" TTS Configurado: {cfg.speech.tts_engine} ({cfg.speech.tts_voice}) | Piper: {piper_health.status.value}")
+    print("==================================================================")
+    return 0
+
+
+def cmd_demo_vad(args: argparse.Namespace) -> int:
+    """Run real-time or synthetic VAD demo."""
+    import time
+
+    from ailen.audio.alsa_backend import AlsaAudioInputBackend
+    from ailen.audio.pcm import compute_pcm_rms, generate_tone_pcm
+    from ailen.audio.vad import EnergyVad
+
+    device = getattr(args, "device", "default")
+    threshold = float(getattr(args, "threshold", 0.02))
+    duration = float(getattr(args, "duration", 5.0))
+
+    backend = AlsaAudioInputBackend(device=device, sample_rate=16000, channels=1, frame_ms=20.0)
+    vad = EnergyVad(threshold_rms=threshold)
+
+    print("==========================================================")
+    print(" AILEN Audio POC — Demo de VAD (Voice Activity Detection)")
+    print(f" Dispositivo: {device} | Umbral RMS: {threshold} | Duración: {duration}s")
+    print(" Presioná Ctrl+C para detener.")
+    print("==========================================================")
+
+    backend.start()
+    health = backend.health()
+    use_synthetic = health.status.value != "HEALTHY"
+    if use_synthetic:
+        print(f"Aviso: Backend ALSA en estado {health.status.value} ({health.detail}); ejecutando demo con stream simulado.")
+
+    start_t = time.time()
+    try:
+        step = 0
+        while time.time() - start_t < duration:
+            step += 1
+            if not use_synthetic:
+                frame = backend.read_frame(timeout_seconds=0.05)
+            else:
+                # Alternate 1.5s silence and 1.0s tone (voice simulation)
+                now_s = time.time() - start_t
+                is_tone = (now_s % 2.5) > 1.5
+                frame = generate_tone_pcm(440.0, 20.0, amplitude=0.08) if is_tone else b"\x00\x00" * 320
+                time.sleep(0.02)
+
+            if frame is None:
+                continue
+
+            res = vad.process_frame(frame)
+            rms = compute_pcm_rms(frame)
+            bars = int(min(20, rms * 200))
+            meter = "|" * bars + "." * (20 - bars)
+            status = "VOICE  [🗣️]" if res.is_speech else "SILENCE[  ]"
+            elapsed = time.time() - start_t
+            print(f"[{elapsed:4.1f}s] RMS: {rms:.4f} [{meter}] --> {status}")
+    except KeyboardInterrupt:
+        print("\nDemo VAD interrumpida.")
+    finally:
+        backend.stop()
+
+    print("Demo VAD completada.")
+    return 0
+
+
+def cmd_demo_stt(args: argparse.Namespace, config_path: str | None) -> int:
+    """Run Speech-to-Text transcription demo."""
+    import time
+
+    from ailen.audio.alsa_backend import AlsaAudioInputBackend
+    from ailen.audio.coordinator import AudioInteractionCoordinator
+    from ailen.audio.fake import FakeAudioInputBackend, FakeSttBackend
+    from ailen.audio.pcm import generate_tone_pcm
+    from ailen.audio.vosk_backend import VoskSttBackend
+    from ailen.audio.whisper_backend import WhisperCppSttBackend
+    from ailen.core.config import load_config
+
+    cfg = load_config(config_path)
+    engine = getattr(args, "engine", cfg.speech.stt_engine)
+    model_path = getattr(args, "model", cfg.speech.stt_model_path)
+    device = getattr(args, "device", cfg.audio.input_device)
+    duration = float(getattr(args, "duration", 6.0))
+
+    # Select STT backend
+    stt_backend: Any
+    if engine == "vosk":
+        stt_backend = VoskSttBackend(model_path=model_path)
+    elif engine == "whisper_cpp":
+        stt_backend = WhisperCppSttBackend(model_path=model_path)
+    else:
+        stt_backend = FakeSttBackend(canned_text="Hola AILEN demo stt")
+
+    alsa_in = AlsaAudioInputBackend(device=device, sample_rate=16000, channels=1)
+    alsa_in.start()
+    is_real = alsa_in.health().status.value == "HEALTHY"
+    alsa_in.stop()
+
+    audio_input: Any = AlsaAudioInputBackend(device=device) if is_real else FakeAudioInputBackend()
+
+    coordinator = AudioInteractionCoordinator(
+        audio_input=audio_input,
+        stt=stt_backend,
+    )
+
+    print("==========================================================")
+    print(" AILEN Audio POC — Demo STT (Speech-to-Text)")
+    print(f" Motor: {engine} | Dispositivo: {device} | Duración: {duration}s")
+    print(f" Estado backend STT: {stt_backend.health().status.value} ({stt_backend.health().detail})")
+    print("==========================================================")
+
+    if not is_real:
+        print("Aviso: Dispositivo de micrófono no disponible; inyectando enunciado sintético simulado.")
+        # Inject pre-roll, speech tone, and silence
+        frames = [b"\x00\x00" * 320] * 5
+        frames.extend([generate_tone_pcm(300.0, 20.0, amplitude=0.08)] * 30)
+        frames.extend([b"\x00\x00" * 320] * 40)
+        for f in frames:
+            audio_input.push_frame(f)
+
+    coordinator.start()
+    start_t = time.time()
+    try:
+        while time.time() - start_t < duration:
+            time.sleep(0.2)
+            if coordinator.last_transcript is not None:
+                tr = coordinator.last_transcript
+                confidence = f"{tr.confidence:.2f}" if tr.confidence is not None else "N/D"
+                print(
+                    f"\n[TRANSCRIPCIÓN OBTENIDA]: \"{tr.text}\" "
+                    f"(confianza: {confidence}, latencia: {tr.latency_ms:.1f}ms)"
+                )
+                break
+    except KeyboardInterrupt:
+        print("\nDemo STT interrumpida.")
+    finally:
+        coordinator.stop()
+
+    print("Demo STT completada.")
+    return 0
+
+
+def cmd_demo_tts(args: argparse.Namespace, config_path: str | None) -> int:
+    """Run Text-to-Speech synthesis and mouth sync demo."""
+    from ailen.audio.alsa_backend import AlsaAudioOutputBackend
+    from ailen.audio.coordinator import AudioInteractionCoordinator
+    from ailen.audio.fake import FakeAudioOutputBackend, FakeTtsBackend
+    from ailen.audio.piper_backend import PiperTtsBackend
+    from ailen.core.config import load_config
+    from ailen.face.null import NullFaceController
+
+    cfg = load_config(config_path)
+    text = args.text
+    engine = getattr(args, "engine", cfg.speech.tts_engine)
+    voice = getattr(args, "voice", cfg.speech.tts_voice)
+    model = getattr(args, "model", cfg.speech.tts_model_path)
+    rate = float(getattr(args, "rate", 1.0))
+
+    tts_backend: Any
+    if engine == "piper":
+        tts_backend = PiperTtsBackend(
+            model_path=model,
+            config_path=cfg.speech.tts_config_path,
+        )
+    else:
+        tts_backend = FakeTtsBackend()
+
+    alsa_out = AlsaAudioOutputBackend()
+    is_real = alsa_out.health().status.value == "HEALTHY"
+    audio_output: Any = alsa_out if is_real else FakeAudioOutputBackend()
+    face_ctrl = NullFaceController()
+
+    coordinator = AudioInteractionCoordinator(
+        audio_output=audio_output,
+        tts=tts_backend,
+        face_controller=face_ctrl,
+    )
+
+    print("==========================================================")
+    print(" AILEN Audio POC — Demo TTS (Text-to-Speech)")
+    print(f" Motor: {engine} | Voz: {voice} | Rate: {rate}")
+    print(f" Texto: \"{text}\"")
+    print(f" Estado backend TTS: {tts_backend.health().status.value} ({tts_backend.health().detail})")
+    print("==========================================================")
+
+    output = coordinator.speak(text=text, voice_id=voice, rate=rate)
+    print(f"Síntesis completada en {output.latency_ms:.1f}ms | Duración audio: {output.duration_ms:.1f}ms")
+    print("Demo TTS completada exitosamente.")
+    return 0
+
+
 def cmd_demo(args: argparse.Namespace, config_path: str | None) -> int:
     """Execute demo subcommand."""
     target = getattr(args, "demo_target", None)
@@ -428,7 +707,13 @@ def cmd_demo(args: argparse.Namespace, config_path: str | None) -> int:
         return cmd_demo_face(args)
     elif target == "vision":
         return cmd_demo_vision(args, config_path)
-    print("Uso: ailen demo face | ailen demo vision")
+    elif target == "vad":
+        return cmd_demo_vad(args)
+    elif target == "stt":
+        return cmd_demo_stt(args, config_path)
+    elif target == "tts":
+        return cmd_demo_tts(args, config_path)
+    print("Uso: ailen demo [face|vision|vad|stt|tts]")
     return 1
 
 
@@ -442,10 +727,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "diagnose":
-        if getattr(args, "diag_target", None) == "hardware":
+        target = getattr(args, "diag_target", None)
+        if target == "hardware":
             return cmd_diagnose_hardware(args)
+        elif target == "audio":
+            return cmd_diagnose_audio(args, args.config_path)
         else:
-            print("Use: ailen diagnose hardware")
+            print("Use: ailen diagnose [hardware|audio]")
             return 1
 
     if args.command == "config":

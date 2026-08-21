@@ -37,6 +37,9 @@ hardware = [
 vision = [
     "opencv-python-headless>=4.8.0",
 ]
+stt-vosk = [
+    "vosk>=0.3.45",
+]
 
 [project.scripts]
 ailen = "ailen.cli:main"

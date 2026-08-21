@@ -18,6 +18,7 @@ VALID_TRANSITIONS: dict[AssistantState, set[AssistantState]] = {
     AssistantState.IDLE: {
         AssistantState.ATTENTION,
         AssistantState.LISTENING,
+        AssistantState.SPEAKING,
         AssistantState.SLEEP,
         AssistantState.ERROR,
         AssistantState.DEGRADED,
@@ -26,6 +27,7 @@ VALID_TRANSITIONS: dict[AssistantState, set[AssistantState]] = {
         AssistantState.IDLE,
         AssistantState.LISTENING,
         AssistantState.PROCESSING,
+        AssistantState.SPEAKING,
         AssistantState.SLEEP,
         AssistantState.ERROR,
     },
