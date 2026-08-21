@@ -189,26 +189,40 @@ Debe quedar funcionando:
 - [x] Documentos POC (`docs/research/AI_ROUTER_POC.md`, `docs/research/LOCAL_LLM_BACKEND_POC.md`, `docs/research/LAN_BRAIN_POC.md`, `docs/research/CLOUD_PROVIDER_POC.md`).
 - [x] Suite auditada de R3A con 254 tests offline, ruff/mypy/diff-check/wheel en verde tras revisión final.
 
-## Bloque 10 — R3B Lab Mode + Hardware-aware Model Manager
+## Bloque 10 — R3B Lab Mode + Hardware-aware Model Manager (R3B.1 Lab Stabilization)
 
-- [ ] formalizar `ailen lab start` sin cambios persistentes del SO.
-- [ ] soporte de laboratorio explícito para Linux Mint y Windows 11.
-- [ ] detectar CPU/arquitectura/RAM/GPU/VRAM/disco/audio/cámara/display de forma multiplataforma.
-- [ ] separar adapters Linux/Windows del Core.
-- [ ] producir `HardwareCapabilityReport` normalizado.
-- [ ] `ModelCatalog` declarativo y versionado.
-- [ ] `ModelPlanner` que elija runtime/modelo/quantización según hardware y perfil.
-- [ ] `ModelPlan` explicable con reason codes.
-- [ ] downloader seguro con HTTPS, tamaño esperado y SHA-256 obligatorio.
-- [ ] consentimiento explícito de descarga en Lab Mode.
-- [ ] cache/model store local sin incluir modelos en Git.
-- [ ] preparar llama.cpp/Ollama u otro runtime desacoplado sin meterlo en Core.
-- [ ] `ailen models plan`, `ailen models list`, `ailen models fetch` o equivalente.
-- [ ] prueba end-to-end fake: detectar hardware -> elegir modelo -> resolver backend local -> ConversationCoordinator.
-- [ ] benchmark DEV sin descargar modelos automáticamente durante tests.
-- [ ] documentar Lab Mode vs Appliance Mode (`docs/deployment/LAB_AND_APPLIANCE_MODES.md`).
+- [x] formalizar `ailen lab start` sin cambios persistentes del SO ni dependencias de root/services.
+- [x] soporte de laboratorio explícito para Linux Mint y Windows 11 (adaptadores y parsers CIM/PowerShell con `csv.reader` tolerando comas/quotes sin `shell=True`).
+- [x] verdad de hardware: CPU flags y VRAM libre en Windows CIM reportan `None` (UNKNOWN) en lugar de asumir AVX2 o VRAM libre.
+- [x] manejar hardware no medido de forma defensiva: emitir `HARDWARE_RAM_UNKNOWN` y `LOCAL_PLAN_BLOCKED_INSUFFICIENT_EVIDENCE` ante RAM no medida sin convertir a Satellite.
+- [x] separar adapters Linux (`LinuxHardwareAdapter`), Windows (`WindowsHardwareAdapter`) y test (`FakeHardwareAdapter`) del Core en `src/ailen/hardware/`.
+- [x] contar physical cores en Linux considerando `(physical id, core id)` para soporte multi-socket.
+- [x] DRM cards en Linux reportan `backend=None` sin asumir Vulkan sin prueba explícita.
+- [x] `ModelCatalog` declarativo e inmutable (`src/ailen/models/catalog.py`) con validación de IDs, URLs HTTPS, SHA-256 de 64 hex y modelos Qwen 3.5 0.8B (Q4_0 / Q8_0) verificados con Git LFS.
+- [x] `ModelPlanner` adaptativo con validación de fracciones, capping de context, comprobación de disco libre y CPU requirements en GPU offload.
+- [x] `ModelStore` con sanitización regex estricta y validación `is_relative_to` contra path traversal.
+- [x] `ModelDownloader` seguro con HTTPS forzado, rechazo de downgrade HTTP en redirecciones, límites de tamaño, verificación SHA-256 fail-closed y renombre atómico.
+- [x] `LocalRuntimeManager` desacoplado que detecta `llama-server`, `llama serve` y `Ollama`, reportando `DEGRADED` ante HTTP 404.
+- [x] `LabRunner` real no invasivo (`src/ailen/runtime/runner.py`) con tabla de estado de componentes, soporte para `--headless`, `--no-camera`, `--no-audio`, `--no-ai`, `--duration` y cleanup ante Ctrl+C.
+- [x] `LabDoctor` no invasivo (`src/ailen/runtime/doctor.py`) con diagnóstico `PASS`/`WARN`/`FAIL`/`SKIP` (`ailen lab doctor`).
+- [x] Comandos CLI operativos: `ailen lab inspect`, `ailen lab start`, `ailen lab doctor`, `ailen lab benchmark`, `ailen models list`, `ailen models plan`, `ailen models fetch`, `ailen models verify`.
+- [x] Documentos de investigación: `docs/research/HARDWARE_CAPABILITY_V2.md`, `docs/research/LOCAL_MODEL_CATALOG_2026.md`, `docs/research/LOCAL_RUNTIME_POC.md`, `docs/research/MODEL_PLANNER.md`.
+- [x] Suite auditada de R3B.1 con 292 tests offline, ruff limpio, mypy en 95 archivos fuente, diff-check limpio y wheel construible.
 
-## Bloque 11 — R3C Memory API + Personality + Tools
+## Bloque 11 — R3B.2 Live Lab Integration
+
+- [ ] eliminar sustituciones fake silenciosas en Lab Mode: cada estado `READY` debe corresponder al backend real configurado.
+- [ ] conectar Audio real -> VAD -> STT configurado -> `ConversationCoordinator` -> Router/LLM -> TTS configurado -> Face.
+- [ ] usar `EventBus`/callback explícito para entregar cada transcript una sola vez al coordinador conversacional.
+- [ ] integrar presencia Vision -> `InteractionCoordinator` -> mirada/estado Face durante la sesión de laboratorio.
+- [ ] soportar Local AI mediante Ollama/llama.cpp con modelo realmente cargado y fallback cloud/Rule-only según política.
+- [ ] validar modelo local instalado y runtime/model ID coherentes antes de marcar Local AI `READY`.
+- [ ] agregar métricas de sesión reales: STT latency, AI TTFT/latency/tokens-s cuando sea medible, TTS latency, Face FPS y Vision sampling.
+- [ ] registrar logs de laboratorio sin PCM, frames, secretos ni prompts/memorias privadas completas.
+- [ ] ejecutar primera prueba física en Linux Mint con cámara, micrófono y parlantes; documentar evidencia real sin extrapolar a hardware objetivo.
+- [ ] ejecutar Windows 11 como segundo laboratorio después de estabilizar Mint.
+
+## Bloque 12 — R3C Memory API + Personality + Tools
 
 - [ ] Memory API avanzada (consolidación semántica, decaimiento de memoria, tags).
 - [ ] Personality Engine evolutivo con simulación de estados anímicos y límites de personalidad.

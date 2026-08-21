@@ -16,6 +16,7 @@ release/*.zip
 
 # Runtime / local data
 var/
+/runtime/
 *.db
 *.sqlite
 *.sqlite3
@@ -31,7 +32,7 @@ config/*.local.*
 secrets/
 
 # Models / media / captures
-models/
+/models/
 *.gguf
 captures/
 recordings/

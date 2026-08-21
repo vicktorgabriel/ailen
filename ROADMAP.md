@@ -66,17 +66,17 @@
 
 ## R3B — Lab Mode y runtime local adaptativo — OBJETIVO 0.3.x
 
-- [ ] `ailen lab start` sin cambios persistentes del SO.
+- [x] `ailen lab start` baseline sin cambios persistentes del SO; wiring conversacional real queda en R3B.2.
 - [ ] validar ejecución de laboratorio en Linux Mint.
 - [ ] validar ejecución de laboratorio en Windows 11.
-- [ ] normalizar detección multiplataforma de CPU/RAM/GPU/VRAM/disco/audio/cámara/display.
-- [ ] Model Catalog versionado con artefactos aprobados y hashes.
-- [ ] Model Planner explicable por hardware/perfil.
-- [ ] descarga segura con consentimiento explícito en Lab Mode.
-- [ ] cache/model store local.
-- [ ] selección automática de runtime/modelo/quantización local.
-- [ ] conectar el backend elegido al AI Router sin acoplar identidad a modelo.
-- [ ] primera prueba visible: rostro + cámara + micrófono + logs + LLM local/cloud fallback.
+- [x] normalizar detección multiplataforma de CPU/RAM/GPU/VRAM/disco/audio/cámara/display sin inventar capabilities desconocidas.
+- [x] Model Catalog versionado con artefactos aprobados y hashes; Qwen 3.5 0.8B Q4_0/Q8_0 verificados el 2026-08-21.
+- [x] Model Planner explicable por hardware/perfil y limitado por defecto a artefactos verificados/descargables.
+- [x] descarga segura con consentimiento explícito en Lab Mode, HTTPS + tamaño exacto + SHA-256 + rename atómico.
+- [x] ModelStore local por plataforma, separado de Git y con protección de path traversal.
+- [x] selección automática baseline de runtime/modelo/quantización local; requiere ampliar catálogo verificado para aprovechar hardware grande.
+- [ ] conectar en R3B.2 el backend elegido al ciclo conversacional real sin sustituciones fake silenciosas.
+- [ ] R3B.2 primera prueba visible: rostro + cámara + micrófono + logs + LLM local/cloud fallback.
 - [ ] registrar benchmarks reales de los equipos laboratorio sin confundirlos con hardware objetivo comercial.
 
 ## R4 — Herramientas y comportamiento útil — OBJETIVO 0.3/0.4.x

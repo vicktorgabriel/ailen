@@ -8,6 +8,22 @@ El proyecto usa versionado semántico durante desarrollo, con prereleases cuando
 
 ### Added
 
+- **R3B.1 Lab Stabilization**: HardwareCapabilityReport multiplataforma, adapters Linux/Windows defensivos, ModelCatalog/Planner/Store/Downloader, RuntimeManager, `ailen lab inspect/start/doctor/benchmark` y gestión segura de modelos locales.
+- Auditoría final R3B.1: `src/ailen/models/` y `src/ailen/runtime/` quedan trackeables; planner accionable limitado a artefactos verificados; ModelStore de Lab usa ruta de usuario; downloader no sobrescribe artefactos existentes corruptos; estado `LAB READY` sólo se muestra cuando todos los componentes habilitados están listos.
+- Verificación externa 2026-08-21 de Qwen 3.5 0.8B Q4_0/Q8_0 contra punteros oficiales de Hugging Face.
+
+- **R3B Lab Mode, Hardware Capability Report V2, Model Catalog, Adaptive Model Planner, Secure Downloader y Runtime Manager (R3B.1 Lab Stabilization)**:
+  - Detección de hardware multiplataforma limpia (`src/ailen/hardware/`) sin fabricar dispositivos sintéticos, con adaptadores `LinuxHardwareAdapter` (con conteo multi-socket de physical cores y DRM cards seguras con `backend=None`), `WindowsHardwareAdapter` (parsers CIM con `csv.reader` tolerando comas/quotes y reportando `None` para CPU flags y VRAM libre no medidos) y `FakeHardwareAdapter`.
+  - Manejo defensivo ante mediciones de hardware ausentes: `HARDWARE_RAM_UNKNOWN` y `LOCAL_PLAN_BLOCKED_INSUFFICIENT_EVIDENCE` ante memoria no medida.
+  - Catálogo declarativo e inmutable de modelos GGUF `ModelCatalog` (`src/ailen/models/catalog.py`) con modelos Qwen 3.5 0.8B (Q4_0 / Q8_0) verificados con Hugging Face Git LFS 2026 y modelos antiguos preservados como metadata con `downloadable=False`.
+  - Planificador adaptativo `ModelPlanner` (`src/ailen/models/planner.py`) con validación de fracciones en `(0, 1]`, capping de `desired_context`, verificación de espacio en disco previo y respeto de requerimientos de CPU también en el camino de GPU offload.
+  - Almacén de modelos `ModelStore` (`src/ailen/models/store.py`) con sanitización regex estricta y comprobación `path.is_relative_to(base_dir)` contra path traversal.
+  - Descargador seguro `ModelDownloader` (`src/ailen/models/downloader.py`) con HTTPS obligatorio, rechazo de downgrade HTTP en redirecciones, límite estricto de tamaño antes y durante el streaming, verificación SHA-256 fail-closed y renombre atómico.
+  - Gestor de runtimes desacoplados `LocalRuntimeManager` (`src/ailen/runtime/manager.py`) capaz de detectar `llama-server`, `llama serve` y `Ollama`, reportando `DEGRADED` ante respuestas HTTP 404.
+  - `LabRunner` real (`src/ailen/runtime/runner.py`) para orquestación no invasiva de componentes en modo laboratorio (Face, Vision, Audio, STT, TTS, AI) con reporte de tabla inicial, soporte para `--headless`, `--no-camera`, `--no-audio`, `--no-ai`, `--duration` y cleanup ante Ctrl+C sin terminar runtimes externos.
+  - `LabDoctor` no invasivo (`src/ailen/runtime/doctor.py`) con diagnóstico `PASS`/`WARN`/`FAIL`/`SKIP` (`ailen lab doctor`).
+  - Comandos CLI nuevos: `ailen lab inspect [--json]`, `ailen lab start [--dry-run]`, `ailen lab doctor`, `ailen lab benchmark`, `ailen models list [--json]`, `ailen models plan [--json]`, `ailen models fetch <model_id> [-y]`, `ailen models verify <model_id>`.
+  - Suite de 292 tests unitarios offline pasando, ruff limpio, mypy en 95 archivos fuente y build de wheel verificado.
 - **R3A AI Router Híbrido, Políticas de Privacidad Outbound, Presupuesto Cloud y Proveedores Local/LAN/Cloud**:
   - Router determinista de IA `RuleBasedRouter` con soporte para todos los perfiles de hardware (`SATELLITE`, `CLOUD`, `HYBRID`, `LOCAL`, `LAN_BRAIN`), cadenas de fallback explícitas y códigos de razón canónicos (`RULE_ONLY_INTENT`, `CLOUD_FAST_PATH`, `CLOUD_BUDGET_EXCEEDED`, `PRIVATE_REMOTE_BLOCKED`, `ALL_BACKENDS_UNAVAILABLE`, etc.).
   - Política de privacidad outbound `OutboundPrivacyPolicy` fail-closed: `RESTRICTED`/`PRIVATE` nunca se rebajan silenciosamente a `PUBLIC`; Cloud y LAN no confiable quedan bloqueados fuera del LLM.

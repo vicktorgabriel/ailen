@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-08-21  
 **Versión:** `0.1.0-dev.0`  
-**Fase:** R3A software POC integrado y auditado; AI Router híbrido determinista + OutboundPrivacyPolicy + SecretResolver + BudgetPolicy circuit breaker + backends Local/LAN/Cloud + AiOrchestrator + ConversationCoordinator. Próximo milestone: R3B Lab Mode + detección de hardware + Model Manager local adaptativo.
+**Fase:** R3B.1 Lab Stabilization integrado y auditado; Hardware V2 multiplataforma + catálogo/model planner verificado + ModelStore/Downloader seguro + RuntimeManager + LabRunner/LabDoctor. Próximo milestone: R3B.2 Live Lab Integration para conectar de extremo a extremo cámara/micrófono -> STT -> Router/LLM -> TTS -> Face antes de avanzar a Memory/Personality.
 
 ## Qué existe
 
@@ -17,7 +17,7 @@
 - comportamiento del producto documentado (`PRODUCT_BEHAVIOR.md`);
 - plan de implementación operativo (`IMPLEMENTATION_PLAN.md`);
 - contratos entre módulos (`MODULE_CONTRACTS.md`);
-- task board de R1, R2A, R2B y R3A (`TASKS.md`);
+- task board de R1, R2A, R2B, R3A y R3B (`TASKS.md`);
 - handoff específico para Gemini/OpenCode/Codex (`AGENT_HANDOFF.md`);
 - matriz de aceptación verificable (`ACCEPTANCE_MATRIX.md`);
 - carpetas preparadas para código, pruebas, scripts, empaquetado y releases.
@@ -51,17 +51,23 @@
 - Backend TTS local offline `PiperTtsBackend` compatible con el CLI actual: WAV temporal, extracción de PCM/sample-rate/canales reales y control de velocidad/volumen;
 - `AudioInteractionCoordinator` integrando micrófono, turn gate, VAD, STT, TTS y un nivel de boca RMS básico durante playback;
 - AI Router determinista `RuleBasedRouter` con soporte para todos los perfiles de hardware (`SATELLITE`, `CLOUD`, `HYBRID`, `LOCAL`, `LAN_BRAIN`), fallback explícito y reason codes estructurados (`RULE_ONLY_INTENT`, `CLOUD_FAST_PATH`, `CLOUD_BUDGET_EXCEEDED`, `PRIVATE_REMOTE_BLOCKED`, `ALL_BACKENDS_UNAVAILABLE`);
-- `OutboundPrivacyPolicy` determinista que prohíbe el envío de información `RESTRICTED` y `PRIVATE` hacia Cloud / Internet o nodos LAN no confiables; una ruta bloqueada falla cerrado y nunca se rebaja silenciosamente a `PUBLIC`;
-- `SecretResolver` seguro para API keys desde variables de entorno o archivos owner-only (`0600` en POSIX), rechazando archivos de secretos con permisos de grupo/mundo;
-- `BudgetPolicy` circuit breaker consultando `ai_usage`: `0 USD` significa no gastar y sólo `None` representa sin límite interno; costos desconocidos no se fabrican como cero;
+- `OutboundPrivacyPolicy` determinista que prohíbe el envío de información `RESTRICTED` y `PRIVATE` hacia Cloud / Internet o nodos LAN no confiables;
+- `SecretResolver` seguro para API keys desde variables de entorno o archivos `0600`, con enmascaramiento total en logs y reportes;
+- `BudgetPolicy` circuit breaker consultando la tabla `ai_usage` en SQLite para frenar cargos cloud automáticamente ante excesos diarios o mensuales;
 - `AiContextBuilder` produciendo prompts mínimos acotados en caracteres y tokens, con filtrado de privacidad social y outbound;
 - Cliente HTTP genérico OpenAI-compatible `GenericOpenAiBackend` con Python stdlib (`urllib.request`), con timeouts estrictos y parseo seguro;
 - Backends `LocalAiBackend`, `LanBrainAiBackend` y `CloudAiBackend`;
 - `AiOrchestrator` ejecutando la secuencia de fallback con degradación limpia y registro de telemetría en SQLite;
 - `ConversationCoordinator` unificando Transcript STT -> Context -> Router -> Orchestrator -> TTS speak();
-- Comandos CLI nuevos: `ailen diagnose ai` y `ailen demo ai "<prompt>" [--dry-run]`;
-- Suite de benchmark reproducible `tools/benchmark_ai_router.py` con reporte DEV regenerable y sin extrapolar rendimiento a hardware objetivo;
-- Suite auditada en R3A: 254 tests pasando tras correcciones de privacidad/config/costo; `ruff`, `mypy` en 78 archivos fuente, `git diff --check` y build del wheel validados en verde.
+- Subsistema de Hardware Multiplataforma (`src/ailen/hardware/`): `LinuxHardwareAdapter`, `WindowsHardwareAdapter`, `FakeHardwareAdapter` y `HardwareDetector` produciendo `HardwareCapabilityReport` sin inventar capacidades sintéticas y reportando `None` (UNKNOWN) ante flags/VRAM no medidos;
+- `ModelCatalog` declarativo e inmutable (`src/ailen/models/catalog.py`) con modelos GGUF 2026 verificados con Git LFS (`qwen3.5-0.8b-q4_0`, `qwen3.5-0.8b-q8_0`) y modelos previos marcados con `downloadable=False`;
+- `ModelPlanner` adaptativo con márgenes de seguridad (60% RAM, 80% VRAM), comprobación de disco libre y CPU flags en GPU offload, y rechazo de hardware no medido (`HARDWARE_RAM_UNKNOWN`);
+- `ModelStore` desacoplado por plataforma con validación regex y `path.is_relative_to(base_dir)` contra path traversal;
+- `ModelDownloader` con exigencia HTTPS, streaming, límite de tamaño, verificación estricta SHA-256 fail-closed y renombre atómico;
+- `LocalRuntimeManager` detectando y reportando salud de `llama-server`, `llama serve` y `Ollama`, tratando respuestas 404 como `DEGRADED` (no `HEALTHY`);
+- `LabRunner` y `LabDoctor` no invasivos en `src/ailen/runtime/` para arranque de componentes en modo laboratorio y diagnóstico integral de dependencias;
+- Comandos CLI operativos: `ailen lab inspect`, `ailen lab start`, `ailen lab doctor`, `ailen lab benchmark`, `ailen models list`, `ailen models plan`, `ailen models fetch`, `ailen models verify`;
+- Suite auditada en R3B.1: 292 tests pasando; `ruff`, `mypy` en 95 archivos fuente, `git diff --check` y build del wheel validados en verde.
 
 ## Qué NO existe todavía
 
@@ -106,7 +112,7 @@ La base Foundation/Core/Web, Face/Vision, Audio/VAD/STT/TTS y R3A AI Router ya e
 
 ## Próximo milestone
 
-`R3B — Lab Mode + Hardware Capability Report + Model Catalog/Planner/Downloader`, manteniendo modelos y runtimes fuera del Core y sin modificar persistentemente Mint/Windows.
+`R3B.2 — Live Lab Integration`: ejecutar en Linux Mint el pipeline físico real Face + Vision + Audio + STT + AI local/cloud + TTS, con wiring explícito sin backends fake silenciosos, métricas y logs de sesión. Windows 11 será el segundo laboratorio después de estabilizar Mint.
 
 Trabajo inmediato definido en `TASKS.md` y `docs/operations/AGENT_HANDOFF.md`.
 

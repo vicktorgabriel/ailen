@@ -177,11 +177,6 @@ class HardwareDiagnostics:
             except OSError:
                 pass
 
-        if not inputs and not outputs:
-            # Fallback default
-            inputs.append(AudioDeviceInfo(index=0, name="default", is_input=True, is_output=False, is_default=True))
-            outputs.append(AudioDeviceInfo(index=0, name="default", is_input=False, is_output=True, is_default=True))
-
         return inputs, outputs
 
     def probe_cameras(self) -> list[CameraInfo]:
@@ -230,15 +225,12 @@ class HardwareDiagnostics:
                 except OSError:
                     pass
 
-            if connected or not displays:
+            if connected:
                 displays.append(DisplayInfo(
                     connector=conn_name,
                     connected=connected,
                     resolution=res,
                 ))
-
-        if not displays:
-            displays.append(DisplayInfo(connector="default", connected=True, resolution="1280x720"))
 
         return displays
 

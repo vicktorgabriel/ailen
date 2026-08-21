@@ -1,0 +1,3 @@
+# Ignore personal lab benchmark snapshots containing host-specific paths or info
+dev_lab_benchmark_*.json
+*.tmp

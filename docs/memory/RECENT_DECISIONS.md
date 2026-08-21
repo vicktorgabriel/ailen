@@ -2,6 +2,16 @@
 
 ## 2026-08-21
 
+### R3B.1 Lab Stabilization — auditoría final
+
+- El catálogo puede conservar metadata histórica no verificada, pero el `ModelPlanner` normal sólo recomienda artefactos `downloadable=True` con URL/tamaño/SHA verificados.
+- Se verificaron contra los punteros oficiales actuales de `ggml-org/Qwen3.5-0.8B-GGUF` los artifacts Q4_0 (`563036064` bytes, SHA-256 `57d199...f8cf`) y Q8_0 (`833592096` bytes, SHA-256 `37ae48...814f`).
+- Lab Mode usa el `ModelStore` del usuario; `/var/lib/ailen/models` queda reservado para Appliance Mode.
+- Las carpetas fuente `src/ailen/models/` y `src/ailen/runtime/` deben permanecer trackeables; `.gitignore` sólo excluye `/models/` y `/runtime/` en la raíz.
+- `READY` en Lab Mode debe significar que todos los componentes habilitados están realmente listos; faltantes de OpenCV, STT/TTS o modelo local degradan el estado.
+- `LabRunner` de R3B.1 es baseline de lifecycle/readiness. El wiring físico conversacional real sin fakes silenciosos se separa como R3B.2 antes de Memory/Personality.
+
+
 ### Proyecto
 
 - Se fija `AILEN` como nombre estable del proyecto/plataforma en `/mnt/hdd4tb/repo/ailen`.
@@ -16,6 +26,16 @@
 - El rostro será 2D, liviano y expresivo.
 - Cámara = ojos, micrófono = oído, parlantes = voz.
 - No se necesita una app móvil nativa: la administración será por web responsive en LAN.
+
+### Lab Mode y Model Management Adaptativo (R3B y R3B.1 Lab Stabilization)
+
+- **Detección de Hardware Multiplataforma y Verdad de Hardware**: Se separó la detección en `src/ailen/hardware/` con adaptadores dedicados (`LinuxHardwareAdapter`, `WindowsHardwareAdapter`, `FakeHardwareAdapter`). Se eliminó definitivamente la fabricación de flags o capacidades sintéticas. Si un periférico o flag no fue medido explícitamente (ej. flags de CPU o VRAM disponible en Windows CIM), se reporta `None` (`UNKNOWN`) y no se asume AVX2 o VRAM libre.
+- **Manejo Defensivo de Hardware no Medido**: Si la RAM total o disponible no se puede medir (`total_bytes == 0`), el recomendador y planificador emiten `HARDWARE_RAM_UNKNOWN` y `LOCAL_PLAN_BLOCKED_INSUFFICIENT_EVIDENCE` sin convertir falsamente el nodo a Satellite.
+- **Modelos GGUF 2026 Verificados con Git LFS**: Se incorporaron al catálogo y se verificaron contra Hugging Face Git LFS (`ggml-org/Qwen3.5-0.8B-GGUF`) los modelos `qwen3.5-0.8b-q4_0` (SHA: `57d19977...`, 563,036,064 bytes) y `qwen3.5-0.8b-q8_0` (SHA: `37ae482d...`, 833,592,096 bytes) con `downloadable=True`. Los modelos no verificados permanecen con `downloadable=False` como metadata histórica.
+- **ModelPlanner con Verificación Integral de Disco y CPU**: Valida fracciones de RAM y VRAM en `(0, 1]`, acota `desired_context` al soportado por el descriptor, comprueba espacio en disco libre ($disk \ge descriptor.disk\_size + 100MB$) y respeta requerimientos de CPU también en el camino de GPU offload.
+- **Seguridad en ModelStore y ModelDownloader**: `ModelStore` previene path traversal validando IDs con regex estricta y comprobando `path.is_relative_to(base_dir)`. `ModelDownloader` exige HTTPS, prohíbe degradación de HTTPS a HTTP en redirecciones, limita tamaños antes y durante el streaming, y limpia archivos temporales ante cualquier error (fail-closed).
+- **Runtimes Desacoplados y Salud Rigurosa (`LocalRuntimeManager`)**: Distingue estados `INSTALLED`, `RUNNING`, `HEALTHY`, `DEGRADED`, `UNAVAILABLE`. Un código HTTP 404 en `/models` indica servidor alcanzable pero no listo, retornando `DEGRADED` (nunca `HEALTHY`). Detecta `llama-server`, `llama serve` y `ollama`.
+- **LabRunner Real y LabDoctor No Invasivo**: `LabRunner` inicializa periféricos (Face, Vision, Audio ALSA, STT, TTS, AI), muestra tabla de estado inicial (`READY`, `DEGRADED`, `MISSING_MODEL`, `DISABLED`), soporta flags (`--headless`, `--no-camera`, `--no-audio`, `--no-ai`, `--duration`) y maneja SIGINT/SIGTERM limpiamente sin terminar runtimes externos. `LabDoctor` ejecuta diagnósticos del sistema con salida estructurada `PASS`/`WARN`/`FAIL`/`SKIP`.
 
 ### IA e Inferencia Híbrida (R3A)
 

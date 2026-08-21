@@ -14,8 +14,14 @@ from ailen.core.health import HealthService
 from ailen.core.logging import setup_logging
 from ailen.core.state import StateManager
 from ailen.domain.enums import AssistantState
+from ailen.hardware.detector import HardwareDetector
 from ailen.infrastructure.sqlite.connection import SQLiteManager
 from ailen.infrastructure.sqlite.migrations import MigrationRunner
+from ailen.models.catalog import ModelCatalog
+from ailen.models.downloader import ModelDownloader, ModelDownloadError
+from ailen.models.planner import ModelPlanner
+from ailen.models.store import ModelStore
+from ailen.runtime.manager import LocalRuntimeManager
 from ailen.services.config_service import ConfigService
 from ailen.services.settings_service import SettingsService
 from ailen.services.status_service import StatusService
@@ -142,6 +148,35 @@ def create_parser() -> argparse.ArgumentParser:
     demo_ai.add_argument("--privacy", default="PRIVATE", help="Privacy level (PUBLIC, RESTRICTED, PRIVATE)")
     demo_ai.add_argument("--profile", default=None, help="Override device profile (SATELLITE, CLOUD, HYBRID, LOCAL, LAN_BRAIN)")
     demo_ai.add_argument("--intent", default="chat", help="Request intent (chat, volume, timer, etc.)")
+
+    # Command: lab
+    lab_parser = subparsers.add_parser("lab", help="Lab Mode inspection, execution and benchmarks")
+    lab_sub = lab_parser.add_subparsers(dest="lab_action", help="Lab action")
+    lab_inspect = lab_sub.add_parser("inspect", help="Inspect hardware capabilities, profile and recommended model plan")
+    lab_inspect.add_argument("--json", action="store_true", help="Output as JSON")
+    lab_start = lab_sub.add_parser("start", help="Boot AILEN in Lab Mode with detected capabilities")
+    lab_start.add_argument("--dry-run", action="store_true", default=False, help="Initialize components without entering interactive loop")
+    lab_start.add_argument("--headless", action="store_true", default=False, help="Run without graphical face display")
+    lab_start.add_argument("--no-camera", action="store_true", default=False, help="Disable vision and camera capture")
+    lab_start.add_argument("--no-audio", action="store_true", default=False, help="Disable audio I/O and speech")
+    lab_start.add_argument("--no-ai", action="store_true", default=False, help="Disable local AI inference")
+    lab_start.add_argument("--duration", type=float, default=None, help="Run for N seconds and terminate cleanly")
+    lab_sub.add_parser("doctor", help="Run non-invasive system readiness diagnostic")
+    lab_bench = lab_sub.add_parser("benchmark", help="Run reproducible lab benchmark harness")
+    lab_bench.add_argument("--output", default="runtime/lab/benchmarks", help="Destination directory for benchmark artifact")
+
+    # Command: models
+    models_parser = subparsers.add_parser("models", help="Manage local GGUF model catalog and storage")
+    models_sub = models_parser.add_subparsers(dest="models_action", help="Models action")
+    models_list = models_sub.add_parser("list", help="List all catalog models and installation status")
+    models_list.add_argument("--json", action="store_true", help="Output as JSON")
+    models_plan = models_sub.add_parser("plan", help="Evaluate hardware capabilities and output recommended model plan")
+    models_plan.add_argument("--json", action="store_true", help="Output as JSON")
+    models_fetch = models_sub.add_parser("fetch", help="Download and verify a model from catalog")
+    models_fetch.add_argument("model_id", help="Model ID from catalog (e.g. qwen2.5-0.5b-instruct-q4_k_m)")
+    models_fetch.add_argument("-y", "--yes", action="store_true", help="Bypass interactive confirmation prompt")
+    models_verify = models_sub.add_parser("verify", help="Verify SHA-256 integrity of an installed model")
+    models_verify.add_argument("model_id", help="Model ID to verify in local store")
 
     return parser
 
@@ -964,6 +999,302 @@ def cmd_demo_ai(args: argparse.Namespace, config_path: str | None) -> int:
     return 0
 
 
+def cmd_lab_inspect(args: argparse.Namespace) -> int:
+    """Inspect hardware capabilities, profile recommendation, runtimes, and model plan."""
+    store = ModelStore()
+    detector = HardwareDetector()
+    report = detector.detect(str(store.base_dir))
+    rec = detector.recommend_profile(report)
+    rt_mgr = LocalRuntimeManager()
+    runtimes = rt_mgr.detect_available_runtimes()
+    planner = ModelPlanner()
+    plan = planner.plan(report, profile=rec.profile)
+
+    if getattr(args, "json", False):
+        payload = {
+            "hardware": report.to_dict(),
+            "profile_recommendation": rec.to_dict(),
+            "runtimes": [
+                {
+                    "type": r.runtime_type.value,
+                    "executable": r.executable_path,
+                    "endpoint": r.endpoint,
+                    "detected": r.is_detected,
+                    "status": r.health.status.value if r.health else "UNKNOWN",
+                    "details": r.health.details if r.health else "",
+                }
+                for r in runtimes
+            ],
+            "model_plan": plan.to_dict(),
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print("==================================================================")
+    print("                    AILEN LAB HARDWARE INSPECTION                 ")
+    print("==================================================================")
+    print(f"OS / Distro     : {report.os_distribution} ({report.os_version}) [{report.os_family.value}]")
+    print(f"CPU Model       : {report.cpu.model} ({report.cpu.architecture})")
+    print(f"CPU Cores/Flags : {report.cpu.physical_cores or '?'} physical / {report.cpu.logical_cores or '?'} logical | AVX2={report.cpu.has_avx2} FMA={report.cpu.has_fma}")
+    print(f"RAM Total/Avail : {report.ram.total_mb} MB total / {report.ram.available_mb} MB available ({report.ram.total_gb} GB)")
+    if report.gpus:
+        for idx, g in enumerate(report.gpus):
+            vram_info = f"{g.vram_available_mb} MB free / {g.vram_total_mb} MB total" if g.vram_total_mb else "Shared/System"
+            print(f"GPU [{idx}]          : {g.model} ({g.vendor.upper()}) | VRAM: {vram_info} | Backend: {g.backend or 'N/A'}")
+    else:
+        print("GPU             : None detected / Integrated")
+    if report.disk:
+        free_gb = round(report.disk.free_bytes / (1024**3), 2)
+        total_gb = round(report.disk.total_bytes / (1024**3), 2)
+        print(f"Disk Path       : {report.disk.path} ({free_gb} GB free / {total_gb} GB total)")
+    print(f"Audio Devices   : {len(report.audio_inputs)} inputs / {len(report.audio_outputs)} outputs")
+    print(f"Cameras         : {len(report.cameras)} detected")
+    print(f"Displays        : {len(report.displays)} detected")
+    print("------------------------------------------------------------------")
+    print(f"RECOMMENDED PROFILE : {rec.profile.value}")
+    print(f"Local Inference     : capable={rec.local_inference_capable} | budget={rec.recommended_local_budget_mb} MB | preferred_runtime={rec.preferred_runtime}")
+    print(f"Profile Reasons     : {', '.join(rec.reason_codes)}")
+    print("------------------------------------------------------------------")
+    print("DETECTED LOCAL RUNTIMES:")
+    for r in runtimes:
+        st = r.health.status.value if r.health else "UNKNOWN"
+        print(f"  - {r.runtime_type.value}: endpoint={r.endpoint} (detected={r.is_detected}, status={st})")
+    print("------------------------------------------------------------------")
+    print("RECOMMENDED LOCAL MODEL PLAN:")
+    if plan.is_viable and plan.model_descriptor:
+        print(f"  Model ID       : {plan.selected_model_id}")
+        print(f"  Display Name   : {plan.model_descriptor.display_name}")
+        print(f"  Device/Layers  : {plan.device.upper()} (gpu_layers={plan.gpu_layers})")
+        print(f"  Estimated RAM  : {plan.estimated_ram_mb} MB | VRAM: {plan.estimated_vram_mb} MB")
+        print(f"  Disk Required  : {plan.model_descriptor.disk_size_bytes // (1024 * 1024)} MB")
+        print(f"  Plan Reasons   : {', '.join(plan.reason_codes)}")
+    else:
+        print("  Status         : NO VIABLE LOCAL MODEL PLAN (will delegate to LAN Brain or Cloud)")
+        print(f"  Reasons        : {', '.join(plan.reason_codes)}")
+    print("==================================================================")
+    return 0
+
+
+def cmd_lab_start(args: argparse.Namespace, config_path: str | None) -> int:
+    """Start AILEN in Lab Mode using dedicated non-invasive LabRunner."""
+    from ailen.runtime.runner import LabRunner
+
+    cfg = load_config(config_path)
+    runner = LabRunner(
+        config=cfg,
+        dry_run=getattr(args, "dry_run", False),
+        headless=getattr(args, "headless", False),
+        no_camera=getattr(args, "no_camera", False),
+        no_audio=getattr(args, "no_audio", False),
+        no_ai=getattr(args, "no_ai", False),
+        duration=getattr(args, "duration", None),
+    )
+    return runner.start()
+
+
+def cmd_lab_doctor(args: argparse.Namespace, config_path: str | None) -> int:
+    """Run non-invasive Lab Doctor diagnostics."""
+    from ailen.runtime.doctor import LabDoctor
+
+    cfg = load_config(config_path)
+    doctor = LabDoctor(config=cfg)
+    return doctor.print_report()
+
+
+def cmd_lab_benchmark(args: argparse.Namespace) -> int:
+    """Run lab benchmark harness and export report."""
+    import time
+    store = ModelStore()
+    detector = HardwareDetector()
+    report = detector.detect(str(store.base_dir))
+    rec = detector.recommend_profile(report)
+    planner = ModelPlanner()
+    plan = planner.plan(report, profile=rec.profile)
+
+    out_dir = Path(getattr(args, "output", "runtime/lab/benchmarks"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = int(time.time())
+    bench_file = out_dir / f"lab_benchmark_{timestamp}.json"
+
+    bench_data = {
+        "timestamp": timestamp,
+        "hardware_snapshot": report.to_dict(),
+        "profile_recommendation": rec.to_dict(),
+        "model_plan": plan.to_dict(),
+    }
+    bench_file.write_text(json.dumps(bench_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"Benchmark lab report saved to: {bench_file}")
+    return 0
+
+
+def cmd_lab(args: argparse.Namespace, config_path: str | None) -> int:
+    """Execute lab subcommand."""
+    action = getattr(args, "lab_action", None)
+    if action == "inspect":
+        return cmd_lab_inspect(args)
+    elif action == "start":
+        return cmd_lab_start(args, config_path)
+    elif action == "doctor":
+        return cmd_lab_doctor(args, config_path)
+    elif action == "benchmark":
+        return cmd_lab_benchmark(args)
+    print("Uso: ailen lab [inspect|start|doctor|benchmark]")
+    return 1
+
+
+def cmd_models_list(args: argparse.Namespace) -> int:
+    """List all models in catalog and installation status."""
+    catalog = ModelCatalog()
+    store = ModelStore()
+    models = catalog.list_models()
+
+    if getattr(args, "json", False):
+        out = []
+        for m in models:
+            d = m.to_dict()
+            d["installed"] = store.exists(m.model_id)
+            d["installed_size_bytes"] = store.get_size(m.model_id)
+            out.append(d)
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return 0
+
+    print(f"{'MODEL ID':<35} {'FAMILY':<8} {'CLASS':<8} {'DISK (MB)':<10} {'RAM (MB)':<10} {'INSTALLED'}")
+    print("-" * 85)
+    for m in models:
+        installed_str = "YES" if store.exists(m.model_id) else "NO"
+        disk_mb = m.disk_size_bytes // (1024 * 1024)
+        print(f"{m.model_id:<35} {m.family:<8} {m.parameter_class:<8} {disk_mb:<10} {m.ram_requirement_mb:<10} {installed_str}")
+    return 0
+
+
+def cmd_models_plan(args: argparse.Namespace) -> int:
+    """Evaluate and print recommended model plan for current hardware."""
+    store = ModelStore()
+    detector = HardwareDetector()
+    report = detector.detect(str(store.base_dir))
+    rec = detector.recommend_profile(report)
+    planner = ModelPlanner()
+    plan = planner.plan(report, profile=rec.profile)
+
+    if getattr(args, "json", False):
+        print(json.dumps(plan.to_dict(), indent=2, ensure_ascii=False))
+        return 0
+
+    print("==================================================================")
+    print("                   RECOMMENDED MODEL PLAN                         ")
+    print("==================================================================")
+    if plan.is_viable and plan.model_descriptor:
+        print(f"Selected Model : {plan.selected_model_id}")
+        print(f"Display Name   : {plan.model_descriptor.display_name}")
+        print(f"Device / Layer : {plan.device.upper()} (gpu_layers={plan.gpu_layers})")
+        print(f"Estimated RAM  : {plan.estimated_ram_mb} MB")
+        print(f"Estimated VRAM : {plan.estimated_vram_mb} MB")
+        print(f"Context Window : {plan.context_size}")
+        print(f"Reasons        : {', '.join(plan.reason_codes)}")
+    else:
+        print("Status         : NO VIABLE LOCAL MODEL PLAN")
+        print(f"Reasons        : {', '.join(plan.reason_codes)}")
+    print("==================================================================")
+    return 0
+
+
+def cmd_models_fetch(args: argparse.Namespace) -> int:
+    """Download and verify model artifact into ModelStore."""
+    model_id = args.model_id
+    catalog = ModelCatalog()
+    descriptor = catalog.get_model(model_id)
+    if not descriptor:
+        print(f"Error: Model '{model_id}' not found in catalog. Use 'ailen models list' to view available models.")
+        return 1
+    if not descriptor.downloadable:
+        print(
+            f"Error: Model '{model_id}' is catalog metadata only and is not approved for download. "
+            "Choose a verified downloadable model from `ailen models list`."
+        )
+        return 1
+
+    store = ModelStore()
+    if store.exists(model_id):
+        print(f"Model '{model_id}' is already installed at {store.get_model_path(model_id)}")
+        return 0
+
+    disk_mb = descriptor.disk_size_bytes // (1024 * 1024)
+    print("==================================================================")
+    print("                  MODEL DOWNLOAD REQUEST                          ")
+    print("==================================================================")
+    print(f"Model ID     : {descriptor.model_id}")
+    print(f"Display Name : {descriptor.display_name}")
+    print(f"Download Size: ~{disk_mb} MB")
+    print(f"Destination  : {store.get_model_path(model_id)}")
+    print(f"SHA-256      : {descriptor.sha256}")
+    print("==================================================================")
+
+    if not getattr(args, "yes", False):
+        try:
+            confirm = input(f"¿Desea descargar '{model_id}' ({disk_mb} MB)? [y/N]: ").strip().lower()
+            if confirm not in ("y", "yes", "s", "si", "sí"):
+                print("Descarga cancelada por el usuario.")
+                return 0
+        except (EOFError, KeyboardInterrupt):
+            print("\nOperación cancelada.")
+            return 1
+
+    downloader = ModelDownloader(store=store)
+    try:
+        def on_progress(downloaded: int, total: int) -> None:
+            pct = (downloaded / total * 100.0) if total > 0 else 0
+            mb_done = downloaded / (1024 * 1024)
+            mb_total = total / (1024 * 1024)
+            print(f"\rDescargando: {mb_done:.1f}/{mb_total:.1f} MB ({pct:.1f}%)", end="", flush=True)
+
+        target_path = downloader.download(descriptor, progress_callback=on_progress)
+        print(f"\nDescarga y verificación completadas con éxito: {target_path}")
+        return 0
+    except ModelDownloadError as e:
+        print(f"\nError en la descarga: {e}")
+        return 1
+
+
+def cmd_models_verify(args: argparse.Namespace) -> int:
+    """Verify SHA-256 integrity of an installed model."""
+    model_id = args.model_id
+    catalog = ModelCatalog()
+    descriptor = catalog.get_model(model_id)
+    if not descriptor:
+        print(f"Error: Model '{model_id}' not found in catalog.")
+        return 1
+
+    store = ModelStore()
+    if not store.exists(model_id):
+        print(f"Error: Model '{model_id}' is not installed in local store ({store.base_dir}).")
+        return 1
+
+    print(f"Verifying SHA-256 for '{model_id}'...")
+    valid = store.verify(model_id, descriptor.sha256)
+    if valid:
+        print(f"SUCCESS: Integrity check passed for '{model_id}' (SHA-256 match).")
+        return 0
+    else:
+        print(f"FAILURE: SHA-256 mismatch for '{model_id}'!")
+        return 1
+
+
+def cmd_models(args: argparse.Namespace) -> int:
+    """Execute models subcommand."""
+    action = getattr(args, "models_action", None)
+    if action == "list":
+        return cmd_models_list(args)
+    elif action == "plan":
+        return cmd_models_plan(args)
+    elif action == "fetch":
+        return cmd_models_fetch(args)
+    elif action == "verify":
+        return cmd_models_verify(args)
+    print("Uso: ailen models [list|plan|fetch|verify]")
+    return 1
+
+
 def cmd_demo(args: argparse.Namespace, config_path: str | None) -> int:
     """Execute demo subcommand."""
     target = getattr(args, "demo_target", None)
@@ -1024,6 +1355,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "demo":
         return cmd_demo(args, args.config_path)
+
+    if args.command == "lab":
+        return cmd_lab(args, args.config_path)
+
+    if args.command == "models":
+        return cmd_models(args)
 
     parser.print_help()
     return 0
