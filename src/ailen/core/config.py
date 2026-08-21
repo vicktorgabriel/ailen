@@ -5,6 +5,7 @@ import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from ailen.domain.enums import DeviceProfile, SocialMode
 
@@ -82,6 +83,45 @@ class SpeechConfig:
 
 
 @dataclass
+class AiLocalConfig:
+    """Local LLM server configuration (e.g. llama.cpp server, Ollama)."""
+    enabled: bool = False
+    endpoint: str = "http://127.0.0.1:8080/v1"
+    model: str = "local-model"
+    timeout_seconds: float = 20.0
+
+
+@dataclass
+class AiLanConfig:
+    """LAN Brain server configuration."""
+    enabled: bool = False
+    endpoint: str = "http://192.168.1.100:8080/v1"
+    model: str = "lan-model"
+    trusted: bool = False
+    timeout_seconds: float = 15.0
+
+
+@dataclass
+class AiCloudConfig:
+    """Cloud LLM provider configuration.
+
+    Provider, model and pricing are intentionally unset by default because they
+    change over time and must come from deployment configuration.
+    """
+    enabled: bool = False
+    provider: str = "openai_compatible"
+    endpoint: str = ""
+    model: str = ""
+    api_key_env: str = "AILEN_AI_CLOUD_API_KEY"
+    api_key_file: str = "ai_cloud_key"
+    daily_budget_usd: float = 1.0
+    monthly_budget_usd: float = 20.0
+    timeout_seconds: float = 10.0
+    input_cost_per_million: float | None = None
+    output_cost_per_million: float | None = None
+
+
+@dataclass
 class AiConfig:
     """AI Router and LLM provider configuration."""
     provider: str = "mock"  # "mock", "local", "lan_brain", "cloud"
@@ -90,6 +130,9 @@ class AiConfig:
     timeout_seconds: float = 10.0
     daily_budget_usd: float = 1.0
     allow_cloud: bool = True
+    local: AiLocalConfig = field(default_factory=AiLocalConfig)
+    lan: AiLanConfig = field(default_factory=AiLanConfig)
+    cloud: AiCloudConfig = field(default_factory=AiCloudConfig)
 
 
 @dataclass
@@ -175,25 +218,36 @@ class AILENConfig:
         return d
 
 
-def _dump_toml_section(name: str, data: dict[str, Any]) -> str:
-    """Format a single TOML section."""
-    lines = [f"[{name}]"]
-    for k, v in data.items():
-        if isinstance(v, bool):
-            val_str = "true" if v else "false"
-        elif isinstance(v, (int, float)):
-            val_str = str(v)
-        elif v is None:
-            continue
-        else:
-            val_str = f'"{v}"'
-        lines.append(f"{k} = {val_str}")
-    lines.append("")
-    return "\n".join(lines)
+def _format_toml_value(value: Any) -> str:
+    """Format a scalar TOML value safely for AILEN's configuration schema."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _dump_toml_sections(prefix: str, data: dict[str, Any]) -> list[str]:
+    """Serialize a mapping recursively using TOML dotted table headers."""
+    scalar_items = {k: v for k, v in data.items() if not isinstance(v, dict) and v is not None}
+    nested_items = {k: v for k, v in data.items() if isinstance(v, dict)}
+
+    lines: list[str] = []
+    if scalar_items:
+        lines.append(f"[{prefix}]")
+        for key, value in scalar_items.items():
+            lines.append(f"{key} = {_format_toml_value(value)}")
+        lines.append("")
+
+    for key, nested in nested_items.items():
+        lines.extend(_dump_toml_sections(f"{prefix}.{key}", nested))
+
+    return lines
 
 
 def dump_config_toml(config: AILENConfig) -> str:
-    """Serialize AILENConfig to TOML formatted string."""
+    """Serialize AILENConfig to TOML formatted string, including nested AI sections."""
     lines = [
         "# AILEN Configuration File",
         f"schema_version = {config.schema_version}",
@@ -204,7 +258,7 @@ def dump_config_toml(config: AILENConfig) -> str:
         if section_name == "schema_version":
             continue
         if isinstance(section_data, dict):
-            lines.append(_dump_toml_section(section_name, section_data))
+            lines.extend(_dump_toml_sections(section_name, section_data))
     return "\n".join(lines)
 
 
@@ -250,8 +304,21 @@ def load_config_from_dict(raw: dict[str, Any]) -> AILENConfig:
                 setattr(cfg.speech, k, v)
 
     if "ai" in raw and isinstance(raw["ai"], dict):
-        for k, v in raw["ai"].items():
-            if hasattr(cfg.ai, k):
+        ai_raw = raw["ai"]
+        for k, v in ai_raw.items():
+            if k == "local" and isinstance(v, dict):
+                for lk, lv in v.items():
+                    if hasattr(cfg.ai.local, lk):
+                        setattr(cfg.ai.local, lk, lv)
+            elif k == "lan" and isinstance(v, dict):
+                for lk, lv in v.items():
+                    if hasattr(cfg.ai.lan, lk):
+                        setattr(cfg.ai.lan, lk, lv)
+            elif k == "cloud" and isinstance(v, dict):
+                for ck, cv in v.items():
+                    if hasattr(cfg.ai.cloud, ck):
+                        setattr(cfg.ai.cloud, ck, cv)
+            elif hasattr(cfg.ai, k):
                 setattr(cfg.ai, k, v)
 
     if "memory" in raw and isinstance(raw["memory"], dict):
@@ -387,6 +454,43 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("vision.min_confidence must be between 0.0 and 1.0")
     if config.ai.timeout_seconds <= 0:
         errors.append("ai.timeout_seconds must be positive")
+    if config.ai.daily_budget_usd < 0:
+        errors.append("ai.daily_budget_usd must be >= 0")
+    if config.ai.local.timeout_seconds <= 0:
+        errors.append("ai.local.timeout_seconds must be positive")
+    if config.ai.lan.timeout_seconds <= 0:
+        errors.append("ai.lan.timeout_seconds must be positive")
+    if config.ai.cloud.timeout_seconds <= 0:
+        errors.append("ai.cloud.timeout_seconds must be positive")
+    if config.ai.cloud.daily_budget_usd < 0:
+        errors.append("ai.cloud.daily_budget_usd must be >= 0")
+    if config.ai.cloud.monthly_budget_usd < 0:
+        errors.append("ai.cloud.monthly_budget_usd must be >= 0")
+    if config.ai.cloud.input_cost_per_million is not None and config.ai.cloud.input_cost_per_million < 0:
+        errors.append("ai.cloud.input_cost_per_million must be >= 0")
+    if config.ai.cloud.output_cost_per_million is not None and config.ai.cloud.output_cost_per_million < 0:
+        errors.append("ai.cloud.output_cost_per_million must be >= 0")
+    if config.ai.cloud.enabled and (
+        config.ai.cloud.input_cost_per_million is None
+        or config.ai.cloud.output_cost_per_million is None
+    ):
+        errors.append("ai.cloud token pricing must be configured when cloud is enabled")
+
+    for section_name, enabled, endpoint, model in (
+        ("ai.local", config.ai.local.enabled, config.ai.local.endpoint, config.ai.local.model),
+        ("ai.lan", config.ai.lan.enabled, config.ai.lan.endpoint, config.ai.lan.model),
+        ("ai.cloud", config.ai.cloud.enabled, config.ai.cloud.endpoint, config.ai.cloud.model),
+    ):
+        if not enabled:
+            continue
+        if not model.strip():
+            errors.append(f"{section_name}.model cannot be empty when enabled")
+        parsed = urlparse(endpoint)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            errors.append(f"{section_name}.endpoint must be a valid http(s) URL when enabled")
+    if config.ai.cloud.enabled and not config.ai.cloud.provider.strip():
+        errors.append("ai.cloud.provider cannot be empty when enabled")
+
     if config.web.port < 1 or config.web.port > 65535:
         errors.append("web.port must be between 1 and 65535")
     if config.logging.level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:

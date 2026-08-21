@@ -66,6 +66,32 @@ timeout_seconds = 10.0
 daily_budget_usd = 1.0
 allow_cloud = true
 
+[ai.local]
+enabled = false
+endpoint = "http://127.0.0.1:8080/v1"
+model = "local-model"
+timeout_seconds = 20.0
+
+[ai.lan]
+enabled = false
+endpoint = "http://192.168.1.100:8080/v1"
+model = "lan-model"
+trusted = false             # opt-in: only mark true for a LAN Brain you control/trust
+timeout_seconds = 15.0
+
+[ai.cloud]
+enabled = false
+provider = "openai_compatible" # configure a current provider explicitly
+endpoint = ""
+model = ""
+api_key_env = "AILEN_AI_CLOUD_API_KEY"
+api_key_file = "ai_cloud_key"
+daily_budget_usd = 1.0
+monthly_budget_usd = 20.0
+timeout_seconds = 10.0
+# input_cost_per_million = 0.0   # REQUIRED when enabling cloud: set current provider pricing
+# output_cost_per_million = 0.0  # REQUIRED when enabling cloud: set current provider pricing
+
 [memory]
 sqlite_path = "data/ailen.db"
 fts_enabled = true

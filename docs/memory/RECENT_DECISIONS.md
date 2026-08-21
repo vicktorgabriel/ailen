@@ -17,6 +17,15 @@
 - Cámara = ojos, micrófono = oído, parlantes = voz.
 - No se necesita una app móvil nativa: la administración será por web responsive en LAN.
 
+### IA e Inferencia Híbrida (R3A)
+
+- **Router Determinista sin LLM**: El enrutamiento no consume tokens ni realiza inferencias. `RuleBasedRouter` evalúa perfil, intención, privacidad, conectividad y presupuesto; su benchmark DEV es reproducible y no se extrapola a hardware objetivo.
+- **Outbound Privacy Inviolable**: `OutboundPrivacyPolicy` establece barreras estrictas de salida. Ningún dato `RESTRICTED`/`PRIVATE` se envía a cloud, y a LAN sólo si el nodo es confiable. La auditoría R3A eliminó la sanitización que rebajaba un request bloqueado a `PUBLIC`: ahora falla cerrado con `PermissionError`.
+- **Circuit Breaker Económico**: `BudgetPolicy` consulta `ai_usage`. `0 USD` significa no gastar; sólo `None` representa sin límite interno. Los precios cloud no tienen defaults históricos: deben configurarse con valores vigentes y el uso desconocido no se registra como costo/token cero inventado.
+- **Manejo Seguro de Credenciales**: `SecretResolver` prohíbe API keys en `ailen.toml`, SQLite o logs. Variables de entorno y archivos de secretos son admitidos; en POSIX, archivos con permisos para grupo/mundo se rechazan. Cloud falla cerrado si falta endpoint/model/credencial.
+- **Cliente HTTP Genérico Desacoplado**: Se utiliza `GenericOpenAiBackend` construido con la librería estándar de Python (`urllib.request`), permitiendo interactuar con cualquier servidor OpenAI-compatible (llama.cpp server, Ollama, vLLM, LiteLLM, Groq, OpenRouter, etc.) sin librerías externas pesadas.
+- **Orquestación y Coordinación End-to-End**: `AiOrchestrator` ejecuta la cadena de fallback (`primary` -> `fallbacks`), mientras que `ConversationCoordinator` unifica el ciclo completo `Transcript` -> `AiContextBuilder` -> `RuleBasedRouter` -> `AiOrchestrator` -> `AudioInteractionCoordinator.speak()`.
+
 ### IA
 
 - La identidad del asistente vive en AILEN Core, no en el LLM.
@@ -65,6 +74,8 @@
 ### Sistema base / Distribución
 
 - ADR-008 acepta **Debian 13 stable amd64 netinst/minimal** como baseline del appliance.
+- Se distinguen oficialmente **Lab Mode** y **Appliance Mode** (`docs/deployment/LAB_AND_APPLIANCE_MODES.md`). Linux Mint y Windows 11 son laboratorios: ejecutar AILEN no debe cambiar login, suspensión, shell, servicios ni reiniciar la PC. Debian dedicado sí será preparado por un provisionador idempotente que configure hardware, modelos, systemd, energía, primer boot y reinicio final tras health check.
+- Lab y Appliance compartirán `HardwareCapabilityReport` + `ModelCatalog/ModelPlanner`; la descarga de modelos en laboratorio requiere consentimiento explícito y en appliance sólo puede ejecutar artefactos aprobados por manifest/hash.
 - No se instala escritorio completo. Con el POC Tkinter, un nodo con pantalla usa sólo stack gráfico mínimo (Xorg/xinit/python3-tk); un nodo headless no instala X. Un futuro renderer SDL2/DRM-KMS podrá retirar Xorg sin cambiar Debian.
 - Alpine queda como experimento futuro únicamente para Satellites extremos si un benchmark demuestra ventaja suficiente para justificar una segunda plataforma soportada.
 - Las actualizaciones se diseñarán con releases versionadas, verificación, health check y rollback. Clientes: `stable`; prototipos: `beta`; desarrollo: `nightly`.

@@ -54,6 +54,8 @@ def create_parser() -> argparse.ArgumentParser:
     hw_parser.add_argument("--json", action="store_true", help="Output report as JSON")
     audio_diag_parser = diag_sub.add_parser("audio", help="Inspect audio I/O devices, ALSA status, and STT/TTS health")
     audio_diag_parser.add_argument("--json", action="store_true", help="Output report as JSON")
+    ai_diag_parser = diag_sub.add_parser("ai", help="Inspect AI Router, Local, LAN, and Cloud backends")
+    ai_diag_parser.add_argument("--json", action="store_true", help="Output report as JSON")
 
     # Command: config
     cfg_parser = subparsers.add_parser("config", help="Inspect and validate configuration")
@@ -131,6 +133,15 @@ def create_parser() -> argparse.ArgumentParser:
     demo_tts.add_argument("--voice", default="es_ES-standard", help="Voice ID")
     demo_tts.add_argument("--model", default="", help="TTS model path (.onnx)")
     demo_tts.add_argument("--rate", type=float, default=1.0, help="Speech rate (default: 1.0)")
+
+    # Subcommand: demo ai
+    demo_ai = demo_sub.add_parser("ai", help="Interactive AI Router and LLM inference demo")
+    demo_ai.add_argument("prompt", help="User message / text prompt")
+    demo_ai.add_argument("--dry-run", action="store_true", default=False, help="Show routing decision without network calls")
+    demo_ai.add_argument("--mode", default="WORKSHOP", help="Social operating mode (HOME, WORKSHOP, SHOP, PUBLIC, PRIVATE, SLEEP)")
+    demo_ai.add_argument("--privacy", default="PRIVATE", help="Privacy level (PUBLIC, RESTRICTED, PRIVATE)")
+    demo_ai.add_argument("--profile", default=None, help="Override device profile (SATELLITE, CLOUD, HYBRID, LOCAL, LAN_BRAIN)")
+    demo_ai.add_argument("--intent", default="chat", help="Request intent (chat, volume, timer, etc.)")
 
     return parser
 
@@ -515,6 +526,128 @@ def cmd_diagnose_audio(args: argparse.Namespace, config_path: str | None) -> int
     return 0
 
 
+def cmd_diagnose_ai(args: argparse.Namespace, config_path: str | None) -> int:
+    """Run AI Router, Local, LAN Brain, and Cloud LLM diagnostics."""
+    from ailen.ai.budget import BudgetPolicy
+    from ailen.ai.cloud_backend import CloudAiBackend
+    from ailen.ai.contracts import BackendHealth
+    from ailen.ai.lan_backend import LanBrainAiBackend
+    from ailen.ai.local_backend import LocalAiBackend
+    from ailen.ai.secrets import SecretResolver
+    from ailen.core.config import load_config
+    from ailen.domain.enums import ServiceStatus
+    from ailen.infrastructure.sqlite.connection import SQLiteManager
+    from ailen.memory.repository import MemoryRepository
+
+    cfg = load_config(config_path)
+    db_mgr = SQLiteManager(cfg.memory.sqlite_path)
+    repo = MemoryRepository(db_mgr)
+    budget_policy = BudgetPolicy(
+        repository=repo,
+        daily_budget_usd=cfg.ai.cloud.daily_budget_usd,
+        monthly_budget_usd=cfg.ai.cloud.monthly_budget_usd,
+    )
+    budget_avail, budget_reason, spending = budget_policy.is_budget_available()
+
+    # Local backend health
+    local_backend = LocalAiBackend(
+        endpoint=cfg.ai.local.endpoint,
+        model=cfg.ai.local.model,
+        timeout_seconds=cfg.ai.local.timeout_seconds,
+    )
+    local_health = local_backend.health() if cfg.ai.local.enabled else BackendHealth(ServiceStatus.DISABLED, "Disabled in config")
+
+    # LAN Brain health
+    lan_backend = LanBrainAiBackend(
+        endpoint=cfg.ai.lan.endpoint,
+        model=cfg.ai.lan.model,
+        trusted=cfg.ai.lan.trusted,
+        timeout_seconds=cfg.ai.lan.timeout_seconds,
+    )
+    lan_health = lan_backend.health() if cfg.ai.lan.enabled else BackendHealth(ServiceStatus.DISABLED, "Disabled in config")
+
+    # Cloud backend health
+    secret_resolver = SecretResolver()
+    has_key = secret_resolver.resolve(
+        env_var=cfg.ai.cloud.api_key_env,
+        file_name=cfg.ai.cloud.api_key_file,
+    ) is not None
+
+    cloud_backend = CloudAiBackend(
+        endpoint=cfg.ai.cloud.endpoint,
+        model=cfg.ai.cloud.model,
+        api_key_env=cfg.ai.cloud.api_key_env,
+        api_key_file=cfg.ai.cloud.api_key_file,
+        secrets_resolver=secret_resolver,
+        timeout_seconds=cfg.ai.cloud.timeout_seconds,
+        provider_name=cfg.ai.cloud.provider,
+        input_cost_per_million=cfg.ai.cloud.input_cost_per_million,
+        output_cost_per_million=cfg.ai.cloud.output_cost_per_million,
+    )
+    cloud_health = cloud_backend.health() if cfg.ai.cloud.enabled else BackendHealth(ServiceStatus.DISABLED, "Disabled in config")
+
+    report: dict[str, Any] = {
+        "node_profile": cfg.node.profile.value,
+        "default_provider": cfg.ai.provider,
+        "allow_cloud": cfg.ai.allow_cloud,
+        "local": {
+            "enabled": cfg.ai.local.enabled,
+            "endpoint": cfg.ai.local.endpoint,
+            "model": cfg.ai.local.model,
+            "status": local_health.status.value,
+            "detail": local_health.detail,
+        },
+        "lan_brain": {
+            "enabled": cfg.ai.lan.enabled,
+            "endpoint": cfg.ai.lan.endpoint,
+            "model": cfg.ai.lan.model,
+            "trusted": cfg.ai.lan.trusted,
+            "status": lan_health.status.value,
+            "detail": lan_health.detail,
+        },
+        "cloud": {
+            "enabled": cfg.ai.cloud.enabled,
+            "provider": cfg.ai.cloud.provider,
+            "endpoint": cfg.ai.cloud.endpoint,
+            "model": cfg.ai.cloud.model,
+            "api_key_configured": has_key,
+            "status": cloud_health.status.value,
+            "detail": cloud_health.detail,
+        },
+        "budget": {
+            "daily_spent_usd": spending["daily_spent_usd"],
+            "daily_limit_usd": cfg.ai.cloud.daily_budget_usd,
+            "monthly_spent_usd": spending["monthly_spent_usd"],
+            "monthly_limit_usd": cfg.ai.cloud.monthly_budget_usd,
+            "budget_available": budget_avail,
+            "reason_code": budget_reason,
+        },
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+
+    print("==================================================================")
+    print(" AILEN AI Diagnostics — Hybrid AI Router & Providers")
+    print("==================================================================")
+    print(f" Perfil de Dispositivo : {cfg.node.profile.value}")
+    print(f" Proveedor por defecto : {cfg.ai.provider} | Allow Cloud: {cfg.ai.allow_cloud}")
+    print("------------------------------------------------------------------")
+    print(f" Local LLM Server      : {'ENABLED' if cfg.ai.local.enabled else 'DISABLED'} | Status: {local_health.status.value} ({local_health.detail})")
+    print(f"   Endpoint: {cfg.ai.local.endpoint} | Model: {cfg.ai.local.model}")
+    print(f" LAN Brain Server      : {'ENABLED' if cfg.ai.lan.enabled else 'DISABLED'} | Status: {lan_health.status.value} ({lan_health.detail})")
+    print(f"   Endpoint: {cfg.ai.lan.endpoint} | Trusted: {cfg.ai.lan.trusted} | Model: {cfg.ai.lan.model}")
+    print(f" Cloud Provider        : {'ENABLED' if cfg.ai.cloud.enabled else 'DISABLED'} | Status: {cloud_health.status.value} ({cloud_health.detail})")
+    print(f"   Endpoint: {cfg.ai.cloud.endpoint} | Model: {cfg.ai.cloud.model} | API Key: {'CONFIGURED' if has_key else 'NOT FOUND'}")
+    print("------------------------------------------------------------------")
+    print(f" Presupuesto Cloud     : {'DISPONIBLE' if budget_avail else 'EXCEDIDO (' + budget_reason + ')'}")
+    print(f"   Gasto Hoy: ${spending['daily_spent_usd']:.4f} / ${cfg.ai.cloud.daily_budget_usd:.2f}")
+    print(f"   Gasto Mes: ${spending['monthly_spent_usd']:.4f} / ${cfg.ai.cloud.monthly_budget_usd:.2f}")
+    print("==================================================================")
+    return 0
+
+
 def cmd_demo_vad(args: argparse.Namespace) -> int:
     """Run real-time or synthetic VAD demo."""
     import time
@@ -700,6 +833,137 @@ def cmd_demo_tts(args: argparse.Namespace, config_path: str | None) -> int:
     return 0
 
 
+def cmd_demo_ai(args: argparse.Namespace, config_path: str | None) -> int:
+    """Run AI routing and inference demo."""
+    from ailen.ai.budget import BudgetPolicy
+    from ailen.ai.cloud_backend import CloudAiBackend
+    from ailen.ai.context import AiContextBuilder
+    from ailen.ai.fake import FakeAiBackend
+    from ailen.ai.lan_backend import LanBrainAiBackend
+    from ailen.ai.local_backend import LocalAiBackend
+    from ailen.ai.orchestrator import AiOrchestrator
+    from ailen.ai.router import RouteRequest, RuleBasedRouter
+    from ailen.core.config import load_config
+    from ailen.domain.enums import DeviceProfile, PrivacyLevel, SocialMode
+    from ailen.infrastructure.sqlite.connection import SQLiteManager
+    from ailen.memory.repository import MemoryRepository
+
+    cfg = load_config(config_path)
+    prompt = getattr(args, "prompt", "Hola")
+    dry_run = getattr(args, "dry_run", False)
+    mode_str = getattr(args, "mode", "WORKSHOP")
+    privacy_str = getattr(args, "privacy", "PRIVATE")
+    profile_str = getattr(args, "profile", None)
+    intent_str = getattr(args, "intent", "chat")
+
+    try:
+        social_mode = SocialMode(mode_str)
+    except ValueError:
+        social_mode = SocialMode.WORKSHOP
+
+    try:
+        privacy_level = PrivacyLevel(privacy_str)
+    except ValueError:
+        privacy_level = PrivacyLevel.PRIVATE
+
+    profile = cfg.node.profile
+    if profile_str:
+        try:
+            profile = DeviceProfile(profile_str)
+        except ValueError:
+            pass
+
+    db_mgr = SQLiteManager(cfg.memory.sqlite_path)
+    repo = MemoryRepository(db_mgr)
+    budget_policy = BudgetPolicy(
+        repository=repo,
+        daily_budget_usd=cfg.ai.cloud.daily_budget_usd,
+        monthly_budget_usd=cfg.ai.cloud.monthly_budget_usd,
+    )
+    budget_avail, _budget_reason, _ = budget_policy.is_budget_available()
+
+    router = RuleBasedRouter()
+    context_builder = AiContextBuilder(
+        repository=repo,
+        default_identity_name=cfg.identity.display_name,
+    )
+
+    # Route decision
+    route_req = RouteRequest(
+        intent=intent_str,
+        profile=profile,
+        privacy_level=privacy_level,
+        internet_available=cfg.ai.allow_cloud,
+        lan_brain_available=cfg.ai.lan.enabled,
+        lan_brain_trusted=cfg.ai.lan.trusted,
+        local_backend_available=cfg.ai.local.enabled,
+        cloud_allowed=cfg.ai.cloud.enabled and cfg.ai.allow_cloud,
+        budget_exceeded=not budget_avail,
+    )
+    plan = router.route(route_req)
+
+    ai_req = context_builder.build_request(
+        user_message=prompt,
+        mode=social_mode,
+        privacy_level=privacy_level,
+        identity_name=cfg.identity.display_name,
+        destination=plan.primary_backend,
+        lan_trusted=cfg.ai.lan.trusted,
+    )
+
+    print("==========================================================")
+    print(" AILEN AI Demo — Hybrid Routing & Context")
+    print(f" Mensaje: \"{prompt}\"")
+    print(f" Perfil: {profile.value} | Modo: {social_mode.value} | Privacidad: {privacy_level.value}")
+    print(f" Destino Primario : {plan.primary_backend.upper()}")
+    print(f" Fallbacks        : {[fb.upper() for fb in plan.fallback_backends]}")
+    print(f" Motivo (Reason)  : {plan.reason_code}")
+    print(f" Decisión Privacy : {plan.privacy_decision}")
+    print(f" Memorias Context : {len(ai_req.retrieved_memory)} ítems")
+    print("==========================================================")
+
+    if dry_run:
+        print("[DRY-RUN] Decisión de enrutamiento completada sin llamadas de red.")
+        return 0
+
+    # Build orchestrator with active backends (or fake fallback)
+    backends: dict[str, Any] = {}
+    if cfg.ai.local.enabled:
+        backends["local"] = LocalAiBackend(
+            endpoint=cfg.ai.local.endpoint,
+            model=cfg.ai.local.model,
+            timeout_seconds=cfg.ai.local.timeout_seconds,
+        )
+    if cfg.ai.lan.enabled:
+        backends["lan_brain"] = LanBrainAiBackend(
+            endpoint=cfg.ai.lan.endpoint,
+            model=cfg.ai.lan.model,
+            trusted=cfg.ai.lan.trusted,
+            timeout_seconds=cfg.ai.lan.timeout_seconds,
+        )
+    if cfg.ai.cloud.enabled:
+        backends["cloud"] = CloudAiBackend(
+            endpoint=cfg.ai.cloud.endpoint,
+            model=cfg.ai.cloud.model,
+            api_key_env=cfg.ai.cloud.api_key_env,
+            api_key_file=cfg.ai.cloud.api_key_file,
+            timeout_seconds=cfg.ai.cloud.timeout_seconds,
+            provider_name=cfg.ai.cloud.provider,
+            input_cost_per_million=cfg.ai.cloud.input_cost_per_million,
+            output_cost_per_million=cfg.ai.cloud.output_cost_per_million,
+        )
+    if not backends:
+        backends["local"] = FakeAiBackend(canned_response="Respuesta simulada local (sin servidor configurado)")
+        backends["fake"] = backends["local"]
+
+    orchestrator = AiOrchestrator(backends=backends, router=router, repository=repo)
+    resp, _exec_plan = orchestrator.execute(ai_req, plan=plan)
+
+    print(f"Respuesta ({resp.provider}/{resp.model}): \"{resp.text}\"")
+    print(f"Latencia: {resp.latency_ms:.1f}ms | Tokens In/Out: {resp.usage.input_tokens}/{resp.usage.output_tokens} | Finish: {resp.finish_reason}")
+    return 0
+
+
 def cmd_demo(args: argparse.Namespace, config_path: str | None) -> int:
     """Execute demo subcommand."""
     target = getattr(args, "demo_target", None)
@@ -713,7 +977,9 @@ def cmd_demo(args: argparse.Namespace, config_path: str | None) -> int:
         return cmd_demo_stt(args, config_path)
     elif target == "tts":
         return cmd_demo_tts(args, config_path)
-    print("Uso: ailen demo [face|vision|vad|stt|tts]")
+    elif target == "ai":
+        return cmd_demo_ai(args, config_path)
+    print("Uso: ailen demo [face|vision|vad|stt|tts|ai]")
     return 1
 
 
@@ -732,8 +998,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_diagnose_hardware(args)
         elif target == "audio":
             return cmd_diagnose_audio(args, args.config_path)
+        elif target == "ai":
+            return cmd_diagnose_ai(args, args.config_path)
         else:
-            print("Use: ailen diagnose [hardware|audio]")
+            print("Use: ailen diagnose [hardware|audio|ai]")
             return 1
 
     if args.command == "config":

@@ -64,6 +64,21 @@
 - [ ] Modos sociales `WORKSHOP`, `SHOP`, `HOME`, `PUBLIC`, `PRIVATE`.
 - [ ] Evitar exposición de memoria privada en modo público.
 
+## R3B — Lab Mode y runtime local adaptativo — OBJETIVO 0.3.x
+
+- [ ] `ailen lab start` sin cambios persistentes del SO.
+- [ ] validar ejecución de laboratorio en Linux Mint.
+- [ ] validar ejecución de laboratorio en Windows 11.
+- [ ] normalizar detección multiplataforma de CPU/RAM/GPU/VRAM/disco/audio/cámara/display.
+- [ ] Model Catalog versionado con artefactos aprobados y hashes.
+- [ ] Model Planner explicable por hardware/perfil.
+- [ ] descarga segura con consentimiento explícito en Lab Mode.
+- [ ] cache/model store local.
+- [ ] selección automática de runtime/modelo/quantización local.
+- [ ] conectar el backend elegido al AI Router sin acoplar identidad a modelo.
+- [ ] primera prueba visible: rostro + cámara + micrófono + logs + LLM local/cloud fallback.
+- [ ] registrar benchmarks reales de los equipos laboratorio sin confundirlos con hardware objetivo comercial.
+
 ## R4 — Herramientas y comportamiento útil — OBJETIVO 0.3/0.4.x
 
 - [ ] Música local/stream mediante herramienta controlada.
@@ -100,11 +115,17 @@
 
 ## R6 — Instalación appliance y actualizaciones — OBJETIVO 0.5.x
 
-- [ ] Instalador Debian 13 minimal.
-- [ ] Usuario dedicado.
-- [ ] Arranque directo a AILEN.
+- [ ] Provisionador Debian 13 minimal idempotente y auditable.
+- [ ] Preflight y selección automática de `DeviceProfile`.
+- [ ] Usuario/grupo dedicado y permisos de hardware.
+- [ ] Arranque directo a AILEN sin login interactivo obligatorio.
+- [ ] Mantener vía de recuperación administrativa segura.
 - [ ] Sin entorno de escritorio pesado.
-- [ ] Política de suspensión/blanking.
+- [ ] Configurar suspensión/hibernación, política de tapa y blanking para appliance.
+- [ ] Instalar modelos aprobados según manifest/perfil.
+- [ ] Self-test/health check antes de marcar instalación completa.
+- [ ] Reinicio automático al finalizar provisionado exitoso.
+- [ ] Primer boot entra directamente a la experiencia AILEN.
 - [ ] Servicios systemd y watchdog.
 - [ ] Separar releases de datos persistentes.
 - [ ] Manifest por arquitectura/perfil.

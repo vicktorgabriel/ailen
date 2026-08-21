@@ -52,6 +52,43 @@ class TestConfig(unittest.TestCase):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+    def test_nested_ai_config_round_trip(self):
+        cfg = AILENConfig()
+        cfg.ai.local.enabled = True
+        cfg.ai.local.endpoint = "http://127.0.0.1:11434/v1"
+        cfg.ai.local.model = "test-local"
+        cfg.ai.lan.enabled = True
+        cfg.ai.lan.endpoint = "http://192.168.1.50:8080/v1"
+        cfg.ai.lan.model = "test-lan"
+        cfg.ai.cloud.enabled = True
+        cfg.ai.cloud.endpoint = "https://example.invalid/v1"
+        cfg.ai.cloud.model = "test-cloud"
+        cfg.ai.cloud.input_cost_per_million = 0.123
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "ailen.toml"
+            save_config(cfg, target)
+            text = target.read_text(encoding="utf-8")
+            self.assertIn("[ai.local]", text)
+            self.assertIn("[ai.lan]", text)
+            self.assertIn("[ai.cloud]", text)
+            loaded = load_config(target)
+
+        self.assertTrue(loaded.ai.local.enabled)
+        self.assertEqual(loaded.ai.local.model, "test-local")
+        self.assertEqual(loaded.ai.lan.endpoint, "http://192.168.1.50:8080/v1")
+        self.assertEqual(loaded.ai.cloud.model, "test-cloud")
+        self.assertEqual(loaded.ai.cloud.input_cost_per_million, 0.123)
+
+    def test_enabled_ai_backend_requires_valid_endpoint_and_model(self):
+        cfg = AILENConfig()
+        cfg.ai.cloud.enabled = True
+        cfg.ai.cloud.endpoint = "not-a-url"
+        cfg.ai.cloud.model = ""
+        errors = validate_config(cfg)
+        self.assertTrue(any("ai.cloud.endpoint" in e for e in errors))
+        self.assertTrue(any("ai.cloud.model" in e for e in errors))
+
     def test_validation_errors(self):
         cfg = AILENConfig()
         cfg.schema_version = 0

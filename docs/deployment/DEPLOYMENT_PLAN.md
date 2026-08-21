@@ -2,7 +2,7 @@
 
 ## Objetivo
 
-Convertir Debian 13 minimal en un appliance que arranque directamente al asistente, sea administrable por LAN y pueda actualizarse sin intervención técnica frecuente.
+Convertir Debian 13 minimal en un appliance que arranque directamente al asistente, sea administrable por LAN y pueda actualizarse sin intervención técnica frecuente. La separación entre equipos laboratorio y unidades dedicadas está definida en `LAB_AND_APPLIANCE_MODES.md`.
 
 ## Instalación objetivo
 

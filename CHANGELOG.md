@@ -8,7 +8,21 @@ El proyecto usa versionado semántico durante desarrollo, con prereleases cuando
 
 ### Added
 
-- **R2B Audio Local, VAD, STT Baseline, TTS Baseline y Half-Duplex Turn Gate**:
+- **R3A AI Router Híbrido, Políticas de Privacidad Outbound, Presupuesto Cloud y Proveedores Local/LAN/Cloud**:
+  - Router determinista de IA `RuleBasedRouter` con soporte para todos los perfiles de hardware (`SATELLITE`, `CLOUD`, `HYBRID`, `LOCAL`, `LAN_BRAIN`), cadenas de fallback explícitas y códigos de razón canónicos (`RULE_ONLY_INTENT`, `CLOUD_FAST_PATH`, `CLOUD_BUDGET_EXCEEDED`, `PRIVATE_REMOTE_BLOCKED`, `ALL_BACKENDS_UNAVAILABLE`, etc.).
+  - Política de privacidad outbound `OutboundPrivacyPolicy` fail-closed: `RESTRICTED`/`PRIVATE` nunca se rebajan silenciosamente a `PUBLIC`; Cloud y LAN no confiable quedan bloqueados fuera del LLM.
+  - `SecretResolver` para API keys desde variables de entorno o archivos owner-only; en POSIX rechaza archivos accesibles por grupo/mundo y Cloud falla cerrado sin credencial/configuración suficiente.
+  - `BudgetPolicy` circuit breaker: `0 USD` significa no gastar, `None` significa sin límite interno y precios cloud desconocidos no se interpretan como cero; los precios vigentes deben configurarse explícitamente.
+  - Constructor de contexto `AiContextBuilder` que produce prompts mínimos acotados en caracteres y tokens, integrando memorias y datos de negocio filtrados por `SocialPrivacyPolicy` y `OutboundPrivacyPolicy` (`src/ailen/ai/context.py`).
+  - Cliente HTTP genérico OpenAI-compatible `GenericOpenAiBackend` construido exclusivamente con la librería estándar de Python (`urllib.request`), con timeouts estrictos, manejo de errores de red y parseo resiliente de respuestas y tool calls (`src/ailen/ai/http_backend.py`).
+  - Backends especializados para servidor HTTP local (`LocalAiBackend`), LAN Brain con awareness de trust boundary (`LanBrainAiBackend`) y Cloud con cálculo de costos por tokens (`CloudAiBackend`).
+  - Orquestador de inferencia `AiOrchestrator` que ejecuta la secuencia de backends primario y fallbacks, registra telemetría de tokens/costo en SQLite y publica eventos en `EventBus` (`src/ailen/ai/orchestrator.py`).
+  - Coordinador conversacional end-to-end `ConversationCoordinator` conectando `Transcript` STT -> `AiContextBuilder` -> `RuleBasedRouter` -> `AiOrchestrator` -> `AudioInteractionCoordinator.speak()` (`src/ailen/core/conversation.py`).
+  - Configuración extendida `[ai]`, `[ai.local]`, `[ai.lan]`, `[ai.cloud]`, serialización TOML recursiva/round-trip y validación de endpoint/model/pricing cuando un backend está habilitado.
+  - Nuevos comandos CLI: `ailen diagnose ai` y `ailen demo ai "<prompt>" [--dry-run]`.
+  - Benchmark reproducible del AI Router (`tools/benchmark_ai_router.py`) con reportes DEV en `docs/benchmarks/dev_ai_router_benchmark.md` y `.json`; las cifras se regeneran y no se extrapolan a hardware objetivo.
+  - Documentos de arquitectura y POCs: `docs/research/AI_ROUTER_POC.md`, `docs/research/LOCAL_LLM_BACKEND_POC.md`, `docs/research/LAN_BRAIN_POC.md`, `docs/research/CLOUD_PROVIDER_POC.md`, `ADR-009`.
+  - Estrategia formal `Lab Mode` vs `Appliance Mode` en `docs/deployment/LAB_AND_APPLIANCE_MODES.md`: Mint/Windows no se modifican persistentemente; Debian dedicado será provisionado de extremo a extremo más adelante.
   - Formato canónico de audio establecido: PCM 16-bit signed LE, mono, 16000 Hz (`src/ailen/audio/pcm.py`) con cálculo matemático de energía RMS y utilidades para tests de tonos/silencios.
   - Contratos formales y dataclasses de audio I/O, VAD, STT y TTS (`src/ailen/audio/contracts.py`).
   - VAD liviano en Python puro (`EnergyVad`) con umbral configurable y hangover para detección robusta sin dependencias de ML pesado; benchmark lógico DEV documentado sin extrapolar CPU a hardware objetivo.

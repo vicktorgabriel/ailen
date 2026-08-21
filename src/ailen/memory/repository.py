@@ -205,6 +205,10 @@ class MemoryRepository:
                 for r in rows
             ]
 
+    def get_recent_memories(self, limit: int = 10, scope: PrivacyLevel | None = None) -> list[MemoryItem]:
+        """Fetch most recently stored memories."""
+        return self.search_memories(query="", scope=scope, limit=limit)
+
     # -------------------------------------------------------------------------
     # Business Facts
     # -------------------------------------------------------------------------
@@ -377,3 +381,19 @@ class MemoryRepository:
             latency_ms=latency_ms,
             created_at=now,
         )
+
+    def get_ai_usage_totals(self, since_iso: str | None = None) -> tuple[int, int, float]:
+        """Return total (input_tokens, output_tokens, estimated_cost) since given ISO timestamp."""
+        query = "SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(estimated_cost), 0.0) FROM ai_usage"
+        params: list[str] = []
+        if since_iso:
+            query += " WHERE created_at >= ?"
+            params.append(since_iso)
+
+        with self.db_manager.connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            row = cursor.fetchone()
+            if row:
+                return int(row[0]), int(row[1]), float(row[2])
+            return 0, 0, 0.0

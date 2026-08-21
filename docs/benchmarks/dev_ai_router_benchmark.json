@@ -1,0 +1,14 @@
+{
+  "timestamp_utc": "2026-08-21T21:19:56Z",
+  "total_operations": 12000,
+  "total_time_seconds": 0.0321,
+  "throughput_ops_sec": 374057.27,
+  "latency_us": {
+    "avg": 2.522,
+    "p50": 2.17,
+    "p95": 2.87,
+    "p99": 5.93,
+    "min": 0.91,
+    "max": 1978.512
+  }
+}

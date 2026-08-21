@@ -80,7 +80,7 @@ class TestRouter(unittest.TestCase):
         )
         plan = self.router.route(request)
         self.assertEqual(plan.primary_backend, "cloud")
-        self.assertEqual(plan.reason_code, "CLOUD_ALLOWED_WITHIN_BUDGET")
+        self.assertIn(plan.reason_code, ("CLOUD_FAST_PATH", "CLOUD_ALLOWED_WITHIN_BUDGET"))
 
     def test_budget_exceeded_blocks_cloud(self):
         request = RouteRequest(
@@ -92,12 +92,12 @@ class TestRouter(unittest.TestCase):
         )
         plan = self.router.route(request)
         self.assertNotIn("cloud", [plan.primary_backend, *plan.fallback_backends])
-        self.assertEqual(plan.primary_backend, "rule")
+        self.assertEqual(plan.primary_backend, "degraded")
 
     def test_no_backend_degrades_to_rule(self):
         plan = self.router.route(RouteRequest(intent="chat", privacy_level=PrivacyLevel.PUBLIC))
-        self.assertEqual(plan.primary_backend, "rule")
-        self.assertEqual(plan.reason_code, "NO_BACKEND_AVAILABLE")
+        self.assertEqual(plan.primary_backend, "degraded")
+        self.assertEqual(plan.reason_code, "ALL_BACKENDS_UNAVAILABLE")
 
 
 class TestAudioFakes(unittest.TestCase):

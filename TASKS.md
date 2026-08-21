@@ -6,9 +6,9 @@
 
 Versión: `0.1.0-dev.0`
 
-Milestone activo: `R3A — AI Router híbrido y proveedores`.
+Milestone activo: `R3B — Lab Mode + detección de hardware + Model Manager local`.
 
-Los slices de software de R1, R2A y R2B quedaron integrados y auditados. R2B cerró con 213 tests verdes antes de su commit.
+Los slices R1, R2A, R2B y R3A quedaron integrados y auditados. R3A cerró con 254 tests tras la revisión final y queda como baseline para el runtime de laboratorio.
 
 ## Bloque 0 — Antes de código
 
@@ -172,17 +172,48 @@ Debe quedar funcionando:
 - [x] Benchmark reproducible de audio y VAD en DEV machine (`docs/benchmarks/dev_audio_benchmark.md`).
 - [x] Documentos de investigación (`docs/research/AUDIO_IO_POC.md`, `docs/research/STT_BACKEND_POC.md`, `docs/research/TTS_BACKEND_POC.md`).
 
-## Bloque 9 — Próximos pasos (R3A / AI Router híbrido)
+## Bloque 9 — AI Router Híbrido y Proveedores Local/LAN/Cloud (R3A)
 
-- [ ] AI Router v1 con rutas `RULE_ONLY`, `LOCAL`, `LAN`, `CLOUD` y fallback explícito.
-- [ ] Cloud provider rápido/económico detrás de contrato genérico, sin acoplar identidad al proveedor.
-- [ ] Local LLM backend mediante proceso/HTTP local intercambiable (llama.cpp/Ollama como candidatos, no dependencia obligatoria).
-- [ ] LAN Brain backend opcional con health/timeout/fallback.
-- [ ] Presupuesto cloud, métricas de tokens/costo/latencia y reason codes.
-- [ ] Construcción de contexto mínimo respetando `SocialPrivacyPolicy` antes de cualquier llamada remota.
-- [ ] Integración Transcript -> AI Router -> TTS usando fakes en tests.
-- [ ] Memory API completa y Personality Engine evolutivo se separan para R3B después de estabilizar routing.
-- [ ] Medición y benchmarks físicos en Banghó Zero G05 y SF20BA.
+- [x] AI Router v1 determinista con matriz completa por `DeviceProfile` (`SATELLITE`, `CLOUD`, `HYBRID`, `LOCAL`, `LAN_BRAIN`) y códigos de razón canónicos (`src/ailen/ai/router.py`).
+- [x] `OutboundPrivacyPolicy` determinista (`PUBLIC`, `RESTRICTED`, `PRIVATE`) que bloquea envíos a Cloud y LAN no confiable (`src/ailen/ai/privacy.py`).
+- [x] `SecretResolver` seguro para API keys desde variables de entorno y archivos `0600`, con enmascaramiento total en logs y reportes (`src/ailen/ai/secrets.py`).
+- [x] `BudgetPolicy` circuit breaker consultando la tabla `ai_usage` en SQLite para frenar cargos cloud automáticamente ante excesos diarios o mensuales (`src/ailen/ai/budget.py`).
+- [x] `AiContextBuilder` construyendo prompts mínimos acotados en caracteres/tokens con filtrado de privacidad social y outbound (`src/ailen/ai/context.py`).
+- [x] Cliente HTTP genérico OpenAI-compatible basado en stdlib (`urllib.request`) sin dependencias pesadas (`GenericOpenAiBackend`).
+- [x] Backends especializados para servidor HTTP local (`LocalAiBackend`), servidor LAN Brain con trust boundary (`LanBrainAiBackend`) y cloud con cost tracking (`CloudAiBackend`).
+- [x] `AiOrchestrator` ejecutando la secuencia de fallback de forma segura y registrando telemetría y eventos en `EventBus` (`src/ailen/ai/orchestrator.py`).
+- [x] `ConversationCoordinator` unificando Transcript STT -> Context -> Router -> Orchestrator -> TTS Output (`src/ailen/core/conversation.py`).
+- [x] Configuración extendida `[ai]`, `[ai.local]`, `[ai.lan]`, `[ai.cloud]` en `src/ailen/core/config.py` y `config/ailen.example.toml`.
+- [x] Comandos CLI `ailen diagnose ai` y `ailen demo ai "<prompt>" [--dry-run]`.
+- [x] Benchmark reproducible DEV del AI Router (`docs/benchmarks/dev_ai_router_benchmark.md`), sin extrapolar cifras a hardware objetivo.
+- [x] Documentos POC (`docs/research/AI_ROUTER_POC.md`, `docs/research/LOCAL_LLM_BACKEND_POC.md`, `docs/research/LAN_BRAIN_POC.md`, `docs/research/CLOUD_PROVIDER_POC.md`).
+- [x] Suite auditada de R3A con 254 tests offline, ruff/mypy/diff-check/wheel en verde tras revisión final.
+
+## Bloque 10 — R3B Lab Mode + Hardware-aware Model Manager
+
+- [ ] formalizar `ailen lab start` sin cambios persistentes del SO.
+- [ ] soporte de laboratorio explícito para Linux Mint y Windows 11.
+- [ ] detectar CPU/arquitectura/RAM/GPU/VRAM/disco/audio/cámara/display de forma multiplataforma.
+- [ ] separar adapters Linux/Windows del Core.
+- [ ] producir `HardwareCapabilityReport` normalizado.
+- [ ] `ModelCatalog` declarativo y versionado.
+- [ ] `ModelPlanner` que elija runtime/modelo/quantización según hardware y perfil.
+- [ ] `ModelPlan` explicable con reason codes.
+- [ ] downloader seguro con HTTPS, tamaño esperado y SHA-256 obligatorio.
+- [ ] consentimiento explícito de descarga en Lab Mode.
+- [ ] cache/model store local sin incluir modelos en Git.
+- [ ] preparar llama.cpp/Ollama u otro runtime desacoplado sin meterlo en Core.
+- [ ] `ailen models plan`, `ailen models list`, `ailen models fetch` o equivalente.
+- [ ] prueba end-to-end fake: detectar hardware -> elegir modelo -> resolver backend local -> ConversationCoordinator.
+- [ ] benchmark DEV sin descargar modelos automáticamente durante tests.
+- [ ] documentar Lab Mode vs Appliance Mode (`docs/deployment/LAB_AND_APPLIANCE_MODES.md`).
+
+## Bloque 11 — R3C Memory API + Personality + Tools
+
+- [ ] Memory API avanzada (consolidación semántica, decaimiento de memoria, tags).
+- [ ] Personality Engine evolutivo con simulación de estados anímicos y límites de personalidad.
+- [ ] Integración de herramientas locales controladas por allowlist.
+- [ ] Medición y benchmarks físicos posteriores en Banghó Zero G05 y SF20BA.
 
 ## Reglas del board
 
