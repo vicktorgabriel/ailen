@@ -1,0 +1,17 @@
+<section class="cards">
+  <article class="card">
+    <h2>Estado</h2>
+    <p class="big" id="assistant-state">{{ assistant_state }}</p>
+    <p class="muted">Perfil {{ profile }} · uptime {{ uptime }}</p>
+  </article>
+  <article class="card">
+    <h2>Salud general</h2>
+    <p class="big status-{{ health_class }}" id="health-overall">{{ health_overall }}</p>
+    <ul class="kv" id="health-components">{{ raw:health_components }}</ul>
+  </article>
+  <article class="card">
+    <h2>Servicios</h2>
+    <ul class="kv" id="services">{{ raw:services }}</ul>
+  </article>
+</section>
+<p class="muted">Datos del estado real del Core. Se actualizan cada 5 s vía <code>/api/status</code>.</p>

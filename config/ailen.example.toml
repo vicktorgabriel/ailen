@@ -1,0 +1,93 @@
+# ==============================================================================
+# AILEN - Configuration Template
+# ==============================================================================
+# Copy this file to config/ailen.toml or /etc/ailen/ailen.toml
+# Do NOT store real API keys or passwords directly in this file.
+
+schema_version = 1
+
+[node]
+node_id = "ailen-bangho-01"
+name = "AILEN Unit"
+profile = "HYBRID"              # SATELLITE, CLOUD, HYBRID, LOCAL, LAN_BRAIN
+data_dir = "data"
+
+[identity]
+# Nombre visible del personaje en ESTA instalación. Es configurable: no asumir
+# que el personaje se llama "Ailén". AILEN es la plataforma, no el personaje.
+display_name = "Asistente"
+
+[display]
+enabled = true
+backend = "auto"               # auto, sdl2, drm, x11, headless
+width = 1280
+height = 720
+fullscreen = true
+fps_limit = 30
+
+[audio]
+input_device = "default"
+output_device = "default"
+input_volume = 80
+output_volume = 80
+music_volume = 60
+
+[vision]
+enabled = true
+camera_device = "/dev/video0"
+fps = 5
+presence_debounce_seconds = 2.0
+min_confidence = 0.5
+
+[speech]
+stt_engine = "mock"            # mock, whisper_cpp, vosk, cloud
+stt_language = "es"
+tts_engine = "mock"            # mock, piper, coqui, cloud
+tts_voice = "es_ES-standard"
+vad_sensitivity = 2
+
+[ai]
+provider = "mock"              # mock, local, lan_brain, cloud
+model = "default"
+max_tokens = 512
+timeout_seconds = 10.0
+daily_budget_usd = 1.0
+allow_cloud = true
+
+[memory]
+sqlite_path = "data/ailen.db"
+fts_enabled = true
+retention_days = 90
+auto_vacuum = true
+
+[personality]
+seed = "ailen-seed-01"
+evolution_enabled = true
+evolution_rate = 1.0
+base_curiosity = 0.7
+base_sociability = 0.6
+base_formality = 0.5
+base_humor = 0.5
+
+[social]
+default_mode = "WORKSHOP"      # HOME, WORKSHOP, SHOP, PUBLIC, PRIVATE, SLEEP
+greeting_cooldown_seconds = 300.0
+auto_greeting_enabled = true
+public_memory_filter = true
+
+[web]
+enabled = true
+host = "127.0.0.1"
+port = 8080
+session_expiry_hours = 24
+rate_limit_rpm = 60
+
+[updates]
+channel = "beta"               # nightly, beta, stable
+auto_check = false
+check_interval_hours = 24
+
+[logging]
+level = "INFO"                 # DEBUG, INFO, WARNING, ERROR, CRITICAL
+json_format = false
+redact_secrets = true

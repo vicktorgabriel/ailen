@@ -1,0 +1,89 @@
+"""Domain enumerations for AILEN."""
+
+from enum import Enum
+
+
+class AssistantState(str, Enum):
+    """Interaction state machine states for the assistant."""
+    BOOTING = "BOOTING"
+    IDLE = "IDLE"
+    ATTENTION = "ATTENTION"
+    LISTENING = "LISTENING"
+    PROCESSING = "PROCESSING"
+    TOOL = "TOOL"
+    SPEAKING = "SPEAKING"
+    SLEEP = "SLEEP"
+    ERROR = "ERROR"
+    DEGRADED = "DEGRADED"
+
+
+class SocialMode(str, Enum):
+    """Social operating mode affecting memory exposure and initiative."""
+    HOME = "HOME"
+    WORKSHOP = "WORKSHOP"
+    SHOP = "SHOP"
+    PUBLIC = "PUBLIC"
+    PRIVATE = "PRIVATE"
+    SLEEP = "SLEEP"
+
+
+class DeviceProfile(str, Enum):
+    """Target device execution profile."""
+    SATELLITE = "SATELLITE"
+    CLOUD = "CLOUD"
+    HYBRID = "HYBRID"
+    LOCAL = "LOCAL"
+    LAN_BRAIN = "LAN_BRAIN"
+
+
+class PrivacyLevel(str, Enum):
+    """Data privacy level."""
+    PUBLIC = "PUBLIC"
+    RESTRICTED = "RESTRICTED"
+    PRIVATE = "PRIVATE"
+
+
+class ServiceStatus(str, Enum):
+    """Health status for individual components and runtime."""
+    HEALTHY = "HEALTHY"
+    DEGRADED = "DEGRADED"
+    UNHEALTHY = "UNHEALTHY"
+    DISABLED = "DISABLED"
+    UNKNOWN = "UNKNOWN"
+
+
+class ErrorCode(str, Enum):
+    """Standardized error codes."""
+    AI_TIMEOUT = "AI_TIMEOUT"
+    AI_BUDGET_EXCEEDED = "AI_BUDGET_EXCEEDED"
+    CLOUD_OFFLINE = "CLOUD_OFFLINE"
+    LAN_BRAIN_OFFLINE = "LAN_BRAIN_OFFLINE"
+    STT_UNAVAILABLE = "STT_UNAVAILABLE"
+    TTS_UNAVAILABLE = "TTS_UNAVAILABLE"
+    CAMERA_UNAVAILABLE = "CAMERA_UNAVAILABLE"
+    AUDIO_DEVICE_MISSING = "AUDIO_DEVICE_MISSING"
+    MEMORY_ERROR = "MEMORY_ERROR"
+    CONFIG_INVALID = "CONFIG_INVALID"
+    TOOL_DENIED = "TOOL_DENIED"
+    TOOL_ARGS_INVALID = "TOOL_ARGS_INVALID"
+    TOOL_TIMEOUT = "TOOL_TIMEOUT"
+    HARDWARE_ERROR = "HARDWARE_ERROR"
+    UNKNOWN_ERROR = "UNKNOWN_ERROR"
+
+
+class EventType(str, Enum):
+    """Core domain event types."""
+    PRESENCE_DETECTED = "PRESENCE_DETECTED"
+    PRESENCE_LOST = "PRESENCE_LOST"
+    WAKE_DETECTED = "WAKE_DETECTED"
+    SPEECH_CAPTURED = "SPEECH_CAPTURED"
+    TRANSCRIPT_READY = "TRANSCRIPT_READY"
+    INTENT_RESOLVED = "INTENT_RESOLVED"
+    TOOL_REQUESTED = "TOOL_REQUESTED"
+    TOOL_COMPLETED = "TOOL_COMPLETED"
+    INFERENCE_REQUESTED = "INFERENCE_REQUESTED"
+    INFERENCE_COMPLETED = "INFERENCE_COMPLETED"
+    SPEECH_STARTED = "SPEECH_STARTED"
+    SPEECH_FINISHED = "SPEECH_FINISHED"
+    STATE_CHANGED = "STATE_CHANGED"
+    ERROR = "ERROR"

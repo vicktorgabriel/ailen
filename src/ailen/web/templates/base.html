@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>{{ title }} · AILEN</title>
+<link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body>
+<header class="topbar">
+  <span class="brand">🔥 AILEN</span>
+  <nav class="nav">
+    <a href="/"{{ raw:nav_dashboard }}>Panel</a>
+    <a href="/config"{{ raw:nav_config }}>Config</a>
+    <a href="/comercio"{{ raw:nav_comercio }}>Comercio</a>
+    <a href="/personalidad"{{ raw:nav_personalidad }}>Personalidad</a>
+    <a href="/ia"{{ raw:nav_ia }}>IA</a>
+    <a href="/audio-camara"{{ raw:nav_audio }}>Audio/Cámara</a>
+    <a href="/sistema"{{ raw:nav_sistema }}>Sistema</a>
+  </nav>
+  <form method="post" action="/logout" class="logout">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <button type="submit">Salir</button>
+  </form>
+</header>
+<main class="content">
+{{ raw:content }}
+</main>
+<footer class="footer">
+  <small>AILEN {{ version }} · nodo {{ node_id }} · panel local</small>
+</footer>
+<script src="/static/js/main.js" defer></script>
+</body>
+</html>

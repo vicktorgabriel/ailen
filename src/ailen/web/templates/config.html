@@ -1,0 +1,14 @@
+<section class="page">
+  <h1>Configuración</h1>
+  <p class="lede">Ajustes administrables del nodo. Todo cambio se valida antes de guardarse.</p>
+  {{ raw:notice }}
+  <form method="post" action="/config" class="settings-form">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    {{ raw:groups }}
+    <div class="form-actions">
+      <button type="submit">Guardar cambios</button>
+    </div>
+  </form>
+  <p class="muted">Host/puerto del panel y ajustes de red se editan sólo en el archivo de
+  configuración (por seguridad aplican al reiniciar). Ningún secreto se muestra en esta vista.</p>
+</section>

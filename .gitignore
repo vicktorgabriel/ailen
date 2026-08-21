@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Build / release
+build/
+dist/
+*.egg-info/
+release/*.tar.gz
+release/*.zip
+
+# Runtime / local data
+var/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+runtime.json
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+config/ailen.toml
+config/*.local.*
+secrets/
+
+# Models / media / captures
+models/
+*.gguf
+captures/
+recordings/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

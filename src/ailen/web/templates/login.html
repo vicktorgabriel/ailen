@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Acceso · AILEN</title>
+<link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body class="login-body">
+<main class="login-card">
+  <h1>🔥 AILEN</h1>
+  {{ raw:notice }}
+  <form method="post" action="/login">
+    <label for="username">Usuario</label>
+    <input type="text" id="username" name="username" value="{{ username }}" autocomplete="username" required>
+    <label for="password">Contraseña de administración</label>
+    <input type="password" id="password" name="password" autocomplete="current-password" required>
+    <button type="submit">Entrar</button>
+  </form>
+</main>
+</body>
+</html>
