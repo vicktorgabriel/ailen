@@ -32,15 +32,13 @@
 - Equipos de 2 GB podrán ser Satellite/Cloud si las mediciones lo permiten.
 - Equipos con pantalla rota pueden reutilizarse mediante monitor externo.
 
-### Memoria y personalidad
+### Presencia física y Face (R2A)
 
-- SQLite es baseline.
-- FTS5 se probará antes de bases vectoriales.
-- La personalidad tendrá semilla y evolución persistente, pero no controlará permisos, seguridad ni herramientas.
-- Los modos públicos/comerciales (`PUBLIC`/`SHOP`) aíslan recuerdos privados mediante `SocialPrivacyPolicy` determinista fuera del LLM.
-- Se implementa `EventBus` ligero in-memory con aislamiento de excepciones en listeners y soporte de correlation IDs.
-- Se implementa `SocialEngine` determinista (saludos, cooldowns y deduplicación por sesión de presencia) sin acoplar a textos comerciales hardcodeados ni a LLMs. El debounce temporal de cámara queda para el backend Vision real.
-- Se desacopla el nombre visible del personaje (`display_name`) del nombre de plataforma/producto (`AILEN`) y del identificador interno, sin género obligatorio ni inferido.
+- Se separa la capa lógica de animación (`FaceAnimator`) y los modelos de pose geométrica (`FacePose`) de cualquier biblioteca gráfica. El motor es determinista, corre sin pantalla y genera poses normalizadas (-1..1 / 0..1).
+- Backend gráfico POC: se adopta `TkinterFaceController` como renderer interactivo de prueba, sin dependencia pip pero con requisito de `python3-tk` y un stack gráfico del sistema. No se fijan todavía cifras de RAM/CPU ni compatibilidad final de appliance hasta medir en hardware objetivo. `NullFaceController` mantiene soporte headless de primera clase.
+- Detección de presencia POC: se utiliza clasificador Haar cascade de OpenCV a 5 FPS y 320px como dependencia opcional `[vision]`. Se prohíbe el reconocimiento de identidad, biometría y almacenamiento de imágenes.
+- Debounce temporal (`VisionDebouncer`): se separa la observación instantánea de cámara del estado estable de presencia usando `vision.presence_debounce_seconds` (2.0s), previniendo falsos positivos de un solo frame y dropouts momentáneos.
+- `InteractionCoordinator` integra la presencia debounced con `StateManager`, `SocialEngine` y actualiza la mirada (`gaze`) y expresiones en `FaceController`.
 
 ### Web / Admin / Seguridad
 

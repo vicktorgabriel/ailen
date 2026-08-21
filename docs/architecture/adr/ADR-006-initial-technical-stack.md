@@ -62,3 +62,17 @@ Esta elección es **provisional y reemplazable**: la lógica vive en
 `ailen.web.app.AILENWebApp` (request/response agnósticos de transporte), así
 migrar a un framework ligero (Starlette/Flask/etc.) no reescribe handlers.
 La decisión definitiva queda sujeta a benchmark en la Banghó y cierre de este ADR.
+
+## Nota de implementación provisional (Face y Visión POC R2A, 2026-08-21)
+
+1. **Rostro:**
+   - Se separó la lógica de animación (`FaceAnimator`) y los modelos de pose (`FacePose`) de cualquier biblioteca gráfica.
+   - Backend GUI POC: `TkinterFaceController` sin dependencia pip, pero requiere `python3-tk` y un stack gráfico del sistema. Es una elección provisional para validar contratos/render 2D; RAM/CPU y compatibilidad final de kiosk/appliance quedan pendientes de benchmark físico.
+   - Backend Headless: `NullFaceController` permite operar sin renderer gráfico; su overhead exacto se medirá en hardware objetivo y no se declara como 0 MB.
+   - Documentación de alternativas: `docs/research/FACE_BACKEND_POC.md`.
+
+2. **Visión y Presencia:**
+   - Detección de presencia basada en Haar cascades de OpenCV (`opencv-python-headless` como dependencia opcional `[vision]`), ejecutándose a baja resolución (320px) y 5 FPS.
+   - `VisionDebouncer` desacopla la presencia instantánea de la presencia estable para evitar oscilaciones espurias.
+   - Degrada a modo deshabilitado/simulado si la cámara o OpenCV no están presentes.
+   - Documentación de alternativas: `docs/research/VISION_BACKEND_POC.md`.

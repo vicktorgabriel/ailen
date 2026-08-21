@@ -58,6 +58,9 @@ class TestConfig(unittest.TestCase):
         cfg.node.node_id = "   "
         cfg.display.width = -100
         cfg.audio.output_volume = 150
+        cfg.vision.fps = 0
+        cfg.vision.presence_debounce_seconds = -1.0
+        cfg.vision.min_confidence = 2.0
         cfg.logging.level = "INVALID_LEVEL"
 
         errors = validate_config(cfg)
@@ -65,6 +68,9 @@ class TestConfig(unittest.TestCase):
         self.assertTrue(any("node.node_id" in e for e in errors))
         self.assertTrue(any("display width" in e for e in errors))
         self.assertTrue(any("audio.output_volume" in e for e in errors))
+        self.assertTrue(any("vision.fps" in e for e in errors))
+        self.assertTrue(any("presence_debounce" in e for e in errors))
+        self.assertTrue(any("min_confidence" in e for e in errors))
         self.assertTrue(any("Invalid logging level" in e for e in errors))
 
     def test_explicit_missing_config_fails(self):

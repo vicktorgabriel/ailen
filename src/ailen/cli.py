@@ -91,6 +91,23 @@ def create_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--host", help="Override web host")
     serve_parser.add_argument("--port", type=int, help="Override web port")
 
+    # Command: demo
+    demo_parser = subparsers.add_parser("demo", help="Interactive physical presence and face demos")
+    demo_sub = demo_parser.add_subparsers(dest="demo_target", help="Demo target component")
+
+    # Subcommand: demo face
+    demo_face = demo_sub.add_parser("face", help="Interactive Face animator and renderer demo")
+    demo_face.add_argument("--headless", action="store_true", help="Run headless in terminal without opening GUI window")
+    demo_face.add_argument("--gui", action="store_true", help="Force opening GUI window (Tkinter)")
+    demo_face.add_argument("--duration", type=float, default=None, help="Run demo for N seconds and exit")
+    demo_face.add_argument("--fps", type=int, default=30, help="Target FPS (default: 30)")
+
+    # Subcommand: demo vision
+    demo_vis = demo_sub.add_parser("vision", help="Camera presence detection and debounce demo")
+    demo_vis.add_argument("--camera", default="/dev/video0", help="Camera device path or index (default: /dev/video0)")
+    demo_vis.add_argument("--debounce", type=float, default=2.0, help="Debounce window in seconds (default: 2.0)")
+    demo_vis.add_argument("--duration", type=float, default=10.0, help="Run duration in seconds (default: 10.0)")
+
     return parser
 
 
@@ -268,6 +285,153 @@ def cmd_serve(args: argparse.Namespace, config_path: str | None) -> int:
     return 0
 
 
+def cmd_demo_face(args: argparse.Namespace) -> int:
+    """Run interactive Face animator demo."""
+    from ailen.face.animator import FaceAnimator
+    from ailen.face.gui import TkinterFaceController
+
+    force_headless = getattr(args, "headless", False)
+    force_gui = getattr(args, "gui", False)
+    fps = max(1, getattr(args, "fps", 30))
+    duration = getattr(args, "duration", None)
+
+    gui = TkinterFaceController(fps_limit=fps)
+    can_gui = gui.is_available() and not force_headless
+
+    if force_gui and not gui.is_available():
+        print("Aviso: Tkinter no está disponible en este entorno; ejecutando en modo headless.")
+
+    if can_gui and (force_gui or not force_headless):
+        try:
+            print("==========================================================")
+            print(" AILEN Face POC — Demo interactiva (Tkinter 2D Canvas)")
+            print(" Controles de teclado:")
+            print("   1..8  : IDLE, ATTENTION, LISTENING, PROCESSING, SPEAKING, SLEEP, WAKE, ERROR")
+            print("   Flechas: Orientar mirada (Gaze)")
+            print("   Espacio: Nivel de apertura de boca (habla)")
+            print("   Q / Esc: Salir")
+            print("==========================================================")
+            gui.start_window(interactive_keys=True)
+            if duration:
+                gui.schedule_close(int(duration * 1000))
+            gui.mainloop()
+            return 0
+        except Exception as e:  # noqa: BLE001
+            print(f"No se pudo iniciar ventana gráfica ({e}); pasando a modo headless.")
+
+    # Headless loop
+    import time
+
+    print("==========================================================")
+    print(f" AILEN Face POC — Demo Headless (FPS objetivo: {fps})")
+    print(" Presioná Ctrl+C para detener.")
+    print("==========================================================")
+    animator = FaceAnimator()
+    start_t = time.time()
+    frame_count = 0
+    interval = 1.0 / fps
+
+    states = [
+        (0.0, AssistantState.IDLE, (0.0, 0.0), 0.0),
+        (2.0, AssistantState.ATTENTION, (0.4, 0.1), 0.0),
+        (4.0, AssistantState.LISTENING, (0.4, 0.1), 0.0),
+        (6.0, AssistantState.PROCESSING, (-0.2, 0.5), 0.0),
+        (8.0, AssistantState.SPEAKING, (0.0, 0.0), 0.7),
+        (10.0, AssistantState.SLEEP, (0.0, -0.2), 0.0),
+        (12.0, AssistantState.IDLE, (0.0, 0.0), 0.0),
+    ]
+    cur_idx = 0
+
+    try:
+        while True:
+            now = time.time()
+            elapsed = now - start_t
+            if duration and elapsed >= duration:
+                break
+
+            # Cycle demo states every few seconds in headless mode
+            if cur_idx < len(states) - 1 and elapsed >= states[cur_idx + 1][0]:
+                cur_idx += 1
+                _, state, gaze, speech = states[cur_idx]
+                animator.set_state(state)
+                animator.set_gaze(*gaze)
+                animator.set_speech_level(speech)
+
+            pose = animator.step(current_time=now)
+            frame_count += 1
+
+            if frame_count % fps == 0 or frame_count == 1:
+                fps_achieved = frame_count / max(0.001, elapsed)
+                print(
+                    f"[{elapsed:5.1f}s | {fps_achieved:4.1f} FPS] State={animator.state.value:10} "
+                    f"| Gaze=({pose.gaze_x:+.2f}, {pose.gaze_y:+.2f}) "
+                    f"| Eyes=(L:{pose.left_eye_open:.2f}, R:{pose.right_eye_open:.2f}) "
+                    f"| Mouth={pose.mouth_open:.2f} | Expr={pose.expression:8}"
+                )
+
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\nDemo detenida por el usuario.")
+
+    print(f"Demo headless completada. Total frames: {frame_count}")
+    return 0
+
+
+def cmd_demo_vision(args: argparse.Namespace, config_path: str | None) -> int:
+    """Run camera presence detection and debounce demo."""
+    import time
+
+    from ailen.vision.debouncer import VisionDebouncer
+    from ailen.vision.opencv_backend import OpenCvVisionBackend
+
+    camera_dev = getattr(args, "camera", "/dev/video0")
+    debounce_sec = float(getattr(args, "debounce", 2.0))
+    duration = float(getattr(args, "duration", 10.0))
+
+    backend = OpenCvVisionBackend(camera_device=camera_dev, fps=5)
+    debouncer = VisionDebouncer(debounce_seconds=debounce_sec)
+
+    print("==========================================================")
+    print(" AILEN Vision POC — Demo de Presencia y Debounce")
+    print(f" Dispositivo: {camera_dev} | Ventana Debounce: {debounce_sec}s | Duración: {duration}s")
+    print("==========================================================")
+
+    backend.start()
+    health = backend.health()
+    print(f"Estado del backend: {health.status.value} ({health.detail})")
+
+    start_t = time.time()
+    try:
+        while time.time() - start_t < duration:
+            raw = backend.get_latest_presence()
+            stable = debouncer.update(raw)
+            elapsed = time.time() - start_t
+            print(
+                f"[{elapsed:4.1f}s] Raw present={raw.present!s:5} (Caras: {raw.faces_count}) "
+                f"--> Debounced present={stable.present!s:5} "
+                f"| Gaze=({stable.primary_x_normalized or 0.0:+.2f}, {stable.primary_y_normalized or 0.0:+.2f})"
+            )
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\nDemo vision interrumpida.")
+    finally:
+        backend.stop()
+
+    print("Demo vision completada.")
+    return 0
+
+
+def cmd_demo(args: argparse.Namespace, config_path: str | None) -> int:
+    """Execute demo subcommand."""
+    target = getattr(args, "demo_target", None)
+    if target == "face":
+        return cmd_demo_face(args)
+    elif target == "vision":
+        return cmd_demo_vision(args, config_path)
+    print("Uso: ailen demo face | ailen demo vision")
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point."""
     parser = create_parser()
@@ -301,6 +465,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "serve":
         return cmd_serve(args, args.config_path)
+
+    if args.command == "demo":
+        return cmd_demo(args, args.config_path)
 
     parser.print_help()
     return 0

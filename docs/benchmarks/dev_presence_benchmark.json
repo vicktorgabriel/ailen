@@ -1,0 +1,42 @@
+{
+  "environment": "DEV MACHINE — NO HARDWARE TARGET",
+  "system_info": {
+    "os": "Linux",
+    "release": "7.0.0-28-generic",
+    "machine": "x86_64"
+  },
+  "timestamp": "2026-08-21T19:31:22Z",
+  "benchmarks": {
+    "face_animator": {
+      "component": "FaceAnimator",
+      "iterations": 5000,
+      "total_time_sec": 0.0311,
+      "throughput_fps": 160684.7,
+      "avg_frame_time_us": 6.02,
+      "p50_frame_time_us": 3.59,
+      "p95_frame_time_us": 4.4,
+      "p99_frame_time_us": 5.49,
+      "process_peak_rss_mb_start": 72.29,
+      "process_peak_rss_mb_end": 72.29,
+      "process_peak_rss_delta_mb": 0.0
+    },
+    "vision_debouncer": {
+      "component": "VisionDebouncer",
+      "iterations": 10000,
+      "total_time_sec": 0.006,
+      "throughput_updates_per_sec": 1666440.3,
+      "avg_update_time_us": 0.42,
+      "p50_update_time_us": 0.32,
+      "p95_update_time_us": 1.29
+    },
+    "integrated_pipeline": {
+      "component": "IntegratedPipeline",
+      "iterations": 3000,
+      "total_time_sec": 0.0333,
+      "throughput_cycles_per_sec": 89991.6,
+      "avg_cycle_time_us": 10.87,
+      "p50_cycle_time_us": 12.4,
+      "p95_cycle_time_us": 18.22
+    }
+  }
+}

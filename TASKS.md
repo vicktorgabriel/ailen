@@ -6,7 +6,7 @@
 
 Versión: `0.1.0-dev.0`
 
-Milestone activo: `R2A — POC medido de presencia física (Face + Vision)`.
+Milestone activo: `R2B — Audio local, VAD, STT y TTS baseline`.
 
 El slice de software de R1 quedó integrado y auditado. Permanecen en `ROADMAP.md` tareas físicas/deploy de R1 (systemd, instalación Debian en Banghó y benchmark real) que no bloquean los POC de R2A.
 
@@ -139,19 +139,25 @@ Debe quedar funcionando:
 
 ## Bloque 7 — Investigación / POC R2A
 
-Siguiente trabajo activo. No convertir una dependencia POC en requisito definitivo sin benchmark/ADR:
+- [x] comparar/evaluar backend Face liviano y documentar resultado (`docs/research/FACE_BACKEND_POC.md`).
+- [x] comparar/evaluar backend Vision liviano y documentar resultado (`docs/research/VISION_BACKEND_POC.md`).
+- [x] Face Animator agnóstico de renderer con poses normalizadas (`FacePose`).
+- [x] Face Renderer GUI POC (`TkinterFaceController`) y Headless (`NullFaceController`).
+- [x] Vision Debouncer temporal para presencia física.
+- [x] Vision real POC con Haar cascades (`OpenCvVisionBackend`) opcional y degradable.
+- [x] Integración de presencia y mirada con `InteractionCoordinator`.
+- [x] Demos CLI `ailen demo face` y `ailen demo vision`.
+- [x] Benchmark reproducible del pipeline lógico en DEV machine (`docs/benchmarks/dev_presence_benchmark.md`).
+- [ ] benchmark físico del renderer Tkinter en Banghó/SF20BA.
+- [ ] benchmark físico de OpenCV/cámara en Banghó/SF20BA.
+- [ ] benchmark STT español en hardware objetivo.
+- [ ] benchmark TTS español en hardware objetivo.
+- [ ] benchmark VAD/wake word en hardware objetivo.
+- [ ] benchmark LLM local pequeño en hardware objetivo.
+- [ ] medir baseline RAM Python/runtime en Banghó cuando esté disponible físicamente.
 
-- [ ] comparar/benchmarkear backend Face liviano y documentar resultado.
-- [ ] benchmark STT español.
-- [ ] benchmark TTS español.
-- [ ] benchmark VAD/wake word.
-- [ ] benchmark LLM local pequeño.
-- [ ] medir baseline RAM Python/runtime en Banghó cuando esté disponible.
+## Bloque 8 — Próximos pasos (R2B y posteriores)
 
-## Bloque 8 — Después del primer slice
-
-- [ ] Face real POC detrás de `FaceController`.
-- [ ] Vision real POC detrás de `VisionBackend`, sin reconocimiento de identidad.
 - [ ] audio enumerate/play/record.
 - [ ] STT baseline.
 - [ ] TTS baseline.

@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-08-21  
 **Versión:** `0.1.0-dev.0`  
-**Fase:** R1 integrado; base lista para comenzar POCs de presencia física y backends reales.
+**Fase:** R2A auditado; POC Face + Vision integrado sobre la base R1.
 
 ## Qué existe
 
@@ -37,18 +37,23 @@
 - Hardening HTTP baseline del panel: límite de body (413), métodos permitidos (405), Content-Type exigido en POST (415), CSP/Referrer-Policy/no-store, timeout de socket; fallos de diagnóstico no tiran abajo el panel;
 - SQLite endurecida con permisos owner-only (`0600`) en POSIX porque contiene memoria privada y credencial administrativa derivada;
 - `SettingsService.update()` usa semántica de patch parcial; la Web traduce checkboxes HTML ausentes a `false`;
-- carga de configuración explícita/env falla si la ruta indicada no existe, evitando fallback silencioso a defaults;
-- Suite completa de 171 tests pasando al 100%; `ruff` y `mypy` en verde sobre 55 archivos fuente; wheel auditado con templates/assets y migraciones 0001/0002 incluidos.
+- Motor lógico de rostro `FaceAnimator` y modelo `FacePose` agnóstico de renderer, con parpadeo no periódico, micro-movimientos y apertura de boca;
+- Backend gráfico POC `TkinterFaceController` (sin dependencia pip, requiere `python3-tk`/stack gráfico del sistema) y `NullFaceController` para headless; consumo real pendiente de benchmark físico;
+- `VisionDebouncer` temporal para presencia física basado en `presence_debounce_seconds`;
+- Backend de cámara POC `OpenCvVisionBackend` con Haar cascade a 5 FPS / 320px y degradación limpia;
+- Integración en `InteractionCoordinator` enlazando presencia debounced con transiciones de estado, mirada y expresiones en el rostro;
+- Demos CLI `ailen demo face` (con `--gui` y `--headless`) y `ailen demo vision`;
+- Suite de benchmark reproducible (`tools/benchmark_presence.py`) y reporte en máquina de desarrollo (`docs/benchmarks/dev_presence_benchmark.md`);
+- Suite completa: 187 tests pasando; `ruff` y `mypy` en verde sobre 60 archivos fuente; wheel construido correctamente con módulos Face/Vision y package-data existentes.
 
 ## Qué NO existe todavía
 
-- rostro / backend gráfico real;
+- backend gráfico de producción nativo DRM/KMS para appliance sin X11 (actualmente POC Tkinter + Headless);
 - audio real / STT / TTS;
-- visión real / cámara;
 - AI Router / integración cloud real;
 - LAN Brain;
 - updater;
-- benchmarks físicos en hardware objetivo.
+- benchmarks físicos en hardware objetivo (Banghó Zero G05 / SF20BA).
 
 ## Hardware objetivo inmediato
 
@@ -82,15 +87,15 @@ Cerrar `ADR-006` o usarlo explícitamente como baseline provisional antes de int
 - persistencia;
 - cómo encapsular proveedores LLM.
 
-La estructura y contratos ya permiten que agentes comiencen Foundation/Core, Web skeleton y mocks sin esperar a resolver Face/STT/TTS/LLM reales.
+La base Foundation/Core/Web está cerrada para esta etapa; Face/Vision ya tienen POC integrado. El siguiente trabajo debe centrarse en Audio/STT/TTS sin ampliar todavía a LLM/cloud.
 
 ## Próximo milestone
 
-`R2A — POC medido de presencia física: backend de rostro + visión/audio básicos`, manteniendo ADR-006 como decisión guiada por benchmarks antes de fijar dependencias pesadas.
+`R2B — Audio local: dispositivos, VAD, STT y TTS baseline`, manteniendo ADR-006 como decisión guiada por POC/benchmarks antes de fijar dependencias pesadas.
 
 Trabajo inmediato definido en `TASKS.md` y `docs/operations/AGENT_HANDOFF.md`.
 
-El repositorio Git local ya está inicializado en `main` y conectado a `git@github.com:vicktorgabriel/ailen.git`. No existe todavía commit ni push; el primer commit se hará sólo después de cerrar la revisión del slice inicial.
+El repositorio Git local está inicializado en `main`, conectado a `git@github.com:vicktorgabriel/ailen.git` y ya tiene commit fundacional (`84906c5`). El commit de R2A se realizará al cerrar esta auditoría. No se hace push sin autorización explícita.
 
 ## Riesgos conocidos
 

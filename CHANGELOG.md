@@ -8,6 +8,16 @@ El proyecto usa versionado semántico durante desarrollo, con prereleases cuando
 
 ### Added
 
+- **R2A Presencia Física y Face POC**:
+  - Motor lógico `FaceAnimator` y modelo `FacePose` completamente desacoplados de librerías gráficas, con parpadeo no periódico con jitter, micro-saccades, interpolación suave de mirada y apertura de boca proporcional a `speech_level`.
+  - Backend gráfico POC `TkinterFaceController` usando canvas 2D vectorial, sin dependencia pip obligatoria pero con `python3-tk`/stack gráfico del sistema; consumo real pendiente de benchmark físico.
+  - `NullFaceController` integrado con `FaceAnimator` para operación headless de primera clase en nodos sin pantalla.
+  - `VisionDebouncer` temporal para presencia física basado en `presence_debounce_seconds` (2.0s), eliminando parpadeos espurios y oscilaciones de presencia.
+  - Backend de cámara POC `OpenCvVisionBackend` con clasificador Haar cascade liviano a 5 FPS y 320px, sin reconocimiento facial ni almacenamiento biométrico, con degradación limpia.
+  - Integración en `InteractionCoordinator` enlazando presencia debounced con transiciones de estado, mirada y expresiones en el rostro.
+  - Comandos CLI de demo: `ailen demo face` (con `--gui` y `--headless`) y `ailen demo vision`.
+  - Suite de benchmark reproducible (`tools/benchmark_presence.py`) y reporte en máquina de desarrollo (`docs/benchmarks/dev_presence_benchmark.md`).
+  - Documentación de investigación: `docs/research/FACE_BACKEND_POC.md` y `docs/research/VISION_BACKEND_POC.md`.
 - `SettingsService` (contrato Web <-> configuración, MODULE_CONTRACTS §16): allowlist explícita de campos administrables desde el panel (identidad del personaje, nodo, pantalla, audio, visión, voz, comportamiento social, canal de updates). Validación server-side completa antes de guardar; claves desconocidas rechazadas; escritura atómica del TOML.
 - Vista `/config` responsive mobile-first: GET con valores efectivos, POST con CSRF, mensajes de éxito/error por campo, sin JS obligatorio, sin secretos renderizados.
 - Sección de identidad del personaje: nueva sección `[identity]` en configuración con `display_name` (default neutro "Asistente"); AILEN queda como marca/plataforma, nunca como nombre hardcodeado del personaje.

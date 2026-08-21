@@ -353,6 +353,12 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("audio.output_volume must be between 0 and 100")
     if not (0 <= config.audio.input_volume <= 100):
         errors.append("audio.input_volume must be between 0 and 100")
+    if config.vision.fps < 1:
+        errors.append("vision.fps must be >= 1")
+    if config.vision.presence_debounce_seconds < 0:
+        errors.append("vision.presence_debounce_seconds must be >= 0")
+    if not (0.0 <= config.vision.min_confidence <= 1.0):
+        errors.append("vision.min_confidence must be between 0.0 and 1.0")
     if config.ai.timeout_seconds <= 0:
         errors.append("ai.timeout_seconds must be positive")
     if config.web.port < 1 or config.web.port > 65535:
