@@ -1,9 +1,9 @@
 # FIRST_PHYSICAL_LAB_REPORT.md — Informe de Primera Validación Física de Laboratorio
 
-> **Host Canónico:** Asrock (Linux Mint 22.3, AMD Ryzen 5 5500, 48 GB RAM, NVIDIA RTX 3060 12 GB)  
-> **Fecha:** 21 de Agosto de 2026  
-> **Estado de Ejecución:** `PARTIAL / PREFLIGHT EVALUATED`  
-> **Veredicto Preflight:** `PARTIAL` — la validación completa Face/Vision sigue pendiente; se habilita una validación física `MIC-ONLY` independiente sin cámara.
+> **Host Canónico:** Asrock (Linux Mint 22.3, AMD Ryzen 5 5500, 48 GB RAM, NVIDIA RTX 3060 12 GB)
+> **Fecha:** 21 de Agosto de 2026
+> **Estado de Ejecución:** `PARTIAL / MIC PASS`
+> **Veredicto:** `MIC PASS` — micrófono USB G600 validado físicamente con captura ALSA, VAD y transcripción Vosk real. Face/Vision continúan pendientes por falta de cámara.
 
 ---
 
@@ -118,3 +118,32 @@ Criterios:
 5. Cámara, Face, Piper, parlantes y LLM quedan `SKIP` para este subtest.
 
 El informe sólo puede marcar `MIC PASS` después de observar una transcripción proveniente del micrófono real.
+
+
+---
+
+## 6. Resultado físico MIC PASS — 21 de agosto de 2026
+
+**Estado:** `PASS`
+
+Periférico validado:
+
+- Dispositivo: **G600 USB Audio**
+- ALSA capture endpoint: `plughw:CARD=G600,DEV=0`
+- ALSA playback endpoint: `plughw:CARD=G600,DEV=0`
+- PipeWire source observado: `G600 Mono`
+- PipeWire sink observado: `G600 Estéreo analógico`
+
+Cadena validada físicamente:
+
+`G600 mic -> ALSA -> PCM -> Energy VAD -> utterance segmentation -> Vosk STT -> transcript`
+
+Evidencia operativa reportada durante la prueba:
+
+- El G600 fue detectado como hardware físico de captura.
+- El micrófono entregó señal real.
+- VAD respondió a la voz del operador.
+- Vosk produjo transcripción real.
+- No se utilizó `--simulate`.
+
+Con esto, el criterio **MIC PASS** queda cerrado. La validación completa del asistente sigue en estado `PARTIAL` hasta probar TTS/parlantes end-to-end y, cuando haya cámara disponible, Vision/Face tracking.

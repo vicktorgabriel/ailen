@@ -1,3 +1,10 @@
+### R3B.3 — MIC PASS físico en G600
+
+- El 21 de agosto de 2026 se validó físicamente el micrófono USB **G600** en Linux Mint.
+- Endpoint ALSA confirmado: `plughw:CARD=G600,DEV=0`; PipeWire lo expone como `G600 Mono`.
+- La cadena real `micrófono -> ALSA -> VAD -> Vosk -> transcripción` produjo texto y queda marcada `MIC PASS`.
+- La ausencia de cámara no invalida este subhito; Vision/Face permanece pendiente.
+
 ### R3B.3 — validación MIC-ONLY y verdad de audio
 
 - La falta de cámara no bloquea una evidencia física parcial: `MIC PASS` valida únicamente micrófono -> ALSA -> VAD -> STT real. Face/Vision quedan pendientes.

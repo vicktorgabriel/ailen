@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-08-21  
 **Versión:** `0.1.0-dev.0`  
-**Fase:** R3B.3 First Physical Lab Validation & Speech Asset Subsystem implementado y preflight evaluado en host Asrock. Catálogo declarativo de voz `SpeechAssetCatalog`, almacén seguro `SpeechAssetStore`, descargador criptográfico `SpeechAssetDownloader`, generador de configuración aislada `ailen lab config init`, y evaluador integral `LabPreflightChecker` operativos con 344 tests pasando. Preflight general del host real sigue incompleto para Face/Vision; se habilitó una validación física parcial `MIC-ONLY` sin cámara. Los endpoints ALSA físicos se distinguen de plugins virtuales y VAD/STT ya no sustituyen un micrófono fallido por audio sintético salvo `--simulate` explícito.
+**Fase:** R3B.3 First Physical Lab Validation & Speech Asset Subsystem implementado y preflight evaluado en host Asrock. Catálogo declarativo de voz `SpeechAssetCatalog`, almacén seguro `SpeechAssetStore`, descargador criptográfico `SpeechAssetDownloader`, generador de configuración aislada `ailen lab config init`, y evaluador integral `LabPreflightChecker` operativos con 344 tests pasando. Preflight general del host real sigue incompleto para Face/Vision; la validación física parcial `MIC-ONLY` ya pasó con un auricular USB G600 (`plughw:CARD=G600,DEV=0`) y Vosk produjo transcripción real. Los endpoints ALSA físicos se distinguen de plugins virtuales y VAD/STT ya no sustituyen un micrófono fallido por audio sintético salvo `--simulate` explícito.
 
 ## Qué existe
 

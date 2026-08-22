@@ -86,3 +86,16 @@ Esta prueba es válida como evidencia parcial y no requiere Tkinter, OpenCV, Pip
 ```
 
 No usar `--simulate` para una validación física. Si el micrófono no abre, VAD/STT deben fallar en vez de sustituirlo por audio sintético. `MIC PASS` requiere transcripción real.
+
+
+## Evidencia registrada: G600 — MIC PASS
+
+- [x] Hardware de captura detectado: `plughw:CARD=G600,DEV=0`
+- [x] PipeWire source: `G600 Mono`
+- [x] Señal de voz real detectada por VAD
+- [x] Vosk produjo una transcripción real
+- [x] Sin `--simulate`
+- [ ] TTS/parlantes end-to-end
+- [ ] Cámara/Vision/Face tracking
+
+Resultado actual del laboratorio físico: **PARTIAL / MIC PASS**.
