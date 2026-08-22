@@ -241,12 +241,28 @@ Debe quedar funcionando:
 - [ ] medir latencias físicas reales STT/AI/TTS, tokens y FPS de Face en sesión en vivo.
 - [ ] realizar después un segundo laboratorio en Windows 11 sin convertirlo en appliance.
 
-## Bloque 13 — R3C Memory API + Personality + Tools
+## Bloque 13 — R3B.4 Adaptive Runtime + Voice Latency
 
-- [ ] Memory API avanzada (consolidación semántica, decaimiento de memoria, tags).
-- [ ] Personality Engine evolutivo con simulación de estados anímicos y límites de personalidad.
-- [ ] Integración de herramientas locales controladas por allowlist.
-- [ ] Medición y benchmarks físicos posteriores en Banghó Zero G05 y SF20BA.
+- [ ] agregar perfil de inferencia `FAST` además de `SANITY/BALANCED/QUALITY`, separado de un modelo concreto.
+- [ ] seleccionar modelo local estable por hardware/sesión; prohibir model hopping automático por turno.
+- [ ] benchmark reproducible de latencia/calidad 9B vs 3B/4B en Asrock y posteriormente CPU-only.
+- [ ] incorporar candidato FAST no-reasoning/general-chat (prioridad de benchmark: Llama 3.2 3B; alternativas Gemma 3 4B / Qwen3.5 4B think=false).
+- [ ] mantener fallback Rule-only/LAN/cloud cuando no haya modelo local viable.
+- [ ] reducir latencia percibida de TTS mediante streaming/chunked playback si Piper actual lo permite de forma estable.
+- [ ] mejorar STT/confidence/reprompt sin inventar confidence; comparar Vosk contra Whisper.cpp en hardware disponible.
+- [ ] documentar matriz preliminar CPU/RAM/GPU -> perfil, sin declarar umbrales comerciales hasta benchmark físico.
+
+## Bloque 14 — R3C Product Behaviors + Controlled Tools + Web
+
+- [ ] intent resolver determinista para acciones simples antes del LLM.
+- [ ] tools reales allowlisted: hora, timer, volumen, música, notas y status.
+- [ ] `ToolRegistry`/`ToolExecutor` con schema estricto, permisos por modo y argumentos validados.
+- [ ] `web_search` provider-agnostic controlado por Core; sin Internet irrestricto para el LLM.
+- [ ] `web_fetch` opcional con HTTPS, límites de bytes/timeouts, sanitización y política de destinos.
+- [ ] devolver resultados de tools al LLM sólo cuando haga falta redactar/resumir.
+- [ ] privacidad/budget para búsqueda remota y cloud; costos del proveedor visibles en onboarding.
+- [ ] onboarding/configuración mínima: auto-detect hardware, recomendar perfil y pedir sólo decisiones/credenciales necesarias.
+- [ ] Memory API y personalidad encima de estas fronteras, sin modificar seguridad/permisos.
 
 ## Reglas del board
 

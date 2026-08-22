@@ -134,6 +134,7 @@ El proyecto usa versionado semántico durante desarrollo, con prereleases cuando
 
 ### Decisions
 
+- ADR-010 acepta inferencia adaptativa por hardware, modelo estable por sesión y tools/Web controlados por Core; la RTX 3060 queda explícitamente como hardware de laboratorio, no requisito del producto.
 - Debian 13 stable amd64 netinst/minimal queda aceptado como baseline del appliance (ADR-008). Sin desktop completo; con Tkinter se usa sólo stack gráfico mínimo y los nodos headless no instalan X.
 - `web.host`/`web.port` NO son editables desde el panel: cambiar el bind en caliente puede exponer el panel o dejar afuera al operador; se administran por archivo/CLI y aplican al reiniciar (ver ADR-007).
 - La credencial administrativa vive en SQLite (tabla dedicada, fila única) y no en variables de entorno ni en el TOML versionado (ver ADR-007).

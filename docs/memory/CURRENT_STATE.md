@@ -138,3 +138,13 @@ El repositorio Git local está inicializado en `main` y conectado a `git@github.
 - Modo voz normaliza Markdown/URLs/símbolos antes de Piper y acota respuestas; defaults LAB: 500 ms de silencio final y 96 tokens máximos.
 - Suite posterior a la validación: 349 tests; Ruff, mypy sobre 109 source files y diff-check verdes.
 - Falta para cerrar validación física global: cámara + Vision/Face. Después corresponde comparar perfil rápido 4B frente a 9B y mejorar robustez STT.
+
+## Decisión adaptativa posterior al AUDIO CONVERSATION PASS — 2026-08-22
+
+- La RTX 3060 de Asrock es sólo laboratorio; AILEN no requiere GPU.
+- Se adopta ADR-010: inferencia adaptativa por hardware y tools controladas por Core.
+- Perfiles objetivo: RULE_ONLY/SATELLITE, FAST, BALANCED y QUALITY; un modelo estable por nodo/sesión, sin cambiarlo por consulta.
+- Acciones básicas (hora, timer, volumen, música, notas, status) deben ser deterministas; el LLM sólo interpreta cuando es necesario.
+- Internet se implementará como `web_search`/`web_fetch` controlados, nunca como acceso irrestricto del LLM.
+- Candidato FAST prioritario para benchmark: Llama 3.2 3B; alternativas Gemma 3 4B y Qwen3.5 4B con thinking desactivado.
+- Próximo bloque: R3B.4 Adaptive Runtime + Voice Latency; luego R3C Product Behaviors + Controlled Tools + Web.
