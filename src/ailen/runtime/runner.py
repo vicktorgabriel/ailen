@@ -1,45 +1,56 @@
-"""Dedicated non-invasive runner for AILEN Lab Mode."""
+"""Dedicated non-invasive runner for AILEN Lab Mode with live hardware and interaction wiring."""
 
-import datetime
-import importlib.util
+import json
 import logging
 import signal
-import sys
+import threading
 import time
-from dataclasses import dataclass
+import uuid
 from pathlib import Path
 from types import FrameType
+from typing import Any
 
-from ailen.audio.contracts import AudioInputBackend, AudioOutputBackend
+from ailen.ai.budget import BudgetPolicy
+from ailen.ai.context import AiContextBuilder
+from ailen.ai.contracts import AiBackend
+from ailen.ai.orchestrator import AiOrchestrator
+from ailen.ai.router import RuleBasedRouter
+from ailen.audio.contracts import (
+    AudioInputBackend,
+    AudioOutputBackend,
+    SttBackend,
+    TtsBackend,
+)
 from ailen.audio.coordinator import AudioInteractionCoordinator
 from ailen.core.config import AILENConfig
 from ailen.core.conversation import ConversationCoordinator
-from ailen.face.animator import FaceAnimator
+from ailen.core.coordinator import InteractionCoordinator
+from ailen.core.events import EventBus
+from ailen.core.social import SocialEngine
+from ailen.core.state import StateManager
+from ailen.domain.enums import AssistantState, EventType, PrivacyLevel, ServiceStatus
 from ailen.face.contracts import FaceController
-from ailen.face.gui import TkinterFaceController
 from ailen.face.null import NullFaceController
 from ailen.hardware.contracts import HardwareCapabilityReport
 from ailen.hardware.detector import HardwareDetector
-from ailen.models.catalog import ModelCatalog
+from ailen.infrastructure.sqlite.connection import SQLiteManager
+from ailen.memory.repository import MemoryRepository
+from ailen.models.catalog import ModelCatalog, ModelPurpose
 from ailen.models.planner import ModelPlan, ModelPlanner
 from ailen.models.store import ModelStore
-from ailen.runtime.contracts import RuntimeStatus
+from ailen.runtime.contracts import ExternalRuntimeDescriptor
+from ailen.runtime.factory import ComponentStatus, LabComponentFactory
+from ailen.runtime.managed import ManagedLlamaRuntime
 from ailen.runtime.manager import LocalRuntimeManager
+from ailen.runtime.metrics import LabSessionMetrics
 from ailen.vision.contracts import VisionBackend
+from ailen.vision.debouncer import VisionDebouncer
 
-logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ComponentStatus:
-    name: str
-    backend: str
-    state: str  # "READY", "RUNNING", "DISABLED", "MISSING_MODEL", "DEGRADED", "UNAVAILABLE"
-    detail: str = ""
+logger = logging.getLogger("ailen.runtime.runner")
 
 
 class LabRunner:
-    """Orchestrates non-invasive Lab Mode runtime for development workstations."""
+    """Orchestrates non-invasive Lab Mode runtime for physical development workstations."""
 
     def __init__(
         self,
@@ -49,8 +60,11 @@ class LabRunner:
         no_camera: bool = False,
         no_audio: bool = False,
         no_ai: bool = False,
+        simulate: bool = False,
+        fullscreen: bool = False,
         duration: float | None = None,
         log_dir: Path | str | None = None,
+        managed_runtime: ManagedLlamaRuntime | None = None,
     ) -> None:
         self.config = config
         self.dry_run = dry_run
@@ -58,249 +72,364 @@ class LabRunner:
         self.no_camera = no_camera
         self.no_audio = no_audio
         self.no_ai = no_ai
+        self.simulate = simulate
+        self.fullscreen = fullscreen
         self.duration = duration
 
         self.log_dir = Path(log_dir) if log_dir else Path("runtime/lab")
+        self._session_id = f"lab_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+        self.metrics = LabSessionMetrics(session_id=self._session_id)
+
         self._is_running = False
         self._shutdown_requested = False
+        self._interaction_lock = threading.Lock()
+        self._is_processing_interaction = False
+        self._processed_transcript_event_ids: set[str] = set()
 
-        # Component instances
-        self.face_controller: FaceController | None = None
-        self.face_animator: FaceAnimator | None = None
-        self.vision_backend: VisionBackend | None = None
-        self.audio_coordinator: AudioInteractionCoordinator | None = None
-        self.conversation_coordinator: ConversationCoordinator | None = None
+        # Core infrastructure
+        self.event_bus = EventBus()
+        self.state_manager = StateManager(initial_state=AssistantState.IDLE)
+        self.db_mgr: SQLiteManager | None = None
+        self.memory_repo: MemoryRepository | None = None
 
+        # Hardware & Model Planning
         self.hardware_report: HardwareCapabilityReport | None = None
+        self.detected_profile = config.node.profile
         self.model_plan: ModelPlan | None = None
+        self.runtime_descriptors: list[ExternalRuntimeDescriptor] = []
         self.component_statuses: list[ComponentStatus] = []
 
+        # Components
+        self.face_controller: FaceController = NullFaceController()
+        self.vision_backend: VisionBackend | None = None
+        self.vision_debouncer = VisionDebouncer(debounce_seconds=config.vision.presence_debounce_seconds)
+        self.audio_in: AudioInputBackend | None = None
+        self.audio_out: AudioOutputBackend | None = None
+        self.stt_backend: SttBackend | None = None
+        self.tts_backend: TtsBackend | None = None
+        self.ai_backends: dict[str, AiBackend] = {}
+
+        # Coordinators
+        self.social_engine: SocialEngine | None = None
+        self.interaction_coordinator: InteractionCoordinator | None = None
+        self.audio_coordinator: AudioInteractionCoordinator | None = None
+        self.conversation_coordinator: ConversationCoordinator | None = None
+        self.managed_runtime = managed_runtime
+
+        self._vision_thread: threading.Thread | None = None
+
     def inspect_and_plan(self) -> tuple[HardwareCapabilityReport, ModelPlan]:
-        """Detect hardware and calculate optimal model plan."""
+        """Detect hardware capabilities, discover runtimes, and compute optimal model plan."""
         store = ModelStore()
         detector = HardwareDetector()
         self.hardware_report = detector.detect(str(store.base_dir))
         rec = detector.recommend_profile(self.hardware_report)
+        self.detected_profile = rec.profile
 
-        planner = ModelPlanner(catalog=ModelCatalog())
-        self.model_plan = planner.plan(self.hardware_report, profile=rec.profile)
+        runtime_mgr = LocalRuntimeManager()
+        self.runtime_descriptors = runtime_mgr.detect_available_runtimes()
+
+        catalog = ModelCatalog()
+        planner = ModelPlanner(catalog=catalog)
+        self.model_plan = planner.plan(self.hardware_report, profile=rec.profile, purpose=ModelPurpose.BALANCED)
         return self.hardware_report, self.model_plan
 
     def init_components(self) -> list[ComponentStatus]:
-        """Initialize lab components and collect readiness status."""
+        """Build and wire all subsystem components via LabComponentFactory."""
         self.component_statuses.clear()
+        factory = LabComponentFactory(config=self.config, hardware_report=self.hardware_report)
 
-        # 1. Face Component
-        if self.headless or not self.config.display.enabled:
-            self.face_controller = NullFaceController()
-            self.component_statuses.append(
-                ComponentStatus(name="Face", backend="NullFaceController", state="READY", detail="Headless mode active")
-            )
-        else:
-            if importlib.util.find_spec("tkinter") is not None:
-                try:
-                    self.face_animator = FaceAnimator()
-                    self.face_controller = TkinterFaceController(animator=self.face_animator)
-                    self.component_statuses.append(
-                        ComponentStatus(name="Face", backend="Tkinter", state="READY", detail="GUI window enabled")
-                    )
-                except Exception as e:  # noqa: BLE001
-                    self.face_controller = NullFaceController()
-                    self.component_statuses.append(
-                        ComponentStatus(
-                            name="Face",
-                            backend="NullFaceController",
-                            state="DEGRADED",
-                            detail=f"Tkinter window error ({e}), using headless",
-                        )
-                    )
-            else:
-                self.face_controller = NullFaceController()
-                self.component_statuses.append(
-                    ComponentStatus(
-                        name="Face",
-                        backend="NullFaceController",
-                        state="DEGRADED",
-                        detail="Tkinter unavailable, using headless",
-                    )
-                )
+        # 1. Face
+        self.face_controller, face_st = factory.build_face(
+            headless=self.headless,
+            simulate=self.simulate,
+            fullscreen=self.fullscreen,
+        )
+        self.component_statuses.append(face_st)
 
-        # 2. Vision Component
-        if self.no_camera or not self.config.vision.enabled:
-            self.component_statuses.append(
-                ComponentStatus(name="Vision", backend="None", state="DISABLED", detail="Disabled by flag/config")
-            )
-        else:
-            if importlib.util.find_spec("cv2") is not None:
-                from ailen.vision.opencv_backend import OpenCvVisionBackend
+        # 2. Vision
+        self.vision_backend, vision_st = factory.build_vision(
+            no_camera=self.no_camera,
+            simulate=self.simulate,
+        )
+        self.component_statuses.append(vision_st)
 
-                if self.hardware_report and len(self.hardware_report.cameras) > 0:
-                    self.vision_backend = OpenCvVisionBackend(
-                        camera_device=self.config.vision.camera_device,
-                        fps=self.config.vision.fps,
-                    )
-                    self.component_statuses.append(
-                        ComponentStatus(
-                            name="Vision",
-                            backend="OpenCV",
-                            state="READY",
-                            detail=f"Device {self.config.vision.camera_device} active",
-                        )
-                    )
-                else:
-                    self.component_statuses.append(
-                        ComponentStatus(
-                            name="Vision",
-                            backend="OpenCV",
-                            state="DISABLED",
-                            detail="No physical cameras detected",
-                        )
-                    )
-            else:
-                self.component_statuses.append(
-                    ComponentStatus(
-                        name="Vision",
-                        backend="OpenCV",
-                        state="UNAVAILABLE",
-                        detail="opencv-python not installed",
-                    )
-                )
+        # 3. Audio I/O
+        self.audio_in, self.audio_out, audio_st = factory.build_audio_io(
+            no_audio=self.no_audio,
+            simulate=self.simulate,
+        )
+        self.component_statuses.append(audio_st)
 
-        # 3. Audio / STT / TTS Component
-        if self.no_audio:
-            self.component_statuses.append(
-                ComponentStatus(name="Audio", backend="None", state="DISABLED", detail="Disabled by flag")
-            )
-            self.component_statuses.append(
-                ComponentStatus(name="STT", backend="None", state="DISABLED", detail="Audio disabled")
-            )
-            self.component_statuses.append(
-                ComponentStatus(name="TTS", backend="None", state="DISABLED", detail="Audio disabled")
-            )
-        else:
-            if sys.platform.startswith("linux"):
-                try:
-                    from ailen.audio.alsa_backend import (
-                        AlsaAudioInputBackend,
-                        AlsaAudioOutputBackend,
-                    )
+        # 4. STT
+        self.stt_backend, stt_st = factory.build_stt(
+            no_audio=self.no_audio,
+            simulate=self.simulate,
+        )
+        self.component_statuses.append(stt_st)
 
-                    in_backend: AudioInputBackend = AlsaAudioInputBackend()
-                    out_backend: AudioOutputBackend = AlsaAudioOutputBackend()
-                    self.audio_coordinator = AudioInteractionCoordinator(
-                        audio_input=in_backend,
-                        audio_output=out_backend,
-                    )
-                    self.component_statuses.append(
-                        ComponentStatus(name="Audio", backend="ALSA", state="READY", detail="Microphone & Speakers active")
-                    )
-                except Exception as e:  # noqa: BLE001
-                    self.component_statuses.append(
-                        ComponentStatus(name="Audio", backend="ALSA", state="UNAVAILABLE", detail=str(e))
-                    )
-            else:
-                self.component_statuses.append(
-                    ComponentStatus(
-                        name="Audio",
-                        backend="ALSA",
-                        state="UNAVAILABLE",
-                        detail="Native audio backend not implemented on this OS yet",
-                    )
-                )
+        # 5. TTS
+        self.tts_backend, tts_st = factory.build_tts(
+            no_audio=self.no_audio,
+            simulate=self.simulate,
+        )
+        self.component_statuses.append(tts_st)
 
-            # STT Check
-            stt_model_path = Path("models/stt/vosk")
-            if stt_model_path.is_dir():
-                self.component_statuses.append(
-                    ComponentStatus(name="STT", backend="Vosk", state="READY", detail=str(stt_model_path))
-                )
-            else:
-                self.component_statuses.append(
-                    ComponentStatus(name="STT", backend="Vosk", state="MISSING_MODEL", detail="Model directory missing")
-                )
+        # 6. AI Backends. If the verified planned GGUF is already installed and
+        # no matching local runtime is active, LabRunner may start an AILEN-owned
+        # llama.cpp server for this session. It never downloads here.
+        self.ai_backends, ai_st = factory.build_ai_backends(
+            no_ai=self.no_ai,
+            simulate=self.simulate,
+            model_plan=self.model_plan,
+            runtime_descriptors=self.runtime_descriptors,
+        )
 
-            # TTS Check
-            tts_model_path = Path("models/tts/piper.onnx")
-            if tts_model_path.is_file():
-                self.component_statuses.append(
-                    ComponentStatus(name="TTS", backend="Piper", state="READY", detail=str(tts_model_path))
-                )
-            else:
-                self.component_statuses.append(
-                    ComponentStatus(name="TTS", backend="Piper", state="MISSING_MODEL", detail="ONNX voice model missing")
-                )
-
-        # 4. Local AI & Runtimes
-        if self.no_ai:
-            self.component_statuses.append(
-                ComponentStatus(name="AI Inference", backend="None", state="DISABLED", detail="Disabled by flag")
-            )
-        else:
-            runtime_mgr = LocalRuntimeManager()
-            runtimes = runtime_mgr.detect_available_runtimes()
-
-            healthy_runtimes = [r for r in runtimes if r.health and r.health.status == RuntimeStatus.HEALTHY]
+        if (
+            not self.no_ai
+            and not self.dry_run
+            and not self.simulate
+            and "local" not in self.ai_backends
+            and self.model_plan
+            and self.model_plan.is_viable
+            and self.model_plan.selected_model_id
+            and self.model_plan.model_descriptor
+        ):
             store = ModelStore()
-
-            if self.model_plan and self.model_plan.is_viable and self.model_plan.selected_model_id:
-                installed = store.exists(self.model_plan.selected_model_id)
-                detail = f"Model: {self.model_plan.selected_model_id} (Installed={installed})"
-                if healthy_runtimes and installed:
-                    self.component_statuses.append(
-                        ComponentStatus(
-                            name="Local AI",
-                            backend=healthy_runtimes[0].runtime_type.value,
-                            state="READY",
-                            detail=detail,
-                        )
-                    )
-                elif healthy_runtimes and not installed:
-                    self.component_statuses.append(
-                        ComponentStatus(
-                            name="Local AI",
-                            backend=healthy_runtimes[0].runtime_type.value,
-                            state="MISSING_MODEL",
-                            detail=f"Runtime active but model missing. Run: ailen models fetch {self.model_plan.selected_model_id}",
-                        )
-                    )
-                else:
-                    self.component_statuses.append(
-                        ComponentStatus(
-                            name="Local AI",
-                            backend="llama-server/ollama",
-                            state="NOT_RUNNING",
-                            detail="No local runtime server reachable on port 8080/11434",
-                        )
-                    )
-            else:
-                self.component_statuses.append(
-                    ComponentStatus(
-                        name="Local AI",
-                        backend="Rule-based/Remote",
-                        state="READY",
-                        detail="Fallback routing active",
-                    )
+            model_id = self.model_plan.selected_model_id
+            descriptor = self.model_plan.model_descriptor
+            if store.exists(model_id) and store.verify(model_id, descriptor.sha256):
+                runtime = self.managed_runtime or ManagedLlamaRuntime()
+                started = runtime.start(
+                    model_path=store.get_model_path(model_id),
+                    host="127.0.0.1",
+                    port=8080,
+                    context_size=self.model_plan.context_size,
+                    gpu_layers=self.model_plan.gpu_layers,
+                    model_alias=model_id,
                 )
+                if started:
+                    self.managed_runtime = runtime
+                    self.runtime_descriptors = LocalRuntimeManager().detect_available_runtimes()
+                    self.ai_backends, ai_st = factory.build_ai_backends(
+                        no_ai=False,
+                        simulate=False,
+                        model_plan=self.model_plan,
+                        runtime_descriptors=self.runtime_descriptors,
+                    )
+
+        self.component_statuses.append(ai_st)
+
+        # 7. Wire Database & Memory
+        try:
+            db_path = Path(self.config.memory.sqlite_path)
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.db_mgr = SQLiteManager(str(db_path))
+            self.memory_repo = MemoryRepository(self.db_mgr)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not initialize SQLite memory: %s", exc)
+
+        # 8. Wire Social & Interaction Coordinators
+        self.social_engine = SocialEngine(
+            default_cooldown_seconds=self.config.social.greeting_cooldown_seconds,
+            allow_greetings=self.config.social.auto_greeting_enabled,
+        )
+        self.interaction_coordinator = InteractionCoordinator(
+            state_manager=self.state_manager,
+            social_engine=self.social_engine,
+            event_bus=self.event_bus,
+            mode=self.config.social.default_mode,
+            face_controller=self.face_controller,
+            debouncer=self.vision_debouncer,
+        )
+
+        # 9. Wire live Audio Interaction Coordinator only when the complete real
+        # speech chain is available. Passing None here would trigger the generic
+        # coordinator's Fake defaults, which is forbidden outside --simulate.
+        if self.audio_in and self.audio_out and self.stt_backend and self.tts_backend:
+            self.audio_coordinator = AudioInteractionCoordinator(
+                audio_input=self.audio_in,
+                audio_output=self.audio_out,
+                stt=self.stt_backend,
+                tts=self.tts_backend,
+                state_manager=self.state_manager,
+                face_controller=self.face_controller,
+                event_bus=self.event_bus,
+                auto_reset_after_stt=not bool(self.ai_backends),
+            )
+
+        # 10. Wire Conversation Coordinator. Cloud/LAN policies are the same
+        # audited policies used by normal Core, including budget enforcement.
+        if self.ai_backends:
+            context_builder = AiContextBuilder(repository=self.memory_repo)
+            router = RuleBasedRouter()
+            orchestrator = AiOrchestrator(
+                backends=self.ai_backends,
+                router=router,
+                repository=self.memory_repo,
+                event_bus=self.event_bus,
+            )
+            budget_policy = BudgetPolicy(
+                repository=self.memory_repo,
+                daily_budget_usd=self.config.ai.cloud.daily_budget_usd,
+                monthly_budget_usd=self.config.ai.cloud.monthly_budget_usd,
+            )
+            self.conversation_coordinator = ConversationCoordinator(
+                context_builder=context_builder,
+                router=router,
+                orchestrator=orchestrator,
+                audio_coordinator=self.audio_coordinator,
+                profile=self.detected_profile,
+                mode=self.config.social.default_mode,
+                privacy_level=PrivacyLevel.PRIVATE,
+                identity_name=self.config.identity.display_name,
+                tts_voice_id=self.config.speech.tts_voice,
+                internet_available="cloud" in self.ai_backends,
+                cloud_allowed=self.config.ai.cloud.enabled and self.config.ai.allow_cloud,
+                lan_brain_trusted=self.config.ai.lan.trusted,
+                budget_policy=budget_policy,
+            )
+
+        # 11. Subscribe to lightweight events for single-flight conversation and
+        # measured lab telemetry. No PCM or camera frames enter the EventBus.
+        self.event_bus.subscribe(EventType.TRANSCRIPT_READY, self._on_transcript_event)
+        self.event_bus.subscribe(EventType.SPEECH_FINISHED, self._on_speech_finished_event)
+        self.event_bus.subscribe(EventType.PRESENCE_DETECTED, self._on_presence_transition_event)
+        self.event_bus.subscribe(EventType.PRESENCE_LOST, self._on_presence_transition_event)
 
         return self.component_statuses
+
+    def _on_transcript_event(self, event: Any) -> None:
+        """Handle one STT transcript exactly once with single-flight serialization."""
+        event_id = str(getattr(event, "event_id", "") or "")
+        if event_id:
+            with self._interaction_lock:
+                if event_id in self._processed_transcript_event_ids:
+                    logger.debug("Ignoring duplicate transcript event %s", event_id)
+                    return
+                self._processed_transcript_event_ids.add(event_id)
+                if len(self._processed_transcript_event_ids) > 256:
+                    self._processed_transcript_event_ids.clear()
+                    self._processed_transcript_event_ids.add(event_id)
+
+        payload = getattr(event, "payload", {}) if hasattr(event, "payload") else {}
+        text = str(payload.get("text", "")).strip()
+        latency_raw = payload.get("latency_ms")
+        latency_ms = float(latency_raw) if isinstance(latency_raw, (int, float)) else 0.0
+
+        if not text:
+            self.metrics.record_utterance(success=False, latency_ms=latency_ms)
+            return
+
+        self.metrics.record_utterance(success=True, latency_ms=latency_ms)
+        print(f"\n[stt] Transcript ready (len={len(text)}, latency={latency_ms:.1f}ms)")
+
+        with self._interaction_lock:
+            if self._is_processing_interaction:
+                logger.info("Ignoring overlapping transcript; interaction currently active")
+                return
+            self._is_processing_interaction = True
+
+        threading.Thread(target=self._process_conversation, args=(text,), daemon=True).start()
+
+    def _on_speech_finished_event(self, event: Any) -> None:
+        """Record measured TTS synthesis latency when the audio layer reports it."""
+        payload = getattr(event, "payload", {}) if hasattr(event, "payload") else {}
+        latency = payload.get("latency_ms")
+        if isinstance(latency, (int, float)) and latency >= 0:
+            self.metrics.record_tts_call(latency_ms=float(latency))
+
+    def _on_presence_transition_event(self, event: Any) -> None:
+        """Count stable presence transitions emitted by InteractionCoordinator."""
+        del event
+        self.metrics.record_presence_transition()
+
+    def _process_conversation(self, text: str) -> None:
+        """Process conversational turn from transcript to AI response and vocal speech."""
+        try:
+            if not self.conversation_coordinator:
+                logger.warning("No conversation coordinator configured to handle input")
+                return
+
+            try:
+                self.state_manager.transition_to(AssistantState.PROCESSING, reason="ai_processing")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Could not transition to PROCESSING: %s", exc)
+            self.face_controller.set_state(AssistantState.PROCESSING)
+
+            print(f"[router] Routing prompt for '{self.config.identity.display_name}'...")
+            resp, _plan = self.conversation_coordinator.handle_user_input(text, session_id=self._session_id)
+
+            in_tok = resp.usage.input_tokens if resp.usage else None
+            out_tok = resp.usage.output_tokens if resp.usage else None
+            self.metrics.record_ai_call(
+                latency_ms=resp.latency_ms,
+                in_tokens=in_tok,
+                out_tokens=out_tok,
+            )
+
+            print(
+                f"[ai] Response ready provider={resp.provider} model={resp.model} "
+                f"latency={resp.latency_ms:.1f}ms len={len(resp.text)}"
+            )
+
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Error processing conversation turn: %s", exc)
+        finally:
+            with self._interaction_lock:
+                self._is_processing_interaction = False
+
+            # Return to ATTENTION if presence remains, otherwise IDLE. Keep Core
+            # state and visual state aligned after AI/TTS completes.
+            final_state = AssistantState.ATTENTION if self.vision_debouncer.stable_presence else AssistantState.IDLE
+            try:
+                self.state_manager.transition_to(final_state, reason="conversation_complete")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Could not transition after conversation: %s", exc)
+            self.face_controller.set_state(final_state)
+
+    def _vision_loop(self) -> None:
+        """Background loop reading camera presence observations and updating gaze/social engine."""
+        while self._is_running and self.vision_backend:
+            try:
+                obs = self.vision_backend.get_latest_presence()
+                self.metrics.record_vision_obs()
+
+                if self.interaction_coordinator:
+                    self.interaction_coordinator.handle_raw_presence_observation(obs)
+
+                if obs.present and self.face_controller:
+                    self.face_controller.set_gaze(
+                        obs.primary_x_normalized or 0.0,
+                        obs.primary_y_normalized or 0.0,
+                    )
+
+                time.sleep(0.05)  # 20 Hz poll
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Vision loop exception: %s", exc)
+                time.sleep(0.1)
 
     def print_status_table(self) -> None:
         """Render standard lab component status table."""
         print("==================================================================")
-        print("                    AILEN LAB COMPONENT STATUS                    ")
+        mode_label = "AILEN LAB COMPONENT STATUS (SIMULATION MODE)" if self.simulate else "AILEN LAB COMPONENT STATUS"
+        print(f"{mode_label:^66}")
         print("==================================================================")
-        print(f"{'COMPONENT':<14} {'BACKEND':<18} {'STATE':<14} {'DETAIL'}")
+        print(f"{'COMPONENT':<14} {'BACKEND':<26} {'STATE':<14} {'DETAIL'}")
         print("------------------------------------------------------------------")
         for s in self.component_statuses:
-            print(f"{s.name:<14} {s.backend:<18} {s.state:<14} {s.detail}")
+            print(f"{s.name:<14} {s.backend:<26} {s.state:<14} {s.detail}")
         print("==================================================================")
 
-        active_statuses = [s for s in self.component_statuses if s.state != "DISABLED"]
-        degraded = any(s.state != "READY" for s in active_statuses)
-        if active_statuses and not degraded:
-            print("STATUS: AILEN LAB READY (All enabled components are ready)")
+        if self.simulate:
+            print("STATUS: AILEN LAB SIMULATED (Running with synthetic test backends)")
         else:
-            print("STATUS: AILEN LAB DEGRADED (One or more enabled components need attention)")
+            active = [s for s in self.component_statuses if s.state != "DISABLED"]
+            all_ready = bool(active) and all(s.state == "READY" for s in active)
+            if all_ready:
+                print("STATUS: AILEN LAB READY (All enabled live components are ready)")
+            else:
+                print("STATUS: AILEN LAB DEGRADED (One or more enabled components need attention)")
         print("==================================================================")
 
     def _setup_signal_handlers(self) -> None:
@@ -314,60 +443,76 @@ class LabRunner:
         signal.signal(signal.SIGTERM, handler)
 
     def start(self) -> int:
-        """Start the lab session, run event loop, and cleanly terminate upon completion."""
+        """Start the lab session, verify live startup, and terminate cleanly."""
         self.inspect_and_plan()
         self.init_components()
-        self.print_status_table()
 
         if self.dry_run:
-            print("Dry-run complete: all components initialized without entering loop.")
+            self.print_status_table()
+            print("Dry-run complete: components resolved without opening the live session.")
             return 0
-
-        # Setup logging session
-        try:
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            session_file = self.log_dir / f"session_{int(time.time())}.log"
-            session_file.write_text(
-                f"AILEN Lab Session Started: {datetime.datetime.now(datetime.UTC).isoformat()}\n",
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
 
         self._setup_signal_handlers()
         self._is_running = True
         start_time = time.time()
 
-        print("AILEN Lab Mode running. Press Ctrl+C to terminate cleanly.")
-
-        # Start Vision capture if present
+        # 1. Start Vision Backend & Thread, then turn startup failures into
+        # explicit component state instead of leaving an optimistic READY row.
         if self.vision_backend:
             try:
                 self.vision_backend.start()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Could not start vision backend: %s", e)
+                vision_health = self.vision_backend.health()
+                if not self.simulate and vision_health.status != ServiceStatus.HEALTHY:
+                    for status in self.component_statuses:
+                        if status.name == "Vision":
+                            status.state = "DEGRADED"
+                            status.detail = vision_health.detail
+                self._vision_thread = threading.Thread(target=self._vision_loop, daemon=True)
+                self._vision_thread.start()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not start vision backend: %s", exc)
+                for status in self.component_statuses:
+                    if status.name == "Vision":
+                        status.state = "UNAVAILABLE"
+                        status.detail = f"Vision startup failed: {exc}"
 
-        # Start Audio recording if present
+        # 2. Start Audio Coordinator only when the complete speech chain was
+        # wired. Missing STT/TTS never silently activates fake defaults.
         if self.audio_coordinator:
             try:
                 self.audio_coordinator.start()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Could not start audio coordinator: %s", e)
+                if not self.simulate and self.audio_in:
+                    audio_health = self.audio_in.health()
+                    if audio_health.status in {ServiceStatus.UNHEALTHY, ServiceStatus.DISABLED}:
+                        for status in self.component_statuses:
+                            if status.name == "Audio":
+                                status.state = "UNAVAILABLE"
+                                status.detail = audio_health.detail
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not start audio coordinator: %s", exc)
+                for status in self.component_statuses:
+                    if status.name == "Audio":
+                        status.state = "UNAVAILABLE"
+                        status.detail = f"Audio startup failed: {exc}"
 
+        self.print_status_table()
+        print("\nAILEN Lab Mode running. Speak or interact. Press Ctrl+C to terminate cleanly.\n")
+
+        # 3. Main Event / Face Animation Loop
         try:
             while self._is_running and not self._shutdown_requested:
                 if self.duration and (time.time() - start_time) >= self.duration:
                     logger.info("Duration limit reached (%s s). Stopping...", self.duration)
                     break
 
-                # Tick face animation
                 if self.face_controller and hasattr(self.face_controller, "update"):
                     try:
                         self.face_controller.update()
+                        self.metrics.record_face_frame()
                     except Exception:  # noqa: BLE001, S110
                         pass
 
-                time.sleep(0.016)  # ~60 FPS loop
+                time.sleep(0.016)  # ~60 FPS
         except KeyboardInterrupt:
             print("\nCtrl+C detected.")
         finally:
@@ -377,27 +522,52 @@ class LabRunner:
         return 0
 
     def stop(self) -> None:
-        """Stop all managed components safely."""
+        """Stop all managed components safely and write session metrics log."""
+        if not self._is_running:
+            return
         self._is_running = False
+        self.metrics.finalize()
 
+        # Stop Vision
         if self.vision_backend:
             try:
                 self.vision_backend.stop()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Error stopping vision backend: %s", e)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error stopping vision backend: %s", exc)
             self.vision_backend = None
 
+        if self._vision_thread and self._vision_thread.is_alive():
+            self._vision_thread.join(timeout=0.5)
+            self._vision_thread = None
+
+        # Stop Audio
         if self.audio_coordinator:
             try:
                 self.audio_coordinator.stop()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Error stopping audio coordinator: %s", e)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error stopping audio coordinator: %s", exc)
             self.audio_coordinator = None
 
+        # Close Face Window
         if self.face_controller:
             try:
                 if hasattr(self.face_controller, "close"):
                     self.face_controller.close()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Error closing face controller: %s", e)
-            self.face_controller = None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error closing face controller: %s", exc)
+
+        # Stop AILEN-owned Managed Runtime (never touch external runtimes)
+        if self.managed_runtime and self.managed_runtime.owned_by_ailen:
+            try:
+                self.managed_runtime.stop()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error stopping managed llama.cpp runtime: %s", exc)
+
+        # Export session metrics log
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = self.log_dir / f"session_{int(time.time())}.json"
+            log_file.write_text(json.dumps(self.metrics.to_dict(), indent=2), encoding="utf-8")
+            logger.info("Session metrics saved to %s", log_file)
+        except OSError as exc:
+            logger.warning("Could not save session log: %s", exc)

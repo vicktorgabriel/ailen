@@ -36,13 +36,39 @@ def test_cli_lab_start_dry_run() -> None:
         assert "Dry-run complete" in out_text
 
 
-def test_cli_lab_doctor() -> None:
+def test_cli_lab_start_simulate() -> None:
+    with patch("sys.stdout", new=StringIO()) as fake_out:
+        ret = main(["lab", "start", "--dry-run", "--simulate"])
+        assert ret == 0
+        out_text = fake_out.getvalue()
+        assert "SIMULATION MODE" in out_text
+        assert "SIMULATED" in out_text
+
+
+def test_cli_lab_doctor_text_and_json() -> None:
+    # 1. Text
     with patch("sys.stdout", new=StringIO()) as fake_out:
         ret = main(["lab", "doctor"])
         assert ret in (0, 1)
         out_text = fake_out.getvalue()
         assert "AILEN LAB DOCTOR" in out_text
         assert "Python Environment" in out_text
+
+    # 2. JSON
+    with patch("sys.stdout", new=StringIO()) as fake_out:
+        ret = main(["lab", "doctor", "--json"])
+        assert ret in (0, 1)
+        data = json.loads(fake_out.getvalue())
+        assert isinstance(data, list)
+        assert any(c["name"] == "Python Environment" for c in data)
+
+
+def test_cli_lab_prepare_ai() -> None:
+    with patch("sys.stdout", new=StringIO()) as fake_out:
+        ret = main(["lab", "prepare-ai", "--purpose", "SANITY"])
+        assert ret == 0
+        out_text = fake_out.getvalue()
+        assert "AILEN LAB AI PREPARATION" in out_text
 
 
 def test_cli_lab_benchmark() -> None:
@@ -75,7 +101,7 @@ def test_cli_models_list_text_and_json() -> None:
 def test_cli_models_plan_text_and_json() -> None:
     # 1. Text output
     with patch("sys.stdout", new=StringIO()) as fake_out:
-        ret = main(["models", "plan"])
+        ret = main(["models", "plan", "--purpose", "BALANCED"])
         assert ret == 0
         out_text = fake_out.getvalue()
         assert "RECOMMENDED MODEL PLAN" in out_text

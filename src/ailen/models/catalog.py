@@ -6,9 +6,17 @@ LLMs or dynamic prompts are strictly prohibited from generating arbitrary downlo
 
 import re
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from typing import Any
 
 from ailen.domain.enums import DeviceProfile
+
+
+class ModelPurpose(str, Enum):
+    """Execution purpose intent for local model selection."""
+    SANITY = "SANITY"
+    BALANCED = "BALANCED"
+    QUALITY = "QUALITY"
 
 
 @dataclass
@@ -36,6 +44,10 @@ class ModelDescriptor:
     verified_at: str | None = None
     source_reference: str | None = None
     suitability_profiles: list[DeviceProfile] = field(default_factory=list)
+    purposes: list[ModelPurpose] = field(
+        default_factory=lambda: [ModelPurpose.SANITY, ModelPurpose.BALANCED, ModelPurpose.QUALITY]
+    )
+    runtime_aliases: list[str] = field(default_factory=list)
 
     def validate(self) -> None:
         """Validate descriptor integrity, path safety and security requirements."""
@@ -64,6 +76,7 @@ class ModelDescriptor:
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["suitability_profiles"] = [p.value for p in self.suitability_profiles]
+        d["purposes"] = [p.value for p in self.purposes]
         return d
 
 
@@ -99,6 +112,8 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
             DeviceProfile.HYBRID,
             DeviceProfile.LOCAL,
         ],
+        purposes=[ModelPurpose.SANITY, ModelPurpose.BALANCED],
+        runtime_aliases=[],
     ),
     ModelDescriptor(
         model_id="qwen3.5-0.8b-q8_0",
@@ -125,6 +140,8 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
             DeviceProfile.HYBRID,
             DeviceProfile.LOCAL,
         ],
+        purposes=[ModelPurpose.BALANCED, ModelPurpose.QUALITY],
+        runtime_aliases=["qwen3.5:0.8b-q8_0", "qwen3.5:0.8b"],
     ),
     # -------------------------------------------------------------------------
     # Candidates / Historical Metadata (downloadable=False pending hash verify)
@@ -139,12 +156,12 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         parameter_class="tiny",
         context_default=2048,
         ram_requirement_mb=600,
-        vram_requirement_mb=750,
-        disk_size_bytes=397_746_176,
+        vram_requirement_mb=800,
+        disk_size_bytes=397_759_536,
         cpu_requirements=[],
         supported_os=["linux", "windows", "darwin"],
         supported_arch=["x86_64", "amd64", "arm64", "aarch64"],
-        source_url="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        source_url="",
         sha256="",
         downloadable=False,
         license_name="Apache-2.0",
@@ -154,6 +171,8 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
             DeviceProfile.HYBRID,
             DeviceProfile.LOCAL,
         ],
+        purposes=[ModelPurpose.SANITY],
+        runtime_aliases=["qwen2.5:0.5b"],
     ),
     ModelDescriptor(
         model_id="qwen2.5-1.5b-instruct-q4_k_m",
@@ -165,20 +184,21 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         parameter_class="small",
         context_default=2048,
         ram_requirement_mb=1400,
-        vram_requirement_mb=1800,
+        vram_requirement_mb=1600,
         disk_size_bytes=1_120_000_000,
         cpu_requirements=["avx2"],
         supported_os=["linux", "windows", "darwin"],
         supported_arch=["x86_64", "amd64", "arm64", "aarch64"],
-        source_url="https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        source_url="",
         sha256="",
         downloadable=False,
         license_name="Apache-2.0",
         suitability_profiles=[
             DeviceProfile.HYBRID,
             DeviceProfile.LOCAL,
-            DeviceProfile.LAN_BRAIN,
         ],
+        purposes=[ModelPurpose.BALANCED],
+        runtime_aliases=["qwen2.5:1.5b"],
     ),
     ModelDescriptor(
         model_id="smollm2-1.7b-instruct-q4_k_m",
@@ -190,12 +210,12 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         parameter_class="small",
         context_default=2048,
         ram_requirement_mb=1500,
-        vram_requirement_mb=1900,
-        disk_size_bytes=1_080_000_000,
+        vram_requirement_mb=1800,
+        disk_size_bytes=1_079_539_552,
         cpu_requirements=["avx2"],
         supported_os=["linux", "windows", "darwin"],
         supported_arch=["x86_64", "amd64", "arm64", "aarch64"],
-        source_url="https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct-q4_k_m.gguf",
+        source_url="",
         sha256="",
         downloadable=False,
         license_name="Apache-2.0",
@@ -203,6 +223,8 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
             DeviceProfile.HYBRID,
             DeviceProfile.LOCAL,
         ],
+        purposes=[ModelPurpose.BALANCED],
+        runtime_aliases=["smollm2:1.7b"],
     ),
     ModelDescriptor(
         model_id="llama-3.2-1b-instruct-q4_k_m",
@@ -219,7 +241,7 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         cpu_requirements=["avx2"],
         supported_os=["linux", "windows", "darwin"],
         supported_arch=["x86_64", "amd64", "arm64", "aarch64"],
-        source_url="https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+        source_url="",
         sha256="",
         downloadable=False,
         license_name="Llama-3.2-Community",
@@ -227,6 +249,8 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
             DeviceProfile.HYBRID,
             DeviceProfile.LOCAL,
         ],
+        purposes=[ModelPurpose.BALANCED],
+        runtime_aliases=["llama3.2:1b"],
     ),
     ModelDescriptor(
         model_id="qwen2.5-7b-instruct-q4_k_m",
@@ -243,7 +267,7 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         cpu_requirements=["avx2"],
         supported_os=["linux", "windows", "darwin"],
         supported_arch=["x86_64", "amd64", "arm64", "aarch64"],
-        source_url="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf",
+        source_url="",
         sha256="",
         downloadable=False,
         license_name="Apache-2.0",
@@ -251,6 +275,8 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
             DeviceProfile.LOCAL,
             DeviceProfile.LAN_BRAIN,
         ],
+        purposes=[ModelPurpose.QUALITY],
+        runtime_aliases=["qwen2.5:7b"],
     ),
 ]
 
@@ -283,20 +309,19 @@ class ModelCatalog:
         cpu_flags: list[str] | None = None,
         os_name: str = "linux",
         arch: str = "x86_64",
+        purpose: ModelPurpose | None = None,
         require_downloadable: bool = True,
     ) -> list[ModelDescriptor]:
-        """Find and rank models matching hardware constraints and profile.
-
-        By default only verified/downloadable artifacts are returned so an
-        actionable plan never recommends a catalog entry that AILEN itself
-        refuses to fetch. Historical metadata can still be queried explicitly
-        with ``require_downloadable=False``.
-        """
+        """Find and rank models matching hardware constraints, profile, and purpose."""
         flags_set = set(cpu_flags or [])
         suitable: list[ModelDescriptor] = []
 
         for m in self._models.values():
             if require_downloadable and not m.downloadable:
+                continue
+
+            # Match purpose if requested
+            if purpose and purpose not in m.purposes:
                 continue
 
             # Match profile
@@ -320,7 +345,14 @@ class ModelCatalog:
             if fits_in_ram or fits_in_vram:
                 suitable.append(m)
 
-        # Sort from highest parameter class to lowest (medium -> small -> tiny)
-        class_weight = {"medium": 3, "small": 2, "tiny": 1}
-        suitable.sort(key=lambda m: (class_weight.get(m.parameter_class, 0), m.ram_requirement_mb), reverse=True)
+        # Sort according to purpose intent
+        if purpose == ModelPurpose.SANITY:
+            # SANITY prefers tiny -> small -> medium (lowest footprint first)
+            class_weight = {"tiny": 3, "small": 2, "medium": 1}
+            suitable.sort(key=lambda m: (class_weight.get(m.parameter_class, 0), -m.ram_requirement_mb), reverse=True)
+        else:
+            # BALANCED / QUALITY prefers medium -> small -> tiny
+            class_weight = {"medium": 3, "small": 2, "tiny": 1}
+            suitable.sort(key=lambda m: (class_weight.get(m.parameter_class, 0), m.ram_requirement_mb), reverse=True)
+
         return suitable

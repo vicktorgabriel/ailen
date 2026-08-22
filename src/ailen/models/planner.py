@@ -5,7 +5,7 @@ from typing import Any
 
 from ailen.domain.enums import DeviceProfile
 from ailen.hardware.contracts import HardwareCapabilityReport
-from ailen.models.catalog import ModelCatalog, ModelDescriptor
+from ailen.models.catalog import ModelCatalog, ModelDescriptor, ModelPurpose
 
 
 @dataclass
@@ -44,8 +44,10 @@ class ModelPlanner:
         max_ram_fraction: float = 0.60,
         max_vram_fraction: float = 0.80,
         desired_context: int = 2048,
+        purpose: ModelPurpose = ModelPurpose.BALANCED,
+        require_downloadable: bool = True,
     ) -> ModelPlan:
-        """Compute viable model plan based on hardware report and safety margins."""
+        """Compute viable model plan based on hardware report, safety margins, and execution purpose."""
         # 1. Parameter Validation
         if not (0.0 < max_ram_fraction <= 1.0):
             raise ValueError(f"max_ram_fraction must be in (0, 1], got {max_ram_fraction}")
@@ -112,6 +114,8 @@ class ModelPlanner:
             cpu_flags=cpu_flags_list,
             os_name=report.os_name,
             arch=report.cpu.architecture,
+            purpose=purpose,
+            require_downloadable=require_downloadable,
         )
 
         reasons: list[str] = []

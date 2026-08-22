@@ -2,14 +2,27 @@
 
 ## 2026-08-21
 
-### R3B.1 Lab Stabilization — auditoría final
+### R3B.2 Live Lab — auditoría final
 
-- El catálogo puede conservar metadata histórica no verificada, pero el `ModelPlanner` normal sólo recomienda artefactos `downloadable=True` con URL/tamaño/SHA verificados.
-- Se verificaron contra los punteros oficiales actuales de `ggml-org/Qwen3.5-0.8B-GGUF` los artifacts Q4_0 (`563036064` bytes, SHA-256 `57d199...f8cf`) y Q8_0 (`833592096` bytes, SHA-256 `37ae48...814f`).
-- Lab Mode usa el `ModelStore` del usuario; `/var/lib/ailen/models` queda reservado para Appliance Mode.
-- Las carpetas fuente `src/ailen/models/` y `src/ailen/runtime/` deben permanecer trackeables; `.gitignore` sólo excluye `/models/` y `/runtime/` en la raíz.
-- `READY` en Lab Mode debe significar que todos los componentes habilitados están realmente listos; faltantes de OpenCV, STT/TTS o modelo local degradan el estado.
-- `LabRunner` de R3B.1 es baseline de lifecycle/readiness. El wiring físico conversacional real sin fakes silenciosos se separa como R3B.2 antes de Memory/Personality.
+- Live Lab no puede instanciar `AudioInteractionCoordinator` con STT/TTS ausentes, porque sus defaults Fake son válidos sólo para tests; fuera de `--simulate` la cadena speech se crea únicamente con backends reales completos.
+- La selección de modelos de runtimes existentes es exacta y explícita. Ollama no puede sustituir el modelo planificado por el primer modelo de su inventario ni usar aliases de otra familia/tamaño.
+- Un GGUF verificado puede iniciar un `llama-server` temporal propiedad de `LabRunner`; se fija loopback, alias exacto del model_id y cleanup por ownership. `--dry-run` nunca inicia procesos.
+- `prepare-ai --start-runtime` es un smoke/health check temporal y detiene su proceso antes de salir; el proceso de la sesión real pertenece a `lab start`.
+- Live Lab reutiliza BudgetPolicy, SecretResolver, LAN trust y privacidad R3A; no crea un camino alternativo menos seguro.
+- Métricas nunca convierten tokens no reportados en cero y separan latencia de inferencia de TTS/playback.
+- R3B.2 queda "software-wired/auditado", no "hardware validado". La primera validación física Mint se separa como R3B.3 antes de R3C.
+
+
+### R3B.2 Live Lab Integration — cableado conversacional físico
+
+- **Regla Absoluta "No Silent Fakes"**: En Lab Mode real (`ailen lab start` sin `--simulate`), los adaptadores `FakeSttBackend`, `FakeTtsBackend`, `FakeAiBackend`, `FakeVisionBackend` y `FakeAudioBackend` quedan prohibidos. Si falta un componente, se reporta `MISSING_MODEL`, `UNAVAILABLE` o `DISABLED`. `--simulate` es el único modo que permite backends sintéticos con fines de desarrollo/UI offline.
+- **Factoría de Componentes Desacoplada (`LabComponentFactory`)**: Aísla la resolución de periféricos y modelos reales de la orquestación del runner, retornando instancias y metadatos estructurados `ComponentStatus`.
+- **Single-Flight Interaction Lock y Half-Duplex**: Para evitar inferencias concurrentes o respuestas de voz superpuestas, se implementó un candado atómico que procesa un solo turno conversacional a la vez. El micrófono es inhibido durante la locución (`AudioTurnGate`).
+- **Mapeo e Inventario de Modelos en Ollama (`RuntimeModelInventory`)**: Consulta endpoints `/api/tags` y `/v1/models` de Ollama/llama.cpp para verificar modelos cargados sin asumir que el inventario local de GGUFs coincide con los tags de Ollama. Se soportan alias explícitos (`runtime_aliases`).
+- **Runtime Local Gestionado y Ownership de Procesos (`ManagedLlamaRuntime`)**: AILEN puede iniciar y gestionar su propio proceso `llama-server` o `llama serve` en `127.0.0.1`. Sólo finaliza procesos si fueron iniciados por AILEN (`owned_by_ailen=True`), respetando servidores preexistentes como Ollama.
+- **Workflow `prepare-ai` y Propósito de Modelos (`ModelPurpose`)**: Introduce intenciones de ejecución `SANITY` (validación de pipeline con menor footprint), `BALANCED` (equilibrio óptimo) y `QUALITY` (máxima capacidad dentro de márgenes de seguridad). El comando `ailen lab prepare-ai` guía la inspección, descarga explícita y arranque de runtime.
+- **Telemetría y Métricas en Vivo (`LabSessionMetrics`)**: Recolecta métricas reales de latencia STT/AI/TTS, conteo de tokens y transiciones sin inventar valores no medidos, exportando el resumen a `runtime/lab/session_<timestamp>.json`.
+- **LabDoctor Mejorado**: Proporciona diagnósticos no invasivos con remediaciones explícitas y opción de salida estructurada `--json`.
 
 
 ### Proyecto

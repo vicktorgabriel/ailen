@@ -6,8 +6,23 @@ El proyecto usa versionado semántico durante desarrollo, con prereleases cuando
 
 ## [Unreleased]
 
-### Added
-
+- **R3B.2 Live Lab Integration**:
+  - Regla estricta "No Silent Fakes": `Fake*` sólo se permiten cuando se pasa explícitamente `--simulate`. Si falta un backend o modelo real, el estado reportado es `MISSING_MODEL`, `UNAVAILABLE` o `DISABLED`.
+  - Factoría desacoplada `LabComponentFactory` (`src/ailen/runtime/factory.py`) para resolver componentes físicos de Face, Vision, Audio ALSA, STT (Vosk/Whisper), TTS (Piper) y AI Backends (Ollama/llama.cpp).
+  - Cableado interactivo completo de extremo a extremo en `LabRunner` (`src/ailen/runtime/runner.py`) con `EventBus` (`TRANSCRIPT_READY`), `AudioInteractionCoordinator`, `ConversationCoordinator`, `StateManager` y `SocialEngine`.
+  - Serialización de interacciones de vuelo único (`_interaction_lock`) para evitar colisiones y superposición de turnos conversacionales o inferencias concurrentes.
+  - Soporte de inventario de modelos en tiempo de ejecución `RuntimeModelInventory` para endpoints Ollama `/api/tags` y OpenAI `/v1/models`.
+  - Gestor de runtimes locales gestionados `ManagedLlamaRuntime` (`src/ailen/runtime/managed.py`) con loopback seguro `127.0.0.1` y control estricto de propiedad de procesos (`owned_by_ailen`).
+  - Asistente de preparación `ailen lab prepare-ai` con soporte para selección de propósito (`ModelPurpose.SANITY`, `BALANCED`, `QUALITY`), verificación y arranque.
+  - Telemetría estructurada en vivo `LabSessionMetrics` (`src/ailen/runtime/metrics.py`) y exportación a `runtime/lab/session_<timestamp>.json`.
+  - `LabDoctor` con salida estructurada `--json` y diagnósticos no invasivos con remediaciones explícitas.
+  - Auditoría ChatGPT R3B.2: el audio live sólo se cablea con I/O + STT + TTS reales; `--simulate` es el único camino Fake.
+  - Resolución estricta del modelo de runtime: Ollama ya no selecciona arbitrariamente el primer modelo instalado ni hace fuzzy-match por familia; un alias debe ser explícito y exacto.
+  - `LabRunner` puede iniciar/poseer un `llama-server` temporal sólo con GGUF instalado y SHA verificado; dry-run nunca inicia procesos y `prepare-ai --start-runtime` sólo realiza un smoke/health check y lo detiene.
+  - Restore de políticas R3A en Live Lab: `SecretResolver`, BudgetPolicy, trust de LAN y restricciones cloud se propagan al `ConversationCoordinator`.
+  - Métricas corregidas: latencia AI tomada del backend (sin TTS/playback), tokens desconocidos permanecen `None`, latencia TTS y transiciones de presencia se registran desde EventBus.
+  - La voz configurada (`speech.tts_voice`) se propaga al TTS real y los estados Face/Core permanecen `PROCESSING` durante inferencia hasta volver a `ATTENTION/IDLE`.
+  - Suite completa auditada de 324 tests unitarios offline pasando, ruff limpio, mypy en 100 archivos fuente y build de wheel exitoso.
 - **R3B.1 Lab Stabilization**: HardwareCapabilityReport multiplataforma, adapters Linux/Windows defensivos, ModelCatalog/Planner/Store/Downloader, RuntimeManager, `ailen lab inspect/start/doctor/benchmark` y gestión segura de modelos locales.
 - Auditoría final R3B.1: `src/ailen/models/` y `src/ailen/runtime/` quedan trackeables; planner accionable limitado a artefactos verificados; ModelStore de Lab usa ruta de usuario; downloader no sobrescribe artefactos existentes corruptos; estado `LAB READY` sólo se muestra cuando todos los componentes habilitados están listos.
 - Verificación externa 2026-08-21 de Qwen 3.5 0.8B Q4_0/Q8_0 contra punteros oficiales de Hugging Face.

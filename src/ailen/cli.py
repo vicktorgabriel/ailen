@@ -160,8 +160,15 @@ def create_parser() -> argparse.ArgumentParser:
     lab_start.add_argument("--no-camera", action="store_true", default=False, help="Disable vision and camera capture")
     lab_start.add_argument("--no-audio", action="store_true", default=False, help="Disable audio I/O and speech")
     lab_start.add_argument("--no-ai", action="store_true", default=False, help="Disable local AI inference")
+    lab_start.add_argument("--simulate", action="store_true", default=False, help="Use synthetic test backends for offline lab simulation")
+    lab_start.add_argument("--fullscreen", action="store_true", default=False, help="Display face window in fullscreen mode")
     lab_start.add_argument("--duration", type=float, default=None, help="Run for N seconds and terminate cleanly")
-    lab_sub.add_parser("doctor", help="Run non-invasive system readiness diagnostic")
+    lab_doctor = lab_sub.add_parser("doctor", help="Run non-invasive system readiness diagnostic")
+    lab_doctor.add_argument("--json", action="store_true", help="Output diagnostic report as JSON")
+    lab_prepare = lab_sub.add_parser("prepare-ai", help="Inspect and prepare local model and runtime for Lab Mode")
+    lab_prepare.add_argument("-y", "--yes", action="store_true", help="Automatically accept downloading missing model artifact")
+    lab_prepare.add_argument("--start-runtime", action="store_true", help="Temporarily start/health-check an AILEN-managed llama.cpp runtime, then stop it")
+    lab_prepare.add_argument("--purpose", choices=["SANITY", "BALANCED", "QUALITY"], default="BALANCED", help="Model execution purpose")
     lab_bench = lab_sub.add_parser("benchmark", help="Run reproducible lab benchmark harness")
     lab_bench.add_argument("--output", default="runtime/lab/benchmarks", help="Destination directory for benchmark artifact")
 
@@ -172,8 +179,10 @@ def create_parser() -> argparse.ArgumentParser:
     models_list.add_argument("--json", action="store_true", help="Output as JSON")
     models_plan = models_sub.add_parser("plan", help="Evaluate hardware capabilities and output recommended model plan")
     models_plan.add_argument("--json", action="store_true", help="Output as JSON")
+    models_plan.add_argument("--purpose", choices=["SANITY", "BALANCED", "QUALITY"], default="BALANCED", help="Model execution purpose")
+    models_plan.add_argument("--all", action="store_true", help="Include non-downloadable metadata candidates")
     models_fetch = models_sub.add_parser("fetch", help="Download and verify a model from catalog")
-    models_fetch.add_argument("model_id", help="Model ID from catalog (e.g. qwen2.5-0.5b-instruct-q4_k_m)")
+    models_fetch.add_argument("model_id", help="Model ID from catalog (e.g. qwen3.5-0.8b-q4_0)")
     models_fetch.add_argument("-y", "--yes", action="store_true", help="Bypass interactive confirmation prompt")
     models_verify = models_sub.add_parser("verify", help="Verify SHA-256 integrity of an installed model")
     models_verify.add_argument("model_id", help="Model ID to verify in local store")
@@ -1087,6 +1096,8 @@ def cmd_lab_start(args: argparse.Namespace, config_path: str | None) -> int:
         no_camera=getattr(args, "no_camera", False),
         no_audio=getattr(args, "no_audio", False),
         no_ai=getattr(args, "no_ai", False),
+        simulate=getattr(args, "simulate", False),
+        fullscreen=getattr(args, "fullscreen", False),
         duration=getattr(args, "duration", None),
     )
     return runner.start()
@@ -1098,7 +1109,25 @@ def cmd_lab_doctor(args: argparse.Namespace, config_path: str | None) -> int:
 
     cfg = load_config(config_path)
     doctor = LabDoctor(config=cfg)
-    return doctor.print_report()
+    return doctor.print_report(as_json=getattr(args, "json", False))
+
+
+def cmd_lab_prepare_ai(args: argparse.Namespace, config_path: str | None) -> int:
+    """Run interactive or automated prepare-ai workflow."""
+    from ailen.models.catalog import ModelPurpose
+    from ailen.runtime.prepare import LabAiPreparer
+
+    cfg = load_config(config_path)
+    preparer = LabAiPreparer(config=cfg)
+    purpose_str = getattr(args, "purpose", "BALANCED").upper()
+    purpose = ModelPurpose(purpose_str) if purpose_str in ModelPurpose._value2member_map_ else ModelPurpose.BALANCED
+
+    _report, code = preparer.run(
+        auto_download=getattr(args, "yes", False),
+        start_runtime=getattr(args, "start_runtime", False),
+        purpose=purpose,
+    )
+    return code
 
 
 def cmd_lab_benchmark(args: argparse.Namespace) -> int:
@@ -1137,9 +1166,11 @@ def cmd_lab(args: argparse.Namespace, config_path: str | None) -> int:
         return cmd_lab_start(args, config_path)
     elif action == "doctor":
         return cmd_lab_doctor(args, config_path)
+    elif action == "prepare-ai":
+        return cmd_lab_prepare_ai(args, config_path)
     elif action == "benchmark":
         return cmd_lab_benchmark(args)
-    print("Uso: ailen lab [inspect|start|doctor|benchmark]")
+    print("Uso: ailen lab [inspect|start|doctor|prepare-ai|benchmark]")
     return 1
 
 
@@ -1170,12 +1201,19 @@ def cmd_models_list(args: argparse.Namespace) -> int:
 
 def cmd_models_plan(args: argparse.Namespace) -> int:
     """Evaluate and print recommended model plan for current hardware."""
+    from ailen.models.catalog import ModelPurpose
+
     store = ModelStore()
     detector = HardwareDetector()
     report = detector.detect(str(store.base_dir))
     rec = detector.recommend_profile(report)
     planner = ModelPlanner()
-    plan = planner.plan(report, profile=rec.profile)
+
+    purpose_str = getattr(args, "purpose", "BALANCED").upper()
+    purpose = ModelPurpose(purpose_str) if purpose_str in ModelPurpose._value2member_map_ else ModelPurpose.BALANCED
+    require_downloadable = not getattr(args, "all", False)
+
+    plan = planner.plan(report, profile=rec.profile, purpose=purpose, require_downloadable=require_downloadable)
 
     if getattr(args, "json", False):
         print(json.dumps(plan.to_dict(), indent=2, ensure_ascii=False))

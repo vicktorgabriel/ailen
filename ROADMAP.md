@@ -66,17 +66,20 @@
 
 ## R3B — Lab Mode y runtime local adaptativo — OBJETIVO 0.3.x
 
-- [x] `ailen lab start` baseline sin cambios persistentes del SO; wiring conversacional real queda en R3B.2.
-- [ ] validar ejecución de laboratorio en Linux Mint.
-- [ ] validar ejecución de laboratorio en Windows 11.
+- [x] `ailen lab start` sin cambios persistentes del SO ni dependencias de root/services.
+- [x] soporte de laboratorio explícito para Linux Mint y Windows 11.
 - [x] normalizar detección multiplataforma de CPU/RAM/GPU/VRAM/disco/audio/cámara/display sin inventar capabilities desconocidas.
 - [x] Model Catalog versionado con artefactos aprobados y hashes; Qwen 3.5 0.8B Q4_0/Q8_0 verificados el 2026-08-21.
-- [x] Model Planner explicable por hardware/perfil y limitado por defecto a artefactos verificados/descargables.
+- [x] Model Planner explicable por hardware/perfil y clasificado por propósito (`SANITY`, `BALANCED`, `QUALITY`).
 - [x] descarga segura con consentimiento explícito en Lab Mode, HTTPS + tamaño exacto + SHA-256 + rename atómico.
 - [x] ModelStore local por plataforma, separado de Git y con protección de path traversal.
-- [x] selección automática baseline de runtime/modelo/quantización local; requiere ampliar catálogo verificado para aprovechar hardware grande.
-- [ ] conectar en R3B.2 el backend elegido al ciclo conversacional real sin sustituciones fake silenciosas.
-- [ ] R3B.2 primera prueba visible: rostro + cámara + micrófono + logs + LLM local/cloud fallback.
+- [x] `LabComponentFactory` sin sustituciones fake silenciosas en modo real (`--simulate` para offline/UI tests).
+- [x] cableado conversacional de software en `LabRunner`: Face/Vision/Audio/STT/Router/LLM/TTS sin fakes silenciosos; falta validación física.
+- [x] inventario de modelos en runtime `RuntimeModelInventory` y runtime gestionado `ManagedLlamaRuntime`.
+- [x] telemetría y métricas de sesión `LabSessionMetrics` exportadas a `runtime/lab/session_<timestamp>.json`.
+- [x] asistente `ailen lab prepare-ai` y diagnóstico con remediaciones `ailen lab doctor [--json]`.
+- [ ] R3B.3 validar primera sesión física interactiva en Linux Mint con cámara/micrófono/parlantes y assets STT/TTS reales.
+- [ ] validar después el segundo laboratorio en Windows 11.
 - [ ] registrar benchmarks reales de los equipos laboratorio sin confundirlos con hardware objetivo comercial.
 
 ## R4 — Herramientas y comportamiento útil — OBJETIVO 0.3/0.4.x

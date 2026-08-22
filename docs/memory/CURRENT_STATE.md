@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-08-21  
 **Versión:** `0.1.0-dev.0`  
-**Fase:** R3B.1 Lab Stabilization integrado y auditado; Hardware V2 multiplataforma + catálogo/model planner verificado + ModelStore/Downloader seguro + RuntimeManager + LabRunner/LabDoctor. Próximo milestone: R3B.2 Live Lab Integration para conectar de extremo a extremo cámara/micrófono -> STT -> Router/LLM -> TTS -> Face antes de avanzar a Memory/Personality.
+**Fase:** R3B.2 Live Lab Integration integrado y auditado en software. El wiring real Face/Vision/Audio/STT/AI/TTS está preparado sin fakes silenciosos, pero la sesión física con cámara/micrófono/modelos de voz todavía NO fue ejecutada. Próximo milestone: R3B.3 First Physical Lab Validation en Linux Mint antes de Memory/Personality.
 
 ## Qué existe
 
@@ -59,15 +59,17 @@
 - Backends `LocalAiBackend`, `LanBrainAiBackend` y `CloudAiBackend`;
 - `AiOrchestrator` ejecutando la secuencia de fallback con degradación limpia y registro de telemetría en SQLite;
 - `ConversationCoordinator` unificando Transcript STT -> Context -> Router -> Orchestrator -> TTS speak();
-- Subsistema de Hardware Multiplataforma (`src/ailen/hardware/`): `LinuxHardwareAdapter`, `WindowsHardwareAdapter`, `FakeHardwareAdapter` y `HardwareDetector` produciendo `HardwareCapabilityReport` sin inventar capacidades sintéticas y reportando `None` (UNKNOWN) ante flags/VRAM no medidos;
-- `ModelCatalog` declarativo e inmutable (`src/ailen/models/catalog.py`) con modelos GGUF 2026 verificados con Git LFS (`qwen3.5-0.8b-q4_0`, `qwen3.5-0.8b-q8_0`) y modelos previos marcados con `downloadable=False`;
-- `ModelPlanner` adaptativo con márgenes de seguridad (60% RAM, 80% VRAM), comprobación de disco libre y CPU flags en GPU offload, y rechazo de hardware no medido (`HARDWARE_RAM_UNKNOWN`);
-- `ModelStore` desacoplado por plataforma con validación regex y `path.is_relative_to(base_dir)` contra path traversal;
-- `ModelDownloader` con exigencia HTTPS, streaming, límite de tamaño, verificación estricta SHA-256 fail-closed y renombre atómico;
-- `LocalRuntimeManager` detectando y reportando salud de `llama-server`, `llama serve` y `Ollama`, tratando respuestas 404 como `DEGRADED` (no `HEALTHY`);
-- `LabRunner` y `LabDoctor` no invasivos en `src/ailen/runtime/` para arranque de componentes en modo laboratorio y diagnóstico integral de dependencias;
-- Comandos CLI operativos: `ailen lab inspect`, `ailen lab start`, `ailen lab doctor`, `ailen lab benchmark`, `ailen models list`, `ailen models plan`, `ailen models fetch`, `ailen models verify`;
-- Suite auditada en R3B.1: 292 tests pasando; `ruff`, `mypy` en 95 archivos fuente, `git diff --check` y build del wheel validados en verde.
+- Subsistema de Hardware Multiplataforma (`src/ailen/hardware/`): `LinuxHardwareAdapter`, `WindowsHardwareAdapter`, `FakeHardwareAdapter` y `HardwareDetector` produciendo `HardwareCapabilityReport` sin inventar capacidades sintéticas;
+- `ModelCatalog` declarativo e inmutable (`src/ailen/models/catalog.py`) con soporte para `ModelPurpose` (`SANITY`, `BALANCED`, `QUALITY`), alias de runtime y modelos GGUF 2026 verificados con Git LFS (`qwen3.5-0.8b-q4_0`, `qwen3.5-0.8b-q8_0`);
+- `ModelPlanner` adaptativo con márgenes de seguridad (60% RAM, 80% VRAM), comprobación de disco libre y CPU flags en GPU offload;
+- `ModelStore` y `ModelDownloader` endurecidos contra path traversal, fail-closed con HTTPS forzado y renombre atómico;
+- `RuntimeModelInventory` consultando modelos cargados en Ollama (`/api/tags`, `/v1/models`) y mapeando nombres/alias explícitos;
+- `ManagedLlamaRuntime` gestionando el ciclo de vida de procesos `llama-server` / `llama serve` propios de AILEN con loopback estricto `127.0.0.1` y ownership de procesos respetado;
+- `LabComponentFactory` (`src/ailen/runtime/factory.py`) con regla estricta "No Silent Fakes" (los fakes sólo se activan con `--simulate`);
+- `LabRunner` (`src/ailen/runtime/runner.py`) con cableado end-to-end de hardware real (Face GUI Tkinter, Visión OpenCV, Audio ALSA, Vosk/Whisper STT, Piper TTS, AI Router), single-flight interaction lock y telemetría de sesión `LabSessionMetrics`;
+- `LabDoctor` (`src/ailen/runtime/doctor.py`) con diagnósticos de solo lectura, remediaciones explícitas y salida `--json`;
+- Comandos CLI operativos: `ailen lab inspect`, `ailen lab start [--simulate] [--fullscreen]`, `ailen lab doctor [--json]`, `ailen lab prepare-ai [--yes] [--start-runtime]`, `ailen lab benchmark`, `ailen models list`, `ailen models plan [--purpose]`, `ailen models fetch`, `ailen models verify`;
+- Suite auditada en R3B.2: 324 tests pasando; `ruff`, `mypy` en 100 archivos fuente, `git diff --check` y build del wheel validados en verde.
 
 ## Qué NO existe todavía
 
@@ -112,7 +114,7 @@ La base Foundation/Core/Web, Face/Vision, Audio/VAD/STT/TTS y R3A AI Router ya e
 
 ## Próximo milestone
 
-`R3B.2 — Live Lab Integration`: ejecutar en Linux Mint el pipeline físico real Face + Vision + Audio + STT + AI local/cloud + TTS, con wiring explícito sin backends fake silenciosos, métricas y logs de sesión. Windows 11 será el segundo laboratorio después de estabilizar Mint.
+`R3B.3 — First Physical Lab Validation`: preparar los assets STT/TTS y dependencias opcionales de laboratorio, conectar cámara/micrófono/parlantes y ejecutar en Linux Mint el pipeline físico completo. La validación Mint sólo se marcará PASS con evidencia real; Windows 11 será el segundo laboratorio.
 
 Trabajo inmediato definido en `TASKS.md` y `docs/operations/AGENT_HANDOFF.md`.
 

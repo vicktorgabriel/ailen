@@ -1,10 +1,12 @@
 """Non-invasive system readiness diagnostic for AILEN Lab Mode."""
 
 import importlib.util
+import json
 import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 from ailen.ai.secrets import SecretResolver
 from ailen.core.config import AILENConfig
@@ -21,6 +23,10 @@ class DiagnosticCheck:
     name: str
     result: str  # "PASS", "WARN", "FAIL", "SKIP"
     detail: str
+    remediation: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 class LabDoctor:
@@ -33,8 +39,7 @@ class LabDoctor:
         """Execute diagnostic checks across software, hardware, and assets."""
         checks: list[DiagnosticCheck] = []
 
-        # 1. Python Environment Check. Importing this package already implies the
-        # declared Python >= 3.11 requirement was satisfied.
+        # 1. Python Environment Check
         py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         checks.append(DiagnosticCheck(name="Python Environment", result="PASS", detail=f"Python {py_ver} ({sys.executable})"))
 
@@ -42,13 +47,23 @@ class LabDoctor:
         if importlib.util.find_spec("tkinter") is not None:
             checks.append(DiagnosticCheck(name="Tkinter GUI", result="PASS", detail="Tkinter library loaded successfully"))
         else:
-            checks.append(DiagnosticCheck(name="Tkinter GUI", result="WARN", detail="python3-tk not installed; headless fallback will be used"))
+            checks.append(DiagnosticCheck(
+                name="Tkinter GUI",
+                result="WARN",
+                detail="python3-tk not installed; headless fallback will be used",
+                remediation="Install python3-tk or run with --headless",
+            ))
 
         # 3. OpenCV Vision Library
         if importlib.util.find_spec("cv2") is not None:
             checks.append(DiagnosticCheck(name="OpenCV Vision", result="PASS", detail="cv2 module available"))
         else:
-            checks.append(DiagnosticCheck(name="OpenCV Vision", result="WARN", detail="opencv-python not installed; vision disabled"))
+            checks.append(DiagnosticCheck(
+                name="OpenCV Vision",
+                result="WARN",
+                detail="opencv-python not installed; vision disabled",
+                remediation="pip install -e '.[vision]'",
+            ))
 
         # 4. Hardware Inspection & Peripherals
         store = ModelStore()
@@ -57,7 +72,12 @@ class LabDoctor:
         rec = detector.recommend_profile(report)
 
         cpu_desc = f"{report.cpu.model} | AVX2={report.cpu.has_avx2} FMA={report.cpu.has_fma}"
-        checks.append(DiagnosticCheck(name="CPU Instruction Sets", result="PASS" if report.cpu.has_avx2 else "WARN", detail=cpu_desc))
+        checks.append(DiagnosticCheck(
+            name="CPU Instruction Sets",
+            result="PASS" if report.cpu.has_avx2 else "WARN",
+            detail=cpu_desc,
+            remediation="" if report.cpu.has_avx2 else "Models requiring AVX2 will be skipped",
+        ))
 
         ram_desc = f"{report.ram.available_mb} MB free / {report.ram.total_mb} MB total"
         if report.ram.total_mb >= 4000:
@@ -71,15 +91,65 @@ class LabDoctor:
         if len(report.audio_inputs) > 0 and len(report.audio_outputs) > 0:
             checks.append(DiagnosticCheck(name="Audio Devices", result="PASS", detail=f"{len(report.audio_inputs)} in / {len(report.audio_outputs)} out"))
         else:
-            checks.append(DiagnosticCheck(name="Audio Devices", result="WARN", detail=f"{len(report.audio_inputs)} in / {len(report.audio_outputs)} out detected"))
+            checks.append(DiagnosticCheck(
+                name="Audio Devices",
+                result="WARN",
+                detail=f"{len(report.audio_inputs)} in / {len(report.audio_outputs)} out detected",
+                remediation="Connect microphone/speakers or pass --no-audio",
+            ))
 
         # Camera
         if len(report.cameras) > 0:
             checks.append(DiagnosticCheck(name="Camera Devices", result="PASS", detail=f"{len(report.cameras)} camera(s) detected"))
         else:
-            checks.append(DiagnosticCheck(name="Camera Devices", result="WARN", detail="No physical cameras found"))
+            checks.append(DiagnosticCheck(
+                name="Camera Devices",
+                result="WARN",
+                detail="No physical cameras found",
+                remediation="Connect USB camera or pass --no-camera",
+            ))
 
-        # 5. Local AI Runtimes
+        # 5. Speech Assets (STT / TTS)
+        if self.config:
+            # STT Check
+            stt_engine = self.config.speech.stt_engine.lower()
+            if stt_engine == "vosk":
+                stt_path = self.config.speech.stt_model_path.strip()
+                if stt_path and Path(stt_path).is_dir():
+                    checks.append(DiagnosticCheck(name="STT Voice Model", result="PASS", detail=f"Vosk model at {stt_path}"))
+                else:
+                    checks.append(DiagnosticCheck(
+                        name="STT Voice Model",
+                        result="WARN",
+                        detail=f"Vosk model path missing: '{stt_path or 'unconfigured'}'",
+                        remediation="Set speech.stt_model_path in ailen.toml to valid Vosk model directory",
+                    ))
+            elif stt_engine == "mock":
+                checks.append(DiagnosticCheck(name="STT Voice Model", result="SKIP", detail="STT set to mock"))
+            else:
+                checks.append(DiagnosticCheck(name="STT Voice Model", result="WARN", detail=f"STT engine '{stt_engine}'"))
+
+            # TTS Check
+            tts_engine = self.config.speech.tts_engine.lower()
+            if tts_engine == "piper":
+                tts_path = self.config.speech.tts_model_path.strip()
+                piper_bin = shutil.which("piper")
+                if piper_bin and tts_path and Path(tts_path).is_file():
+                    checks.append(DiagnosticCheck(name="TTS Voice Model", result="PASS", detail=f"Piper ONNX model at {tts_path}"))
+                else:
+                    detail = f"Piper binary={'OK' if piper_bin else 'MISSING'}, model={tts_path or 'unconfigured'}"
+                    checks.append(DiagnosticCheck(
+                        name="TTS Voice Model",
+                        result="WARN",
+                        detail=detail,
+                        remediation="Install piper binary and set speech.tts_model_path in ailen.toml",
+                    ))
+            elif tts_engine == "mock":
+                checks.append(DiagnosticCheck(name="TTS Voice Model", result="SKIP", detail="TTS set to mock"))
+            else:
+                checks.append(DiagnosticCheck(name="TTS Voice Model", result="WARN", detail=f"TTS engine '{tts_engine}'"))
+
+        # 6. Local AI Runtimes
         runtime_mgr = LocalRuntimeManager()
         runtimes = runtime_mgr.detect_available_runtimes()
         healthy_runtimes = [r for r in runtimes if r.health and r.health.status == RuntimeStatus.HEALTHY]
@@ -88,14 +158,24 @@ class LabDoctor:
             rt = healthy_runtimes[0]
             checks.append(DiagnosticCheck(name="Local AI Runtime", result="PASS", detail=f"{rt.runtime_type.value} at {rt.endpoint} (HEALTHY)"))
         else:
-            checks.append(DiagnosticCheck(name="Local AI Runtime", result="WARN", detail="No active runtime at 8080/11434; run llama-server or ollama"))
+            checks.append(DiagnosticCheck(
+                name="Local AI Runtime",
+                result="WARN",
+                detail="No active runtime at 8080/11434",
+                remediation="Start Ollama (ollama serve) or run llama-server",
+            ))
 
-        # 6. Model Store and Recommended Model
+        # 7. Model Store and Recommended Model
         free_gb = round(shutil.disk_usage(store.base_dir if store.base_dir.exists() else Path.home()).free / (1024**3), 2)
         if free_gb >= 2.0:
             checks.append(DiagnosticCheck(name="Model Storage Disk", result="PASS", detail=f"{free_gb} GB free at {store.base_dir}"))
         else:
-            checks.append(DiagnosticCheck(name="Model Storage Disk", result="WARN", detail=f"Low disk space: {free_gb} GB free at {store.base_dir}"))
+            checks.append(DiagnosticCheck(
+                name="Model Storage Disk",
+                result="WARN",
+                detail=f"Low disk space: {free_gb} GB free at {store.base_dir}",
+                remediation="Free disk space in model storage path",
+            ))
 
         planner = ModelPlanner(catalog=ModelCatalog())
         plan = planner.plan(report, profile=rec.profile)
@@ -106,12 +186,13 @@ class LabDoctor:
                 checks.append(DiagnosticCheck(
                     name="Recommended Model",
                     result="WARN",
-                    detail=f"{plan.selected_model_id} not installed. Run: ailen models fetch {plan.selected_model_id}",
+                    detail=f"{plan.selected_model_id} not installed",
+                    remediation=f"Run: ailen models fetch {plan.selected_model_id}",
                 ))
         else:
             checks.append(DiagnosticCheck(name="Recommended Model", result="SKIP", detail="Remote/Rule-only routing planned"))
 
-        # 7. Cloud AI Configuration
+        # 8. Cloud AI Configuration
         if self.config and self.config.ai.cloud.enabled:
             has_key = SecretResolver().resolve(
                 env_var=self.config.ai.cloud.api_key_env,
@@ -120,15 +201,26 @@ class LabDoctor:
             if has_key:
                 checks.append(DiagnosticCheck(name="Cloud AI Config", result="PASS", detail="Cloud enabled with API key present"))
             else:
-                checks.append(DiagnosticCheck(name="Cloud AI Config", result="WARN", detail="Cloud enabled but API key missing"))
+                checks.append(DiagnosticCheck(
+                    name="Cloud AI Config",
+                    result="WARN",
+                    detail="Cloud enabled but API key missing",
+                    remediation=f"Set {self.config.ai.cloud.api_key_env} in environment",
+                ))
         else:
             checks.append(DiagnosticCheck(name="Cloud AI Config", result="SKIP", detail="Cloud AI disabled in config"))
 
         return checks
 
-    def print_report(self) -> int:
-        """Run checks and print formatted diagnostic table."""
+    def print_report(self, as_json: bool = False) -> int:
+        """Run checks and print formatted diagnostic table or JSON."""
         checks = self.run_all_checks()
+
+        if as_json:
+            print(json.dumps([c.to_dict() for c in checks], indent=2))
+            fail_count = sum(1 for c in checks if c.result == "FAIL")
+            return 1 if fail_count > 0 else 0
+
         print("==================================================================")
         print("                        AILEN LAB DOCTOR                          ")
         print("==================================================================")
@@ -136,6 +228,8 @@ class LabDoctor:
         print("------------------------------------------------------------------")
         for c in checks:
             print(f"{c.name:<24} {c.result:<8} {c.detail}")
+            if c.remediation:
+                print(f"  -> Remediation: {c.remediation}")
         print("==================================================================")
 
         fail_count = sum(1 for c in checks if c.result == "FAIL")

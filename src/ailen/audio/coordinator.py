@@ -51,6 +51,7 @@ class AudioInteractionCoordinator:
         face_controller: FaceController | None = None,
         event_bus: EventBus | None = None,
         clock: Callable[[], float] | None = None,
+        auto_reset_after_stt: bool = True,
     ) -> None:
         self.audio_input = audio_input or FakeAudioInputBackend()
         self.audio_output = audio_output or FakeAudioOutputBackend()
@@ -62,6 +63,7 @@ class AudioInteractionCoordinator:
         self.face_controller = face_controller
         self.event_bus = event_bus
         self._clock = clock or time.monotonic
+        self.auto_reset_after_stt = auto_reset_after_stt
 
         self._running = False
         self._loop_thread: threading.Thread | None = None
@@ -240,15 +242,17 @@ class AudioInteractionCoordinator:
                 },
             )
 
-        # Transition back to IDLE
-        if self.state_manager:
-            try:
-                self.state_manager.transition_to(AssistantState.IDLE, reason="transcription_complete")
-            except Exception as e:  # noqa: BLE001
-                logger.debug("Ignored state transition to IDLE: %s", e)
+        # Standalone STT demos return to IDLE. A full conversation pipeline can
+        # keep PROCESSING until AI/TTS completes to avoid a misleading idle face.
+        if self.auto_reset_after_stt:
+            if self.state_manager:
+                try:
+                    self.state_manager.transition_to(AssistantState.IDLE, reason="transcription_complete")
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("Ignored state transition to IDLE: %s", e)
 
-        if self.face_controller:
-            self.face_controller.set_state(AssistantState.IDLE)
+            if self.face_controller:
+                self.face_controller.set_state(AssistantState.IDLE)
 
         return transcript
 
@@ -332,7 +336,11 @@ class AudioInteractionCoordinator:
                 self.event_bus.create_and_publish(
                     event_type=EventType.SPEECH_FINISHED,
                     source="audio_coordinator",
-                    payload={"duration_ms": output.duration_ms, "success": success},
+                    payload={
+                        "duration_ms": output.duration_ms,
+                        "latency_ms": output.latency_ms,
+                        "success": success,
+                    },
                 )
 
         return output

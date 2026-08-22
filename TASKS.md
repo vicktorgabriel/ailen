@@ -211,18 +211,33 @@ Debe quedar funcionando:
 
 ## Bloque 11 — R3B.2 Live Lab Integration
 
-- [ ] eliminar sustituciones fake silenciosas en Lab Mode: cada estado `READY` debe corresponder al backend real configurado.
-- [ ] conectar Audio real -> VAD -> STT configurado -> `ConversationCoordinator` -> Router/LLM -> TTS configurado -> Face.
-- [ ] usar `EventBus`/callback explícito para entregar cada transcript una sola vez al coordinador conversacional.
-- [ ] integrar presencia Vision -> `InteractionCoordinator` -> mirada/estado Face durante la sesión de laboratorio.
-- [ ] soportar Local AI mediante Ollama/llama.cpp con modelo realmente cargado y fallback cloud/Rule-only según política.
-- [ ] validar modelo local instalado y runtime/model ID coherentes antes de marcar Local AI `READY`.
-- [ ] agregar métricas de sesión reales: STT latency, AI TTFT/latency/tokens-s cuando sea medible, TTS latency, Face FPS y Vision sampling.
-- [ ] registrar logs de laboratorio sin PCM, frames, secretos ni prompts/memorias privadas completas.
-- [ ] ejecutar primera prueba física en Linux Mint con cámara, micrófono y parlantes; documentar evidencia real sin extrapolar a hardware objetivo.
-- [ ] ejecutar Windows 11 como segundo laboratorio después de estabilizar Mint.
+- [x] eliminar sustituciones fake silenciosas en Lab Mode: cada estado `READY` corresponde al backend real configurado; los fakes se restringen exclusivamente a `--simulate`.
+- [x] crear `LabComponentFactory` para resolver componentes físicos vs simulados y reportar estados estructurados `ComponentStatus`.
+- [x] conectar Audio real -> VAD -> STT configurado -> `ConversationCoordinator` -> Router/LLM -> TTS configurado -> Face.
+- [x] usar `EventBus` (`EventType.TRANSCRIPT_READY`) y candado atómico single-flight para procesar cada transcript una sola vez evitando colisiones concurrentes.
+- [x] integrar presencia Vision -> `InteractionCoordinator` -> mirada/estado Face y ciclo de vigilia/atención durante la sesión de laboratorio.
+- [x] soportar Local AI mediante Ollama/llama.cpp con consulta de inventario real `RuntimeModelInventory` y fallback cloud/Rule-only según política.
+- [x] `ManagedLlamaRuntime` para ciclo de vida de procesos propios de AILEN con respeto de ownership de procesos externos.
+- [x] flujo `ailen lab prepare-ai` con preflight de hardware, plan de modelo, verificación de integridad y arranque opcional.
+- [x] agregar `ModelPurpose` (`SANITY`, `BALANCED`, `QUALITY`) para guiar la selección de modelos en el planner.
+- [x] agregar métricas de sesión reales `LabSessionMetrics` (latencias STT/AI/TTS, conteo de tokens, transiciones de presencia, FPS de Face) y exportación a `runtime/lab/session_<timestamp>.json`.
+- [x] mejorar `ailen lab doctor` con remediaciones claras y flag `--json`.
+- [x] documentos: `docs/research/LIVE_LAB_PIPELINE.md`, `docs/testing/MINT_LIVE_LAB_CHECKLIST.md`.
+- [x] Suite auditada de R3B.2 con 324 tests offline, ruff limpio, mypy en 100 archivos fuente, diff-check limpio y wheel construible.
 
-## Bloque 12 — R3C Memory API + Personality + Tools
+## Bloque 12 — R3B.3 First Physical Lab Validation
+
+- [ ] conectar cámara física en Asrock/Linux Mint y verificar detección real + gaze + debounce.
+- [ ] preparar dependencias opcionales de laboratorio sin modificar persistentemente el SO (`vision`, STT/TTS según assets elegidos).
+- [ ] definir/descargar assets STT español y TTS Piper con fuente, licencia, tamaño y hash verificados; ninguna descarga silenciosa.
+- [ ] descargar/verificar el modelo `SANITY` aprobado y validar `llama-server` CUDA bajo ownership de `LabRunner`.
+- [ ] ejecutar conversación física completa: presencia -> micrófono/VAD -> STT -> Router/LLM -> TTS -> parlantes -> Face.
+- [ ] medir latencias reales STT/AI/TTS, tokens cuando el backend los informe, Face FPS y Vision sampling.
+- [ ] comprobar half-duplex, estados `LISTENING/PROCESSING/SPEAKING` y cleanup con Ctrl+C.
+- [ ] corregir fallos descubiertos en la sesión real antes de declarar Linux Mint validado.
+- [ ] realizar después un segundo laboratorio en Windows 11 sin convertirlo en appliance.
+
+## Bloque 13 — R3C Memory API + Personality + Tools
 
 - [ ] Memory API avanzada (consolidación semántica, decaimiento de memoria, tags).
 - [ ] Personality Engine evolutivo con simulación de estados anímicos y límites de personalidad.

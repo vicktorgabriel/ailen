@@ -31,6 +31,7 @@ class ConversationCoordinator:
         mode: SocialMode = SocialMode.WORKSHOP,
         privacy_level: PrivacyLevel = PrivacyLevel.PRIVATE,
         identity_name: str = "Asistente",
+        tts_voice_id: str = "es_ES-standard",
         internet_available: bool = False,
         cloud_allowed: bool = False,
         lan_brain_trusted: bool = False,
@@ -44,6 +45,7 @@ class ConversationCoordinator:
         self.mode = mode
         self.privacy_level = privacy_level
         self.identity_name = identity_name
+        self.tts_voice_id = tts_voice_id
         self.internet_available = internet_available
         self.cloud_allowed = cloud_allowed
         self.lan_brain_trusted = lan_brain_trusted
@@ -102,7 +104,7 @@ class ConversationCoordinator:
         # 4. Speak response through AudioInteractionCoordinator if present
         if self.audio_coordinator and response.text.strip():
             try:
-                self.audio_coordinator.speak(response.text)
+                self.audio_coordinator.speak(response.text, voice_id=self.tts_voice_id)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Error outputting audio speech: %s", e)
 
