@@ -1,8 +1,8 @@
 # Estado actual — AILEN
 
-**Fecha:** 2026-08-21  
+**Fecha:** 2026-08-22
 **Versión:** `0.1.0-dev.0`  
-**Fase:** R3B.3 First Physical Lab Validation & Speech Asset Subsystem implementado y preflight evaluado en host Asrock. Catálogo declarativo de voz `SpeechAssetCatalog`, almacén seguro `SpeechAssetStore`, descargador criptográfico `SpeechAssetDownloader`, generador de configuración aislada `ailen lab config init`, y evaluador integral `LabPreflightChecker` operativos con 344 tests pasando. Preflight general del host real sigue incompleto para Face/Vision; la validación física parcial `MIC-ONLY` ya pasó con un auricular USB G600 (`plughw:CARD=G600,DEV=0`) y Vosk produjo transcripción real. Los endpoints ALSA físicos se distinguen de plugins virtuales y VAD/STT ya no sustituyen un micrófono fallido por audio sintético salvo `--simulate` explícito.
+**Fase:** R3B.4 Adaptive Runtime + Voice Latency auditado e integrado. Hardware real selecciona `InferenceProfile` (`RULE_ONLY`, `FAST`, `BALANCED`, `QUALITY`) y alimenta `ModelPlanner`; Ollama usa backend nativo con `think=false` y residencia por perfil. Benchmark corregido: `qwen3.5:9b` ~1.76 s promedio en batería larga / ~42.6 tok/s y `qwen2.5-coder:3b` ~0.57 s / ~127 tok/s; los turnos físicos cortos del 9B siguen típicamente ~0.55–0.85 s. Piper usa API Python por chunks, cachea/precalienta la voz y mantiene fallback CLI. TTFAR está conectado al primer PCM enviado a playback; STT dudoso repregunta antes del LLM. Fast-path sólo prepara clasificación para R3C, todavía no ejecuta tools. Audio conversation PASS real con G600; cámara/Face siguen pendientes.
 
 ## Qué existe
 
@@ -114,11 +114,11 @@ La base Foundation/Core/Web, Face/Vision, Audio/VAD/STT/TTS y R3A AI Router ya e
 
 ## Próximo milestone
 
-`R3B.3 — First Physical Lab Validation`: preparar los assets STT/TTS y dependencias opcionales de laboratorio, conectar cámara/micrófono/parlantes y ejecutar en Linux Mint el pipeline físico completo. La validación Mint sólo se marcará PASS con evidencia real; Windows 11 será el segundo laboratorio.
+`R3C — Product Behaviors + Controlled Tools + Web`: implementar acciones locales allowlisted (hora, timer, volumen, música, notas, status) y acceso web mediante tools controladas por Core. La cámara/Face física de R3B.3 permanece como validación pendiente paralela cuando haya cámara disponible; no bloquea el avance del pipeline de voz ya validado.
 
 Trabajo inmediato definido en `TASKS.md` y `docs/operations/AGENT_HANDOFF.md`.
 
-El repositorio Git local está inicializado en `main` y conectado a `git@github.com:vicktorgabriel/ailen.git`. Commits existentes: fundación `84906c5`, R2A Face/Vision `86b36a7` y R2B Audio `6f76804`. R3A se commitea sólo después de cerrar esta auditoría. No se hace push sin autorización explícita.
+El repositorio Git local está inicializado en `main` y conectado a `git@github.com:vicktorgabriel/ailen.git`. El baseline auditado previo a R3B.4 es `2c2f6c3`. No se hace push sin autorización explícita.
 
 ## Riesgos conocidos
 
@@ -148,3 +148,11 @@ El repositorio Git local está inicializado en `main` y conectado a `git@github.
 - Internet se implementará como `web_search`/`web_fetch` controlados, nunca como acceso irrestricto del LLM.
 - Candidato FAST prioritario para benchmark: Llama 3.2 3B; alternativas Gemma 3 4B y Qwen3.5 4B con thinking desactivado.
 - Próximo bloque: R3B.4 Adaptive Runtime + Voice Latency; luego R3C Product Behaviors + Controlled Tools + Web.
+## Auditoría R3B.4 — 2026-08-22
+
+- Se corrigió el benchmark para usar `/api/chat` nativo de Ollama; el shim OpenAI no se usa para `think=false`.
+- `FIRST(ms)` es primer turno observado, no cold start; `TOK/S` sólo se informa con `eval_count/eval_duration` reales del runtime.
+- Se eliminaron aliases peligrosos entre modelos distintos y se bloquea cualquier upshift de perfil por encima del hardware medido.
+- El planner prefiere el menor footprint entre candidatos que ya satisfacen propósito/perfil.
+- El backend OpenAI-compatible genérico no expone `reasoning_content` ni recibe controles específicos de Ollama.
+- `RecommendedDeployment` reutiliza `HardwareDetector`; modelo y costo externo permanecen desconocidos hasta resolución/configuración real.

@@ -12,6 +12,7 @@ from ailen.ai.fake import FakeAiBackend
 from ailen.ai.http_backend import GenericOpenAiBackend
 from ailen.ai.lan_backend import LanBrainAiBackend
 from ailen.ai.ollama_backend import OllamaNativeBackend
+from ailen.ai.residency import ModelResidencyPolicy
 from ailen.ai.secrets import SecretResolver
 from ailen.audio.alsa_backend import (
     AlsaAudioInputBackend,
@@ -34,7 +35,7 @@ from ailen.audio.piper_backend import PiperTtsBackend, resolve_piper_executable
 from ailen.audio.vosk_backend import VoskSttBackend
 from ailen.audio.whisper_backend import WhisperCppSttBackend
 from ailen.core.config import AILENConfig
-from ailen.domain.enums import ServiceStatus
+from ailen.domain.enums import InferenceProfile, ServiceStatus
 from ailen.face.animator import FaceAnimator
 from ailen.face.contracts import FaceController
 from ailen.face.gui import TkinterFaceController
@@ -475,6 +476,7 @@ class LabComponentFactory:
         simulate: bool = False,
         model_plan: ModelPlan | None = None,
         runtime_descriptors: list[ExternalRuntimeDescriptor] | None = None,
+        inference_profile: InferenceProfile | None = None,
     ) -> tuple[dict[str, AiBackend], ComponentStatus]:
         """Build configured AI backends without silently substituting models/providers."""
         if no_ai:
@@ -517,11 +519,15 @@ class LabComponentFactory:
 
             if resolved_model:
                 if rt.runtime_type == RuntimeType.OLLAMA:
+                    keep_alive = ModelResidencyPolicy.get_default_keep_alive(
+                        inference_profile or InferenceProfile.BALANCED
+                    )
                     backends["local"] = OllamaNativeBackend(
                         endpoint=rt.endpoint,
                         model=resolved_model,
                         timeout_seconds=self.config.ai.local.timeout_seconds,
                         think=False,
+                        keep_alive=keep_alive,
                     )
                     local_problem = (
                         f"Ollama native API at {rt.endpoint} using '{resolved_model}' "

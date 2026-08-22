@@ -149,3 +149,36 @@ def test_lab_runner_real_mode_does_not_wire_audio_when_speech_backends_missing()
     assert runner.stt_backend is None
     assert runner.tts_backend is None
     assert runner.audio_coordinator is None
+
+
+def test_low_quality_transcript_reprompts_without_calling_llm(monkeypatch) -> None:
+    runner = LabRunner(config=AILENConfig(), dry_run=True, simulate=True)
+    runner.inspect_and_plan()
+    runner.init_components()
+
+    mock_conv = MagicMock()
+    runner.conversation_coordinator = mock_conv
+    started: list[tuple[object, tuple[object, ...]]] = []
+
+    class CapturedThread:
+        def __init__(self, target, args=(), daemon=None):  # type: ignore[no-untyped-def]
+            self.target = target
+            self.args = args
+
+        def start(self) -> None:
+            started.append((self.target, self.args))
+
+    monkeypatch.setattr("ailen.runtime.runner.threading.Thread", CapturedThread)
+
+    event = CoreEvent(
+        event_id="noise-event",
+        event_type=EventType.TRANSCRIPT_READY,
+        source="test",
+        payload={"text": "?", "latency_ms": 20.0},
+    )
+    runner._on_transcript_event(event)
+
+    mock_conv.handle_user_input.assert_not_called()
+    assert runner.metrics.stt_fail_count == 1
+    assert len(started) == 1
+    assert started[0][0] == runner._run_stt_reprompt

@@ -19,6 +19,7 @@ from ailen.ai.lan_backend import LanBrainAiBackend
 from ailen.ai.local_backend import LocalAiBackend
 from ailen.ai.orchestrator import AiOrchestrator
 from ailen.ai.privacy import OutboundPrivacyPolicy
+from ailen.ai.residency import ModelResidencyPolicy
 from ailen.ai.router import (
     ROUTE_CLOUD,
     ROUTE_DEGRADED,
@@ -29,6 +30,7 @@ from ailen.ai.router import (
     RoutePlan,
     RouteRequest,
     RuleBasedRouter,
+    classify_fast_path_intent,
 )
 from ailen.ai.secrets import SecretResolver
 
@@ -54,10 +56,12 @@ __all__ = [
     "GenericOpenAiBackend",
     "LanBrainAiBackend",
     "LocalAiBackend",
+    "ModelResidencyPolicy",
     "OutboundPrivacyPolicy",
     "RoutePlan",
     "RouteRequest",
     "RuleBasedRouter",
     "SecretResolver",
     "ToolCallRequest",
+    "classify_fast_path_intent",
 ]

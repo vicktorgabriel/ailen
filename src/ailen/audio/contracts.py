@@ -1,5 +1,6 @@
 """Audio contracts: STT and TTS. Ver MODULE_CONTRACTS.md secciones 11-13."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -165,4 +166,13 @@ class TtsBackend(Protocol):
 
     def synthesize(self, request: SpeechRequest) -> SpeechOutput:
         """Synthesize speech from text."""
+        ...
+
+
+@runtime_checkable
+class StreamingTtsBackend(Protocol):
+    """Optional TTS capability yielding playable PCM chunks incrementally."""
+
+    def synthesize_chunks(self, request: SpeechRequest) -> Iterable[SpeechOutput]:
+        """Yield speech outputs as soon as each audio chunk becomes available."""
         ...

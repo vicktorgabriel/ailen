@@ -15,6 +15,7 @@ from ailen.domain.enums import DeviceProfile
 class ModelPurpose(str, Enum):
     """Execution purpose intent for local model selection."""
     SANITY = "SANITY"
+    FAST = "FAST"
     BALANCED = "BALANCED"
     QUALITY = "QUALITY"
 
@@ -278,6 +279,136 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         purposes=[ModelPurpose.QUALITY],
         runtime_aliases=["qwen2.5:7b"],
     ),
+    ModelDescriptor(
+        model_id="llama-3.2-3b-instruct-q4_k_m",
+        display_name="Llama 3.2 3B Instruct (Q4_K_M)",
+        family="llama",
+        runtime="llama.cpp",
+        artifact_format="gguf",
+        quantization="q4_k_m",
+        parameter_class="small",
+        context_default=2048,
+        ram_requirement_mb=2800,
+        vram_requirement_mb=2600,
+        disk_size_bytes=2_020_000_000,
+        cpu_requirements=["avx2"],
+        supported_os=["linux", "windows", "darwin"],
+        supported_arch=["x86_64", "amd64", "arm64", "aarch64"],
+        source_url="",
+        sha256="",
+        downloadable=False,
+        license_name="Llama-3.2-Community",
+        suitability_profiles=[
+            DeviceProfile.HYBRID,
+            DeviceProfile.LOCAL,
+        ],
+        purposes=[ModelPurpose.FAST, ModelPurpose.BALANCED],
+        runtime_aliases=["llama3.2:3b", "llama3.2"],
+    ),
+    ModelDescriptor(
+        model_id="qwen3.5-4b-instruct-q4_k_m",
+        display_name="Qwen 3.5 4B Instruct (Q4_K_M)",
+        family="qwen",
+        runtime="llama.cpp",
+        artifact_format="gguf",
+        quantization="q4_k_m",
+        parameter_class="small",
+        context_default=2048,
+        ram_requirement_mb=3200,
+        vram_requirement_mb=3000,
+        disk_size_bytes=2_600_000_000,
+        cpu_requirements=["avx2"],
+        supported_os=["linux", "windows", "darwin"],
+        supported_arch=["x86_64", "amd64", "arm64", "aarch64"],
+        source_url="",
+        sha256="",
+        downloadable=False,
+        license_name="Apache-2.0",
+        suitability_profiles=[
+            DeviceProfile.HYBRID,
+            DeviceProfile.LOCAL,
+        ],
+        purposes=[ModelPurpose.FAST, ModelPurpose.BALANCED],
+        runtime_aliases=["qwen3.5:4b"],
+    ),
+    ModelDescriptor(
+        model_id="gemma-3-4b-instruct-q4_k_m",
+        display_name="Gemma 3 4B Instruct (Q4_K_M)",
+        family="gemma",
+        runtime="llama.cpp",
+        artifact_format="gguf",
+        quantization="q4_k_m",
+        parameter_class="small",
+        context_default=2048,
+        ram_requirement_mb=3600,
+        vram_requirement_mb=3400,
+        disk_size_bytes=2_800_000_000,
+        cpu_requirements=["avx2"],
+        supported_os=["linux", "windows", "darwin"],
+        supported_arch=["x86_64", "amd64", "arm64", "aarch64"],
+        source_url="",
+        sha256="",
+        downloadable=False,
+        license_name="Gemma-Terms",
+        suitability_profiles=[
+            DeviceProfile.HYBRID,
+            DeviceProfile.LOCAL,
+        ],
+        purposes=[ModelPurpose.BALANCED],
+        runtime_aliases=["gemma3:4b", "gemma3"],
+    ),
+    ModelDescriptor(
+        model_id="qwen2.5-3b-instruct-q4_k_m",
+        display_name="Qwen 2.5 3B Instruct (Q4_K_M)",
+        family="qwen",
+        runtime="llama.cpp",
+        artifact_format="gguf",
+        quantization="q4_k_m",
+        parameter_class="small",
+        context_default=2048,
+        ram_requirement_mb=2600,
+        vram_requirement_mb=2400,
+        disk_size_bytes=1_930_000_000,
+        cpu_requirements=["avx2"],
+        supported_os=["linux", "windows", "darwin"],
+        supported_arch=["x86_64", "amd64", "arm64", "aarch64"],
+        source_url="",
+        sha256="",
+        downloadable=False,
+        license_name="Apache-2.0",
+        suitability_profiles=[
+            DeviceProfile.HYBRID,
+            DeviceProfile.LOCAL,
+        ],
+        purposes=[ModelPurpose.FAST, ModelPurpose.BALANCED],
+        runtime_aliases=["qwen2.5:3b"],
+    ),
+    ModelDescriptor(
+        model_id="qwen3.5-9b-instruct-q4_k_m",
+        display_name="Qwen 3.5 9B Instruct (Q4_K_M)",
+        family="qwen",
+        runtime="llama.cpp",
+        artifact_format="gguf",
+        quantization="q4_k_m",
+        parameter_class="medium",
+        context_default=4096,
+        ram_requirement_mb=7500,
+        vram_requirement_mb=6800,
+        disk_size_bytes=6_600_000_000,
+        cpu_requirements=["avx2"],
+        supported_os=["linux", "windows", "darwin"],
+        supported_arch=["x86_64", "amd64", "arm64", "aarch64"],
+        source_url="",
+        sha256="",
+        downloadable=False,
+        license_name="Apache-2.0",
+        suitability_profiles=[
+            DeviceProfile.LOCAL,
+            DeviceProfile.LAN_BRAIN,
+        ],
+        purposes=[ModelPurpose.QUALITY],
+        runtime_aliases=["qwen3.5:9b"],
+    ),
 ]
 
 
@@ -345,14 +476,9 @@ class ModelCatalog:
             if fits_in_ram or fits_in_vram:
                 suitable.append(m)
 
-        # Sort according to purpose intent
-        if purpose == ModelPurpose.SANITY:
-            # SANITY prefers tiny -> small -> medium (lowest footprint first)
-            class_weight = {"tiny": 3, "small": 2, "medium": 1}
-            suitable.sort(key=lambda m: (class_weight.get(m.parameter_class, 0), -m.ram_requirement_mb), reverse=True)
-        else:
-            # BALANCED / QUALITY prefers medium -> small -> tiny
-            class_weight = {"medium": 3, "small": 2, "tiny": 1}
-            suitable.sort(key=lambda m: (class_weight.get(m.parameter_class, 0), m.ram_requirement_mb), reverse=True)
+        # Candidates are already filtered by purpose/profile/capability. Prefer
+        # the smallest footprint that satisfies those constraints instead of
+        # consuming extra RAM/VRAM merely because a larger model also fits.
+        suitable.sort(key=lambda m: (m.ram_requirement_mb, m.disk_size_bytes, m.model_id))
 
         return suitable

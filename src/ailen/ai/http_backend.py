@@ -108,7 +108,7 @@ class GenericOpenAiBackend(AiBackend):
         for msg in request.messages:
             formatted_messages.append({"role": msg.role, "content": msg.content})
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": formatted_messages,
             "max_tokens": request.max_output_tokens,

@@ -43,7 +43,7 @@ class VoskSttBackend(SttBackend):
             return True
 
         try:
-            import vosk  # type: ignore[import-not-found]
+            import vosk  # type: ignore[import-not-found,import-untyped]
             self._vosk_module = vosk
             # Suppress noisy Vosk C logs to stderr
             vosk.SetLogLevel(-1)

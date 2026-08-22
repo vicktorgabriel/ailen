@@ -3,7 +3,7 @@
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from ailen.domain.enums import DeviceProfile
+from ailen.domain.enums import DeviceProfile, InferenceProfile
 from ailen.hardware.contracts import HardwareCapabilityReport
 from ailen.models.catalog import ModelCatalog, ModelDescriptor, ModelPurpose
 
@@ -46,8 +46,29 @@ class ModelPlanner:
         desired_context: int = 2048,
         purpose: ModelPurpose = ModelPurpose.BALANCED,
         require_downloadable: bool = True,
+        inference_profile: InferenceProfile | None = None,
     ) -> ModelPlan:
         """Compute viable model plan based on hardware report, safety margins, and execution purpose."""
+        if inference_profile == InferenceProfile.RULE_ONLY:
+            return ModelPlan(
+                selected_model_id=None,
+                runtime="none",
+                device="none",
+                gpu_layers=0,
+                estimated_ram_mb=0,
+                estimated_vram_mb=0,
+                context_size=desired_context,
+                reason_codes=["INFERENCE_PROFILE_RULE_ONLY", "NO_LOCAL_MODEL_REQUESTED"],
+                is_viable=False,
+            )
+
+        effective_purpose = purpose
+        if inference_profile == InferenceProfile.FAST:
+            effective_purpose = ModelPurpose.FAST
+        elif inference_profile == InferenceProfile.BALANCED:
+            effective_purpose = ModelPurpose.BALANCED
+        elif inference_profile == InferenceProfile.QUALITY:
+            effective_purpose = ModelPurpose.QUALITY
         # 1. Parameter Validation
         if not (0.0 < max_ram_fraction <= 1.0):
             raise ValueError(f"max_ram_fraction must be in (0, 1], got {max_ram_fraction}")
@@ -114,7 +135,7 @@ class ModelPlanner:
             cpu_flags=cpu_flags_list,
             os_name=report.os_name,
             arch=report.cpu.architecture,
-            purpose=purpose,
+            purpose=effective_purpose,
             require_downloadable=require_downloadable,
         )
 

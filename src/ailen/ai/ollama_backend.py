@@ -114,11 +114,22 @@ class OllamaNativeBackend(AiBackend):
                 text = str(message.get("content") or "").strip()
                 if not text:
                     return self._failure("empty_response", latency_ms)
+                eval_count = data.get("eval_count")
+                eval_duration = data.get("eval_duration")
+                generation_tps: float | None = None
+                if (
+                    isinstance(eval_count, int)
+                    and eval_count >= 0
+                    and isinstance(eval_duration, int | float)
+                    and eval_duration > 0
+                ):
+                    generation_tps = eval_count / (float(eval_duration) / 1_000_000_000.0)
                 usage = AiUsage(
                     input_tokens=data.get("prompt_eval_count"),
-                    output_tokens=data.get("eval_count"),
+                    output_tokens=eval_count,
                     estimated_cost=0.0,
                     currency="USD",
+                    generation_tokens_per_second=generation_tps,
                 )
                 return AiResponse(
                     text=text,

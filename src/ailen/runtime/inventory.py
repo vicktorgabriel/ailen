@@ -58,6 +58,23 @@ class RuntimeModelInventory:
 
         return models
 
+
+    def is_ollama_endpoint(self, endpoint: str) -> bool:
+        """Return True only when the native Ollama tags endpoint responds successfully."""
+        base_url = endpoint.rstrip("/").removesuffix("/v1")
+        req = urllib.request.Request(
+            f"{base_url}/api/tags",
+            headers={"User-Agent": "AILEN-RuntimeInventory/0.1.0"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                if resp.status != 200:
+                    return False
+                data = json.loads(resp.read().decode("utf-8"))
+                return isinstance(data.get("models"), list)
+        except Exception:  # noqa: BLE001
+            return False
+
     def resolve_model(
         self,
         endpoint: str,

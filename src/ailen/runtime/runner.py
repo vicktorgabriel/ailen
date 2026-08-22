@@ -22,6 +22,7 @@ from ailen.audio.contracts import (
     TtsBackend,
 )
 from ailen.audio.coordinator import AudioInteractionCoordinator
+from ailen.audio.stt_quality import SttQualityEvaluator
 from ailen.core.config import AILENConfig
 from ailen.core.conversation import ConversationCoordinator
 from ailen.core.coordinator import InteractionCoordinator
@@ -37,6 +38,7 @@ from ailen.infrastructure.sqlite.connection import SQLiteManager
 from ailen.infrastructure.sqlite.migrations import MigrationRunner
 from ailen.memory.repository import MemoryRepository
 from ailen.models.catalog import ModelCatalog, ModelPurpose
+from ailen.models.inference_profile import InferenceRecommendation, recommend_inference_profile
 from ailen.models.planner import ModelPlan, ModelPlanner
 from ailen.models.store import ModelStore
 from ailen.runtime.contracts import ExternalRuntimeDescriptor
@@ -86,6 +88,8 @@ class LabRunner:
         self._interaction_lock = threading.Lock()
         self._is_processing_interaction = False
         self._processed_transcript_event_ids: set[str] = set()
+        self._last_voice_ended_monotonic: float | None = None
+        self.stt_quality_evaluator = SttQualityEvaluator()
 
         # Core infrastructure
         self.event_bus = EventBus()
@@ -97,6 +101,7 @@ class LabRunner:
         self.hardware_report: HardwareCapabilityReport | None = None
         self.detected_profile = config.node.profile
         self.model_plan: ModelPlan | None = None
+        self.inference_recommendation: InferenceRecommendation | None = None
         self.runtime_descriptors: list[ExternalRuntimeDescriptor] = []
         self.component_statuses: list[ComponentStatus] = []
 
@@ -130,9 +135,19 @@ class LabRunner:
         runtime_mgr = LocalRuntimeManager()
         self.runtime_descriptors = runtime_mgr.detect_available_runtimes()
 
+        self.inference_recommendation = recommend_inference_profile(
+            self.hardware_report,
+            device_profile=rec.profile,
+        )
         catalog = ModelCatalog()
         planner = ModelPlanner(catalog=catalog)
-        self.model_plan = planner.plan(self.hardware_report, profile=rec.profile, purpose=ModelPurpose.BALANCED)
+        self.model_plan = planner.plan(
+            self.hardware_report,
+            profile=rec.profile,
+            purpose=ModelPurpose.BALANCED,
+            desired_context=self.inference_recommendation.recommended_context,
+            inference_profile=self.inference_recommendation.profile,
+        )
         return self.hardware_report, self.model_plan
 
     def init_components(self) -> list[ComponentStatus]:
@@ -184,6 +199,9 @@ class LabRunner:
             simulate=self.simulate,
             model_plan=self.model_plan,
             runtime_descriptors=self.runtime_descriptors,
+            inference_profile=(
+                self.inference_recommendation.profile if self.inference_recommendation else None
+            ),
         )
 
         if (
@@ -217,6 +235,9 @@ class LabRunner:
                         simulate=False,
                         model_plan=self.model_plan,
                         runtime_descriptors=self.runtime_descriptors,
+                        inference_profile=(
+                            self.inference_recommendation.profile if self.inference_recommendation else None
+                        ),
                     )
 
         self.component_statuses.append(ai_st)
@@ -299,11 +320,43 @@ class LabRunner:
         # 11. Subscribe to lightweight events for single-flight conversation and
         # measured lab telemetry. No PCM or camera frames enter the EventBus.
         self.event_bus.subscribe(EventType.TRANSCRIPT_READY, self._on_transcript_event)
+        self.event_bus.subscribe(EventType.VOICE_ENDED, self._on_voice_ended_event)
+        self.event_bus.subscribe(EventType.SPEECH_STARTED, self._on_speech_started_event)
         self.event_bus.subscribe(EventType.SPEECH_FINISHED, self._on_speech_finished_event)
         self.event_bus.subscribe(EventType.PRESENCE_DETECTED, self._on_presence_transition_event)
         self.event_bus.subscribe(EventType.PRESENCE_LOST, self._on_presence_transition_event)
 
         return self.component_statuses
+
+    def _on_voice_ended_event(self, event: Any) -> None:
+        """Mark end-of-user-speech for measured TTFAR on the next audible response."""
+        del event
+        self._last_voice_ended_monotonic = time.monotonic()
+
+    def _on_speech_started_event(self, event: Any) -> None:
+        """Record TTFAR when the first playable PCM buffer is submitted."""
+        del event
+        if self._last_voice_ended_monotonic is None:
+            return
+        latency_ms = (time.monotonic() - self._last_voice_ended_monotonic) * 1000.0
+        self.metrics.record_ttfar(latency_ms)
+        self._last_voice_ended_monotonic = None
+
+    def _run_stt_reprompt(self, message: str) -> None:
+        """Speak deterministic STT reprompt without invoking the LLM."""
+        try:
+            if self.audio_coordinator:
+                self.state_manager.transition_to(AssistantState.PROCESSING, reason="stt_reprompt")
+                self.audio_coordinator.speak(message, voice_id=self.config.speech.tts_voice)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not speak STT reprompt: %s", exc)
+        finally:
+            if self.audio_coordinator:
+                self.audio_coordinator.turn_gate.stop_processing()
+            with self._interaction_lock:
+                self._is_processing_interaction = False
+            self.state_manager.transition_to(AssistantState.IDLE, reason="stt_reprompt_complete")
+            self.face_controller.set_state(AssistantState.IDLE)
 
     def _on_transcript_event(self, event: Any) -> None:
         """Handle one STT transcript exactly once with single-flight serialization."""
@@ -323,8 +376,22 @@ class LabRunner:
         latency_raw = payload.get("latency_ms")
         latency_ms = float(latency_raw) if isinstance(latency_raw, (int, float)) else 0.0
 
-        if not text:
+        assessment = self.stt_quality_evaluator.evaluate(text)
+        if assessment.should_reprompt:
             self.metrics.record_utterance(success=False, latency_ms=latency_ms)
+            print(f"\n[stt] Reprompt required ({assessment.reprompt_reason})")
+            if self.audio_coordinator:
+                with self._interaction_lock:
+                    if self._is_processing_interaction:
+                        return
+                    self._is_processing_interaction = True
+                self.audio_coordinator.turn_gate.start_processing()
+                self.audio_coordinator.collector.reset()
+                threading.Thread(
+                    target=self._run_stt_reprompt,
+                    args=(self.stt_quality_evaluator.DEFAULT_REPROMPT_MESSAGE,),
+                    daemon=True,
+                ).start()
             return
 
         self.metrics.record_utterance(success=True, latency_ms=latency_ms)
@@ -489,7 +556,17 @@ class LabRunner:
                         status.state = "UNAVAILABLE"
                         status.detail = f"Vision startup failed: {exc}"
 
-        # 2. Start Audio Coordinator only when the complete speech chain was
+        # 2. Prewarm optional TTS runtime before microphone capture starts. This
+        # avoids charging Piper model-load time to the first user response while
+        # preserving the blocking CLI fallback if the Python API is unavailable.
+        if not self.simulate and self.tts_backend and hasattr(self.tts_backend, "warmup"):
+            try:
+                warmed = bool(self.tts_backend.warmup())  # type: ignore[attr-defined]
+                logger.info("TTS prewarm %s", "completed" if warmed else "not available; CLI fallback retained")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("TTS prewarm failed; retaining normal fallback: %s", exc)
+
+        # 3. Start Audio Coordinator only when the complete speech chain was
         # wired. Missing STT/TTS never silently activates fake defaults.
         if self.audio_coordinator:
             try:

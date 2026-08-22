@@ -15,6 +15,7 @@ from ailen.audio.contracts import (
     AudioSegment,
     SpeechOutput,
     SpeechRequest,
+    StreamingTtsBackend,
     SttBackend,
     Transcript,
     TtsBackend,
@@ -273,60 +274,93 @@ class AudioInteractionCoordinator:
         rate: float = 1.0,
         volume: float = 1.0,
     ) -> SpeechOutput:
-        """Synthesize and play speech while blocking input and animating mouth."""
+        """Synthesize and play speech while blocking input and animating mouth.
+
+        If the backend exposes StreamingTtsBackend, sentence PCM chunks are
+        played as they become available. SPEECH_STARTED means the first playable
+        PCM buffer is about to be submitted to the audio output backend.
+        """
         if not text.strip():
             return SpeechOutput(duration_ms=0.0)
 
-        # 1. Block incoming mic frames (Half-Duplex)
         self.turn_gate.start_speaking()
-
-        # 2. Update state to SPEAKING
-        prev_state = AssistantState.IDLE
-        if self.state_manager:
-            prev_state = self.state_manager.current_state
-            try:
-                self.state_manager.transition_to(AssistantState.SPEAKING, reason="tts_speaking")
-            except Exception as e:  # noqa: BLE001
-                logger.debug("Ignored state transition to SPEAKING: %s", e)
-
+        prev_state = self.state_manager.current_state if self.state_manager else AssistantState.IDLE
         restore_state = prev_state
-
-        if self.face_controller:
-            self.face_controller.set_state(AssistantState.SPEAKING)
-
-        if self.event_bus:
-            self.event_bus.create_and_publish(
-                event_type=EventType.SPEECH_STARTED,
-                source="audio_coordinator",
-                payload={"text_len": len(text), "voice_id": voice_id},
-            )
-
         req = SpeechRequest(text=text, voice_id=voice_id, rate=rate, volume=volume)
         output = SpeechOutput(duration_ms=0.0)
         success = False
+        speech_started = False
+
+        def start_playback(first_output: SpeechOutput) -> None:
+            nonlocal speech_started
+            if speech_started:
+                return
+            speech_started = True
+            if self.state_manager:
+                try:
+                    self.state_manager.transition_to(AssistantState.SPEAKING, reason="tts_playback_started")
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Ignored state transition to SPEAKING: %s", exc)
+            if self.face_controller:
+                self.face_controller.set_state(AssistantState.SPEAKING)
+            if self.event_bus:
+                self.event_bus.create_and_publish(
+                    event_type=EventType.SPEECH_STARTED,
+                    source="audio_coordinator",
+                    payload={
+                        "text_len": len(text),
+                        "voice_id": voice_id,
+                        "first_audio_latency_ms": first_output.latency_ms,
+                    },
+                )
+
+        def play_chunk(chunk: SpeechOutput) -> None:
+            if not chunk.audio_data:
+                return
+            start_playback(chunk)
+            rms = compute_pcm_rms(chunk.audio_data)
+            mouth_level = min(1.0, max(0.2, rms * 2.5)) if rms > 0.01 else 0.0
+            if self.face_controller:
+                self.face_controller.set_speech_level(mouth_level)
+            self.audio_output.play(
+                chunk.audio_data,
+                sample_rate=chunk.sample_rate,
+                channels=chunk.channels,
+            )
 
         try:
-            output = self.tts.synthesize(req)
-            if output.audio_data:
-                # Coarse MVP mouth sync: one normalized level for the blocking playback.
-                rms = compute_pcm_rms(output.audio_data)
-                mouth_level = min(1.0, max(0.2, rms * 2.5)) if rms > 0.01 else 0.0
-
-                if self.face_controller:
-                    self.face_controller.set_speech_level(mouth_level)
-
-                self.audio_output.play(
-                    output.audio_data,
-                    sample_rate=output.sample_rate,
-                    channels=output.channels,
+            if isinstance(self.tts, StreamingTtsBackend):
+                combined = bytearray()
+                total_duration_ms = 0.0
+                first_audio_latency_ms = 0.0
+                sample_rate = 22050
+                channels = 1
+                for chunk in self.tts.synthesize_chunks(req):
+                    if not chunk.audio_data:
+                        continue
+                    if not combined:
+                        first_audio_latency_ms = chunk.latency_ms
+                    play_chunk(chunk)
+                    combined.extend(chunk.audio_data)
+                    total_duration_ms += chunk.duration_ms
+                    sample_rate = chunk.sample_rate
+                    channels = chunk.channels
+                output = SpeechOutput(
+                    audio_data=bytes(combined) if combined else None,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    duration_ms=total_duration_ms,
+                    latency_ms=first_audio_latency_ms,
                 )
-            success = output.audio_data is not None
+            else:
+                output = self.tts.synthesize(req)
+                play_chunk(output)
+            success = bool(output.audio_data)
         except Exception as exc:
             logger.exception("TTS/playback failed")
             self._publish_audio_error("tts_or_playback", exc)
             output = SpeechOutput(audio_data=None, duration_ms=0.0, latency_ms=0.0)
         finally:
-            # 3. Clean up mouth and return to previous state
             if self.face_controller:
                 self.face_controller.set_speech_level(0.0)
                 self.face_controller.set_state(restore_state)
@@ -334,10 +368,9 @@ class AudioInteractionCoordinator:
             if self.state_manager:
                 try:
                     self.state_manager.transition_to(restore_state, reason="tts_finished")
-                except Exception as e:  # noqa: BLE001
-                    logger.debug("Ignored state transition back: %s", e)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Ignored state transition back: %s", exc)
 
-            # 4. Unblock mic input with settling cooldown
             self.turn_gate.stop_speaking()
 
             if self.event_bus:

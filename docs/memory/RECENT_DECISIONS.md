@@ -1,3 +1,19 @@
+### R3B.4 — Adaptive Runtime, Model Residency & Voice Latency
+
+- **InferenceProfile desacoplado de DeviceProfile**: `DeviceProfile` define la topología (`SATELLITE`, `CLOUD`, `HYBRID`, `LOCAL`, `LAN_BRAIN`), mientras que `InferenceProfile` define la capacidad local recomendada (`RULE_ONLY`, `FAST`, `BALANCED`, `QUALITY`).
+- **CPU-only es ciudadano de primera clase**: `recommend_inference_profile()` maneja deterministamente 2 GB (RULE_ONLY/SATELLITE), 4 GB (RULE_ONLY conservador por defecto, FAST con opt-in), 8 GB (FAST CPU) y 16+ GB (BALANCED CPU), sin asumir la existencia de GPU a menos que esté físicamente medida.
+- **Prohibición Estricta de Model Hopping**: Una sesión mantiene un modelo primario estable (`ModelResidencyPolicy`). Se prohíbe alternar modelos dinámicamente por consulta (ej. 3B -> 9B -> 3B) para prevenir cold-starts, latencias impredecibles y degradación de memoria. Cambios permitidos sólo en: `STARTUP`, `PROFILE_CHANGE`, `BACKEND_FAILOVER`, `ADMIN_OVERRIDE`, `NEW_SESSION`.
+- **Residencia de Modelos Configurable**: El tiempo de `keep_alive` para Ollama se deriva del perfil (`30m` en QUALITY, `15m` en BALANCED, `5m` en FAST, `0` en RULE_ONLY) y es configurable.
+- **Benchmark local veraz (`ailen lab benchmark-ai`)**: Ollama se mide por su API nativa con `think=false`; `FIRST` no se etiqueta como cold-start y TOK/s sólo se reporta si el runtime entrega duración/conteo de generación. Candidatos ausentes siguen `NOT_INSTALLED` sin descargas.
+- **Normalización de Texto para Voz (`normalize_text_for_speech`)**: Proyecta texto limpio para Piper TTS eliminando sintaxis Markdown, code fences, URLs y emojis decorativos, sin alterar el texto original de la respuesta de IA.
+- **TTFAR operacional**: mide desde `VOICE_ENDED` hasta el primer PCM que AILEN entrega al backend de playback. Es proxy de primer audio audible, no una medición física del DAC/auricular.
+- **Perfiles VAD y Calidad STT Heurística**: Perfiles `conservative` (700ms), `normal` (500ms) y `fast` (350ms) en `UtteranceCollector`. Heurística `SttQualityEvaluator` para reprompt ante transcripciones vacías o ruido sin inventar falsos niveles de confianza.
+- **Fast-Path conservador preparado para R3C**: sólo clasifica órdenes inequívocas; no ejecuta tools todavía. Frases ambiguas/técnicas se mantienen en chat para evitar acciones incorrectas.
+- **Piper Python cacheado/chunked**: la API instalada sí expone `AudioChunk`; AILEN cachea la voz, precalienta al iniciar Lab y reproduce chunks por oración, con CLI bloqueante como fallback.
+- **No razonamiento interno como respuesta**: `reasoning_content` nunca se promueve a texto visible/TTS en el backend genérico.
+- **Preferencia de recursos conservadora**: la preferencia del usuario puede bajar el perfil, nunca superar lo permitido por hardware medido; ModelPlanner elige el menor footprint que satisface el nivel solicitado.
+
+
 ### R3B.3 — MIC PASS físico en G600
 
 - El 21 de agosto de 2026 se validó físicamente el micrófono USB **G600** en Linux Mint.

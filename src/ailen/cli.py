@@ -195,6 +195,12 @@ def create_parser() -> argparse.ArgumentParser:
     lab_cams.add_argument("--json", action="store_true", help="Output as JSON")
     lab_bench = lab_sub.add_parser("benchmark", help="Run reproducible lab benchmark harness")
     lab_bench.add_argument("--output", default="runtime/lab/benchmarks", help="Destination directory for benchmark artifact")
+    lab_bench_ai = lab_sub.add_parser("benchmark-ai", help="Benchmark candidate models in local Ollama runtime without downloading")
+    lab_bench_ai.add_argument("--models", default="qwen3.5:9b,qwen2.5-coder:3b,llama3.2:3b,gemma3:4b,qwen3.5:4b", help="Comma-separated candidate models to benchmark")
+    lab_bench_ai.add_argument("--endpoint", default="http://127.0.0.1:11434/v1", help="Ollama / local server endpoint")
+    lab_bench_ai.add_argument("--warmup", type=int, default=1, help="Warmup turns per model (default: 1)")
+    lab_bench_ai.add_argument("--turns", type=int, default=None, help="Number of benchmark prompts to evaluate")
+    lab_bench_ai.add_argument("--json", action="store_true", help="Output benchmark report as JSON")
 
     # Command: speech
     speech_parser = subparsers.add_parser("speech", help="Manage offline speech assets (Vosk, Whisper, Piper voices)")
@@ -1217,6 +1223,48 @@ def cmd_lab_benchmark(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_lab_benchmark_ai(args: argparse.Namespace) -> int:
+    """Run local AI model benchmark without downloading external artifacts."""
+    from ailen.runtime.model_benchmark import ModelBenchmarkRunner
+
+    models = [m.strip() for m in getattr(args, "models", "").split(",") if m.strip()]
+    if not models:
+        models = ["qwen3.5:9b", "qwen2.5-coder:3b", "llama3.2:3b", "gemma3:4b", "qwen3.5:4b"]
+
+    endpoint = getattr(args, "endpoint", "http://127.0.0.1:11434/v1")
+    runner = ModelBenchmarkRunner(endpoint=endpoint)
+    report = runner.run_benchmark(
+        candidate_models=models,
+        warmup_turns=getattr(args, "warmup", 1),
+        max_prompts=getattr(args, "turns", None),
+    )
+
+    if getattr(args, "json", False):
+        print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+        return 0
+
+    print("==================================================================")
+    print("AILEN — LOCAL AI INFERENCE BENCHMARK")
+    print(f"Endpoint: {report.endpoint}")
+    print("==================================================================")
+    print(f"{'MODEL':<24} {'STATUS':<15} {'FIRST(ms)':<10} {'AVG(ms)':<10} {'P95(ms)':<10} {'TOK/S':<8} {'PASS%'}")
+    print("-" * 88)
+
+    for m in report.models_evaluated:
+        if m.status == "NOT_INSTALLED":
+            print(f"{m.model_name:<24} {'NOT_INSTALLED':<15} {'-':<10} {'-':<10} {'-':<10} {'-':<8} {'-'}")
+        else:
+            cold_str = str(m.first_turn_ms) if m.first_turn_ms is not None else "-"
+            avg_str = str(m.warm_latency_avg_ms) if m.warm_latency_avg_ms is not None else "-"
+            p95_str = str(m.warm_latency_p95_ms) if m.warm_latency_p95_ms is not None else "-"
+            tps_str = str(m.tokens_per_second_avg) if m.tokens_per_second_avg is not None else "-"
+            pass_str = f"{m.structural_pass_rate}%"
+            print(f"{m.model_name:<24} {m.status:<15} {cold_str:<10} {avg_str:<10} {p95_str:<10} {tps_str:<8} {pass_str}")
+
+    print("==================================================================")
+    return 0
+
+
 def cmd_lab_preflight(args: argparse.Namespace, config_path: str | None) -> int:
     """Run comprehensive physical lab preflight check."""
     from ailen.runtime.preflight import LabPreflightChecker
@@ -1377,7 +1425,9 @@ def cmd_lab(args: argparse.Namespace, config_path: str | None) -> int:
         return cmd_lab_cameras(args)
     elif action == "benchmark":
         return cmd_lab_benchmark(args)
-    print("Uso: ailen lab [inspect|start|doctor|preflight|prepare-ai|prepare-speech|config|audio-devices|cameras|benchmark]")
+    elif action == "benchmark-ai":
+        return cmd_lab_benchmark_ai(args)
+    print("Uso: ailen lab [inspect|start|doctor|preflight|prepare-ai|prepare-speech|config|audio-devices|cameras|benchmark|benchmark-ai]")
     return 1
 
 

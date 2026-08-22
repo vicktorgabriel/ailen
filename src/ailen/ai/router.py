@@ -57,7 +57,80 @@ RULE_ONLY_INTENTS: frozenset[str] = frozenset({
     "mode_change",
     "system_status",
     "animation",
+    "notes",
+    "pause",
+    "resume",
+    "next_track",
+    "stop_music",
 })
+
+
+def classify_fast_path_intent(text: str) -> str | None:
+    """Classify only unequivocal local commands; ambiguous language stays in chat.
+
+    This classifier is preparatory for R3C tool execution and is intentionally
+    conservative: false negatives cost one LLM turn, while false positives could
+    execute the wrong local action.
+    """
+    if not text:
+        return None
+    clean = " ".join(text.lower().strip().split()).strip(" ¿?¡!.,;:")
+
+    clock_phrases = {
+        "qué hora es", "que hora es", "decime la hora", "dime la hora",
+        "hora actual", "qué hora tenemos", "que hora tenemos",
+    }
+    if clean in clock_phrases:
+        return "clock"
+
+    if any(
+        marker in clean
+        for marker in (
+            "poné un temporizador", "pone un temporizador", "pon un temporizador",
+            "iniciá un temporizador", "inicia un temporizador",
+            "creá un temporizador", "crea un temporizador",
+            "configurá un temporizador", "configura un temporizador",
+            "poné una alarma", "pone una alarma", "pon una alarma",
+        )
+    ):
+        return "timer"
+
+    if (
+        clean in {
+            "mute", "silencio", "subí el volumen", "sube el volumen", "subir volumen",
+            "bajá el volumen", "baja el volumen", "bajar volumen",
+        }
+        or any(clean.startswith(prefix) for prefix in (
+            "subí el volumen ", "sube el volumen ", "bajá el volumen ", "baja el volumen ",
+            "poné el volumen ", "pone el volumen ", "pon el volumen ",
+        ))
+    ):
+        return "volume"
+
+    playback_phrases = {
+        "pausá la música", "pausa la música", "reanuda la música", "reanudá la música",
+        "seguí la música", "sigue la música", "siguiente canción", "siguiente tema",
+        "pará la música", "para la música", "detené la música", "deten la música",
+        "poné música", "pone música", "pon música", "pausar música", "reanudar música",
+    }
+    if clean in playback_phrases:
+        return "playback"
+
+    if clean in {
+        "estado del sistema", "cómo está el sistema", "como está el sistema",
+        "como esta el sistema", "diagnóstico del sistema", "diagnostico del sistema",
+        "estado de la batería", "estado de la bateria", "cuánta batería queda",
+        "cuanta bateria queda",
+    }:
+        return "system_status"
+
+    if any(clean.startswith(prefix) for prefix in (
+        "anotá ", "anota ", "anotar ", "tomá nota ", "toma nota ",
+        "guardá una nota ", "guarda una nota ", "creá una nota ", "crea una nota ",
+    )):
+        return "notes"
+
+    return None
 
 
 class RuleBasedRouter:

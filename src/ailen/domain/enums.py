@@ -36,6 +36,14 @@ class DeviceProfile(str, Enum):
     LAN_BRAIN = "LAN_BRAIN"
 
 
+class InferenceProfile(str, Enum):
+    """Inference tier capability recommendation for the node."""
+    RULE_ONLY = "RULE_ONLY"
+    FAST = "FAST"
+    BALANCED = "BALANCED"
+    QUALITY = "QUALITY"
+
+
 class PrivacyLevel(str, Enum):
     """Data privacy level."""
     PUBLIC = "PUBLIC"

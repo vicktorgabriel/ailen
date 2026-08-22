@@ -17,10 +17,10 @@ def test_planner_selects_verified_gpu_sanity_model_on_lab_pc() -> None:
     plan = planner.plan(report, profile=DeviceProfile.LOCAL, prefer_gpu=True)
 
     assert plan.is_viable is True
-    assert plan.selected_model_id == "qwen3.5-0.8b-q8_0"
+    assert plan.selected_model_id == "qwen3.5-0.8b-q4_0"
     assert plan.device == "cuda"
     assert plan.gpu_layers == "all"
-    assert plan.estimated_vram_mb == 1400
+    assert plan.estimated_vram_mb == 1100
     assert "OFFLOAD_ALL_LAYERS" in plan.reason_codes
 
 
@@ -33,10 +33,10 @@ def test_planner_selects_cpu_small_model_on_bangho() -> None:
     plan = planner.plan(report, profile=DeviceProfile.HYBRID, prefer_gpu=True)
 
     assert plan.is_viable is True
-    assert plan.selected_model_id == "qwen3.5-0.8b-q8_0"
+    assert plan.selected_model_id == "qwen3.5-0.8b-q4_0"
     assert plan.device == "cpu"
     assert plan.gpu_layers == 0
-    assert plan.estimated_ram_mb == 1200
+    assert plan.estimated_ram_mb == 900
     assert any("CPU_RAM_FIT" in r for r in plan.reason_codes)
 
 

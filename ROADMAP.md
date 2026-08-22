@@ -76,9 +76,11 @@
 - [x] `LabComponentFactory` sin sustituciones fake silenciosas en modo real (`--simulate` para offline/UI tests).
 - [x] cableado conversacional de software en `LabRunner`: Face/Vision/Audio/STT/Router/LLM/TTS sin fakes silenciosos; falta validación física.
 - [x] inventario de modelos en runtime `RuntimeModelInventory` y runtime gestionado `ManagedLlamaRuntime`.
-- [x] telemetría y métricas de sesión `LabSessionMetrics` exportadas a `runtime/lab/session_<timestamp>.json`.
+- [x] telemetría y métricas de sesión `LabSessionMetrics` exportadas a `runtime/lab/session_<timestamp>.json` con medición de Time To First Audible Response (TTFAR).
 - [x] asistente `ailen lab prepare-ai` y diagnóstico con remediaciones `ailen lab doctor [--json]`.
-- [ ] R3B.3 validar primera sesión física interactiva en Linux Mint con cámara/micrófono/parlantes y assets STT/TTS reales.
+- [x] R3B.3 catálogo declarativo de modelos de voz (`SpeechAssetCatalog`), store seguro y preflight físico exhaustivo (`LabPreflightChecker`).
+- [x] R3B.4 inferencia adaptativa (`InferenceProfile`), política de residencia de modelos (`ModelResidencyPolicy`), prohibición de model hopping y arnés `ailen lab benchmark-ai`.
+- [ ] validar primera sesión física interactiva en Linux Mint con cámara/micrófono/parlantes y assets STT/TTS reales.
 - [ ] validar después el segundo laboratorio en Windows 11.
 - [ ] registrar benchmarks reales de los equipos laboratorio sin confundirlos con hardware objetivo comercial.
 

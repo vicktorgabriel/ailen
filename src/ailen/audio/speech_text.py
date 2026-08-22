@@ -1,31 +1,77 @@
-"""Normalization of assistant text before local text-to-speech playback."""
+"""Text normalization and sentence chunking for speech synthesis."""
 
 import re
 
-_FENCED_CODE_RE = re.compile(r"```.*?```", re.DOTALL)
-_LINK_RE = re.compile(r"\[([^\]]+)\]\((?:https?://|www\.)[^)]+\)")
-_URL_RE = re.compile(r"(?:https?://|www\.)\S+")
-_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
-_MARKDOWN_PREFIX_RE = re.compile(r"(?m)^\s*(?:#{1,6}|[-*+]\s+|>+\s*|\d+[.)]\s+)")
-_DECORATION_RE = re.compile(r"[*_~#|]+")
-_SYMBOL_RUN_RE = re.compile(r"([^\w\s.,;:!?¿¡áéíóúüñÁÉÍÓÚÜÑ()%-])\1+")
-_WHITESPACE_RE = re.compile(r"\s+")
-
 
 def normalize_text_for_speech(text: str) -> str:
-    """Return a speech-friendly rendering without Markdown/control decoration.
+    """Clean text for Text-to-Speech synthesis without altering original AI response text.
 
-    The original model response remains untouched for logs/UI. This function is
-    only for TTS so URLs, code fences and decorative symbol runs are not read
-    aloud as noise.
+    Removes:
+    - Markdown headings, bold, italics, tables, and blockquotes.
+    - Code fences and inline code blocks.
+    - Raw web URLs.
+    - Decorative emojis and non-speech symbols.
     """
     if not text:
         return ""
-    value = _FENCED_CODE_RE.sub(" código omitido ", text)
-    value = _LINK_RE.sub(r"\1", value)
-    value = _URL_RE.sub(" enlace ", value)
-    value = _INLINE_CODE_RE.sub(r"\1", value)
-    value = _MARKDOWN_PREFIX_RE.sub("", value)
-    value = _DECORATION_RE.sub("", value)
-    value = _SYMBOL_RUN_RE.sub(r"\1", value)
-    return _WHITESPACE_RE.sub(" ", value).strip()
+
+    cleaned = text
+
+    # 1. Replace markdown links [label](url) with label
+    cleaned = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", cleaned)
+
+    # 2. Replace code blocks ```...``` with "código omitido"
+    cleaned = re.sub(r"```[\s\S]*?```", " código omitido ", cleaned)
+    cleaned = re.sub(r"`[^`]*?`", " ", cleaned)
+
+    # 3. Remove URLs
+    cleaned = re.sub(r"https?://\S+", " ", cleaned)
+
+    # 4. Remove Markdown headings (# Heading)
+    cleaned = re.sub(r"^#{1,6}\s+", " ", cleaned, flags=re.MULTILINE)
+
+    # 5. Remove Markdown list bullets (- item, * item, 1. item)
+    cleaned = re.sub(r"^\s*[-*+]\s+", " ", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^\s*\d+\.\s+", " ", cleaned, flags=re.MULTILINE)
+
+    # 6. Remove blockquotes (> quote) and table pipes (|)
+    cleaned = re.sub(r"^\s*>\s*", " ", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"\|", " ", cleaned)
+
+    # 7. Remove bold/italics markers (**bold**, *italic*, __bold__, _italic_)
+    cleaned = re.sub(r"[*_]{1,3}", "", cleaned)
+
+    # 8. Strip emojis and decorative symbols while preserving Spanish accents and punctuation
+    cleaned = re.sub(r"[^\w\s.,!?:;áéíóúÁÉÍÓÚñÑüÜ¿¡/-]", " ", cleaned)
+
+    # 9. Collapse whitespace
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def split_speech_into_sentences(text: str, min_sentence_chars: int = 10) -> list[str]:
+    """Split text into sentence chunks for incremental vocal synthesis."""
+    clean = normalize_text_for_speech(text)
+    if not clean:
+        return []
+
+    # Split on sentence boundaries: . ! ? ; : or newlines
+    raw_sentences = re.split(r"(?<=[.!?¿¡;:])\s+", clean)
+    chunks: list[str] = []
+    current = ""
+
+    for s in raw_sentences:
+        s_clean = s.strip()
+        if not s_clean:
+            continue
+        if len(current) + len(s_clean) < min_sentence_chars and chunks:
+            current = f"{current} {s_clean}"
+        else:
+            if current:
+                chunks.append(current)
+            current = s_clean
+
+    if current:
+        chunks.append(current)
+
+    return chunks if chunks else ([clean] if clean else [])

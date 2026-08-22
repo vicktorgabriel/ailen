@@ -4,6 +4,23 @@ Todos los cambios relevantes del proyecto se documentarán aquí.
 
 El proyecto usa versionado semántico durante desarrollo, con prereleases cuando corresponda.
 
+- **R3B.4 Adaptive Runtime + Voice Latency**:
+  - Abstracción e implementación de `InferenceProfile` (`RULE_ONLY`, `FAST`, `BALANCED`, `QUALITY`) desacoplada de `DeviceProfile` para categorizar la capacidad local del nodo.
+  - Selector determinista `recommend_inference_profile` (`src/ailen/models/inference_profile.py`) con soporte de primera clase para CPU-only (2 GB, 4 GB, 8 GB, 16+ GB) y escalonamiento de VRAM para GPUs modestas y potentes.
+  - Política estricta de estabilidad de modelo y anti-hopping `ModelResidencyPolicy` (`src/ailen/ai/residency.py`) prohibiendo cambios dinámicos de modelo por consulta para evitar cold-starts y degradación de memoria.
+  - Residencia Ollama derivada del perfil (`QUALITY=30m`, `BALANCED=15m`, `FAST=5m`, `RULE_ONLY=0`) y `think=false` exclusivamente en `OllamaNativeBackend`; el backend OpenAI-compatible genérico permanece libre de campos específicos de proveedor.
+  - Arnés de benchmark de inferencia local reproducible `ModelBenchmarkRunner` (`src/ailen/runtime/model_benchmark.py`) y comando `ailen lab benchmark-ai` evaluando modelos ya instalados en Ollama y reportando candidatos ausentes como `NOT_INSTALLED` sin descargas automáticas.
+  - Incorporación de candidatos en `ModelCatalog` (`llama-3.2-3b-instruct`, `qwen3.5-4b-instruct`, `gemma-3-4b-instruct`, `qwen2.5-3b-instruct`, `qwen3.5-9b-instruct`) con `downloadable=False`.
+  - Normalización de texto para voz `normalize_text_for_speech` (`src/ailen/audio/speech_text.py`) limpiando encabezados Markdown, bloques de código, URLs, emojis y viñetas sin alterar el texto original de la respuesta de IA.
+  - Perfiles de VAD configurables (`conservative` 700ms, `normal` 500ms, `fast` 350ms) en `UtteranceCollector` (`src/ailen/audio/vad.py`).
+  - Evaluador heurístico de calidad STT `SttQualityEvaluator` (`src/ailen/audio/stt_quality.py`) y política de reprompt ante transcripciones vacías o ruido sin fabricar niveles de confianza sintéticos.
+  - Métrica TTFAR conectada de `VOICE_ENDED` al primer PCM enviado a playback; `SPEECH_STARTED` ya no se emite antes de sintetizar audio.
+  - Clasificador conservador `classify_fast_path_intent` preparado para R3C; reconoce comandos inequívocos sin ejecutar tools todavía y evita falsos positivos como “volumen de un cilindro” o preguntas técnicas de batería.
+  - `RecommendedDeployment` reutiliza la recomendación canónica de hardware, no inventa un modelo antes de `ModelPlanner` y mantiene costos externos como desconocidos hasta configurar proveedor/precio.
+  - Documentos de investigación y benchmark: `docs/research/ADAPTIVE_INFERENCE_2026.md` y `docs/benchmarks/LOCAL_MODEL_COMPARISON.md`.
+  - Piper usa la API Python `AudioChunk` cuando está disponible, mantiene la voz cargada, reproduce por chunks y conserva el CLI como fallback; Lab precalienta Piper antes de abrir el micrófono.
+  - El backend genérico nunca expone `reasoning_content` como respuesta y no admite payloads específicos de proveedor implícitos.
+  - Cierre auditado: 387 tests pasando, Ruff limpio, mypy limpio sobre 114 archivos fuente, diff-check y wheel reproducible en verde.
 - **R3B.3 First Physical Lab Validation & Speech Asset Subsystem**:
   - Implementación del catálogo declarativo e inmutable de modelos de voz `SpeechAssetCatalog` (`src/ailen/speech/catalog.py`) con modelos verificados criptográficamente para 2026: Vosk Spanish (`vosk-model-small-es-0.42`), Whisper.cpp (`whisper-ggml-tiny`, `whisper-ggml-base`), y voces Piper en español (`es_ES-davefx-medium`, `es_AR-daniela-high`, `es_ES-sharvard-medium`, `es_ES-carlfm-x_low`) junto con sus configuraciones `.json`.
   - Política estricta de metadata: el género de las voces se declara explícitamente desde la metadata oficial de los datasets y nunca se infiere a partir de nombres de personas.

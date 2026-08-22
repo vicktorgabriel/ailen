@@ -36,6 +36,7 @@ def test_ollama_native_generate_disables_thinking(monkeypatch) -> None:
             "message": {"role": "assistant", "content": "Sí."},
             "prompt_eval_count": 12,
             "eval_count": 3,
+            "eval_duration": 60_000_000,
         })
 
     monkeypatch.setattr("ailen.ai.ollama_backend.urllib.request.urlopen", fake_urlopen)
@@ -57,6 +58,7 @@ def test_ollama_native_generate_disables_thinking(monkeypatch) -> None:
     assert response.provider == "ollama"
     assert response.usage.input_tokens == 12
     assert response.usage.output_tokens == 3
+    assert response.usage.generation_tokens_per_second == pytest.approx(50.0)
 
 
 def test_ollama_native_rejects_non_loopback_endpoint() -> None:

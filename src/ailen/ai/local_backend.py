@@ -8,7 +8,11 @@ from ailen.ai.http_backend import GenericOpenAiBackend
 
 
 class LocalAiBackend(GenericOpenAiBackend):
-    """Local LLM backend communicating via standard HTTP."""
+    """Generic local OpenAI-compatible LLM backend.
+
+    Runtime-specific controls (for example Ollama keep_alive/think) belong in
+    dedicated runtime backends and are intentionally not sent here.
+    """
 
     def __init__(
         self,

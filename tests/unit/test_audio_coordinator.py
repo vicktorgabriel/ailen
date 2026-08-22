@@ -215,3 +215,32 @@ def test_audio_coordinator_half_duplex_blocks_mic_while_speaking() -> None:
 
     # Utterance was never entered because frames were dropped by turn gate
     assert collector.is_in_utterance is False
+
+
+def test_audio_coordinator_plays_streaming_tts_chunks_incrementally() -> None:
+    class ChunkedTts:
+        def health(self):  # type: ignore[no-untyped-def]
+            return None
+
+        def synthesize(self, request: SpeechRequest) -> SpeechOutput:
+            raise AssertionError("blocking synthesize must not be used")
+
+        def synthesize_chunks(self, request: SpeechRequest):  # type: ignore[no-untyped-def]
+            yield SpeechOutput(audio_data=b"\x01\x00" * 100, sample_rate=22050, channels=1, duration_ms=4.5, latency_ms=20.0)
+            yield SpeechOutput(audio_data=b"\x02\x00" * 100, sample_rate=22050, channels=1, duration_ms=4.5, latency_ms=35.0)
+
+    output_backend = FakeAudioOutputBackend()
+    event_bus = EventBus()
+    coordinator = AudioInteractionCoordinator(
+        audio_output=output_backend,
+        tts=ChunkedTts(),
+        event_bus=event_bus,
+        state_manager=StateManager(initial_state=AssistantState.PROCESSING),
+        face_controller=NullFaceController(),
+    )
+
+    out = coordinator.speak("Primera frase. Segunda frase.")
+    assert len(output_backend.played_chunks) == 2
+    assert out.audio_data == output_backend.played_chunks[0] + output_backend.played_chunks[1]
+    assert out.latency_ms == 20.0
+    assert [e.event_type for e in event_bus.history].count(EventType.SPEECH_STARTED) == 1

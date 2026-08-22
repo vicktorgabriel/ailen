@@ -94,3 +94,27 @@ def test_backend_wrappers_initialization() -> None:
     cloud_b = CloudAiBackend(endpoint="https://api.openai.com/v1", model="gpt-4o-mini", api_key="sk-test-123")
     assert cloud_b.api_key == "sk-test-123"
     assert cloud_b.requires_internet is True
+
+
+def test_generic_backend_never_exposes_reasoning_content_as_answer() -> None:
+    backend = GenericOpenAiBackend(endpoint="http://127.0.0.1:8080/v1", model="test-model")
+    payload = {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "private hidden reasoning must not be surfaced",
+            },
+            "finish_reason": "stop",
+        }]
+    }
+    mock_response = MagicMock()
+    mock_response.status = 200
+    mock_response.read.return_value = json.dumps(payload).encode("utf-8")
+    mock_response.__enter__.return_value = mock_response
+
+    with patch("urllib.request.urlopen", return_value=mock_response):
+        response = backend.generate(AiRequest(request_id="r-hidden"))
+
+    assert response.text == ""
+    assert "private hidden reasoning" not in response.text

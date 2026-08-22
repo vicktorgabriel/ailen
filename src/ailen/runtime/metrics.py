@@ -23,9 +23,10 @@ class LabSessionMetrics:
     input_tokens_total: int = 0
     output_tokens_total: int = 0
     token_usage_complete: bool = True
-
     tts_calls_count: int = 0
     tts_latencies_ms: list[float] = field(default_factory=list)
+
+    ttfar_latencies_ms: list[float] = field(default_factory=list)
 
     vision_observations_count: int = 0
     presence_transitions_count: int = 0
@@ -35,6 +36,11 @@ class LabSessionMetrics:
         """Mark session end timestamp."""
         if self.ended_at is None:
             self.ended_at = time.time()
+
+    def record_ttfar(self, latency_ms: float) -> None:
+        """Record TTFAR proxy: end of speech to first PCM buffer submitted for playback."""
+        if latency_ms > 0:
+            self.ttfar_latencies_ms.append(latency_ms)
 
     def record_utterance(self, success: bool, latency_ms: float = 0.0) -> None:
         """Record an STT utterance attempt and its latency."""
@@ -118,6 +124,8 @@ class LabSessionMetrics:
                 "tts_calls": self.tts_calls_count,
                 "tts_latency_avg_ms": self._avg(self.tts_latencies_ms),
                 "tts_latency_p95_ms": self._p95(self.tts_latencies_ms),
+                "ttfar_avg_ms": self._avg(self.ttfar_latencies_ms),
+                "ttfar_p95_ms": self._p95(self.ttfar_latencies_ms),
             },
             "ai": {
                 "calls": self.ai_calls_count,

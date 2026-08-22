@@ -5,9 +5,28 @@ without requiring heavy external machine learning dependencies.
 """
 
 from collections import deque
+from enum import Enum
 
 from ailen.audio.contracts import AudioSegment, VadResult, VoiceActivityDetector
 from ailen.audio.pcm import compute_pcm_duration_ms, compute_pcm_rms
+
+
+class VadProfile(str, Enum):
+    """VAD responsiveness and silence cutoff profile."""
+    CONSERVATIVE = "conservative"  # silence_timeout_ms=700, min_speech_ms=250
+    NORMAL = "normal"              # silence_timeout_ms=500, min_speech_ms=200
+    FAST = "fast"                  # silence_timeout_ms=350, min_speech_ms=150
+
+
+def get_vad_profile_timings(profile: VadProfile | str) -> tuple[float, float, float]:
+    """Return (silence_timeout_ms, min_speech_ms, pre_roll_ms) for a given profile."""
+    prof_str = str(profile.value if isinstance(profile, Enum) else profile).lower()
+    if prof_str == "fast":
+        return 350.0, 150.0, 150.0
+    if prof_str == "conservative":
+        return 700.0, 250.0, 200.0
+    # Default: NORMAL
+    return 500.0, 200.0, 200.0
 
 
 class EnergyVad(VoiceActivityDetector):
@@ -69,11 +88,16 @@ class UtteranceCollector:
         silence_timeout_ms: float = 700.0,
         max_utterance_seconds: float = 15.0,
         pre_roll_ms: float = 200.0,
+        profile: VadProfile | str | None = None,
     ) -> None:
         self.vad = vad or EnergyVad()
         self.sample_rate = sample_rate
         self.channels = channels
         self.frame_ms = frame_ms
+
+        if profile is not None:
+            silence_timeout_ms, min_speech_ms, pre_roll_ms = get_vad_profile_timings(profile)
+
         self.min_speech_ms = min_speech_ms
         self.silence_timeout_ms = silence_timeout_ms
         self.max_utterance_seconds = max_utterance_seconds

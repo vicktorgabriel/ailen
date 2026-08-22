@@ -236,21 +236,22 @@ Debe quedar funcionando:
 - [x] agregar comandos CLI para inspección y gestión: `ailen speech list/plan/fetch/verify`, `ailen lab audio-devices`, `ailen lab cameras`.
 - [x] documentar catálogo y especificaciones en `docs/research/SPEECH_ASSET_CATALOG_2026.md`.
 - [x] registrar estado de preflight y guía de remediación del host Asrock en `docs/testing/FIRST_PHYSICAL_LAB_REPORT.md`.
-- [ ] conectar periféricos físicos (cámara web USB, micrófono, parlantes) en Asrock / Linux Mint.
-- [ ] instalar dependencias opcionales en host (`python3-tk`, `.[vision,stt-vosk]`, binario `piper`) y ejecutar `ailen -c runtime/lab/ailen-lab.toml lab start`.
-- [ ] medir latencias físicas reales STT/AI/TTS, tokens y FPS de Face en sesión en vivo.
+- [x] conectar y validar G600 físico (micrófono + auricular) en Asrock / Linux Mint; pipeline voz end-to-end `AUDIO CONVERSATION PASS`.
+- [x] instalar/configurar Vosk + Piper y ejecutar `ailen -c runtime/lab/ailen-lab.toml lab start --headless --no-camera` con hardware real.
+- [x] medir latencias físicas reales STT/AI/TTS y tokens en sesión de voz; FPS de Face sigue pendiente hasta disponer de cámara/GUI.
+- [ ] conectar cámara, instalar dependencias Face/Vision necesarias y completar presencia/gaze/Face físico.
 - [ ] realizar después un segundo laboratorio en Windows 11 sin convertirlo en appliance.
 
 ## Bloque 13 — R3B.4 Adaptive Runtime + Voice Latency
 
-- [ ] agregar perfil de inferencia `FAST` además de `SANITY/BALANCED/QUALITY`, separado de un modelo concreto.
-- [ ] seleccionar modelo local estable por hardware/sesión; prohibir model hopping automático por turno.
-- [ ] benchmark reproducible de latencia/calidad 9B vs 3B/4B en Asrock y posteriormente CPU-only.
-- [ ] incorporar candidato FAST no-reasoning/general-chat (prioridad de benchmark: Llama 3.2 3B; alternativas Gemma 3 4B / Qwen3.5 4B think=false).
-- [ ] mantener fallback Rule-only/LAN/cloud cuando no haya modelo local viable.
-- [ ] reducir latencia percibida de TTS mediante streaming/chunked playback si Piper actual lo permite de forma estable.
-- [ ] mejorar STT/confidence/reprompt sin inventar confidence; comparar Vosk contra Whisper.cpp en hardware disponible.
-- [ ] documentar matriz preliminar CPU/RAM/GPU -> perfil, sin declarar umbrales comerciales hasta benchmark físico.
+- [x] agregar abstracción `InferenceProfile` (`RULE_ONLY`, `FAST`, `BALANCED`, `QUALITY`) y recomendación determinista por hardware (`recommend_inference_profile`), separada de `DeviceProfile`.
+- [x] conectar hardware -> `InferenceRecommendation` -> `ModelPlanner` -> residencia Ollama por perfil; sin model hopping automático por turno.
+- [x] benchmark reproducible de latencia/calidad (`ailen lab benchmark-ai`) evaluando modelos ya instalados en Ollama y reportando candidatos ausentes como `NOT_INSTALLED` sin descargas automáticas.
+- [x] incorporar candidatos en ModelCatalog (`llama-3.2-3b-instruct`, `qwen3.5-4b-instruct`, `gemma-3-4b-instruct`, `qwen2.5-3b-instruct`) con metadatos y `downloadable=False`.
+- [x] mantener fallback Rule-only/LAN/cloud cuando no haya modelo local viable con recomendación `RecommendedDeployment`.
+- [x] Piper Python `AudioChunk` con voz cacheada, playback incremental por oración, prewarm de Lab y fallback CLI; TTFAR conectado desde fin de voz hasta primer PCM enviado a playback.
+- [x] mejorar VAD con perfiles (`conservative`, `normal`, `fast`) y conectar `SttQualityEvaluator` al Lab para reprompt determinista antes del LLM, sin inventar confidence.
+- [x] documentar matriz preliminar CPU/RAM/GPU en `docs/research/ADAPTIVE_INFERENCE_2026.md` y reporte de benchmark en `docs/benchmarks/LOCAL_MODEL_COMPARISON.md`.
 
 ## Bloque 14 — R3C Product Behaviors + Controlled Tools + Web
 
