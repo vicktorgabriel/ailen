@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ailen.ai.secrets import SecretResolver
+from ailen.audio.piper_backend import resolve_piper_executable
 from ailen.core.config import AILENConfig
 from ailen.hardware.detector import HardwareDetector
 from ailen.models.catalog import ModelCatalog
@@ -133,7 +134,7 @@ class LabDoctor:
             tts_engine = self.config.speech.tts_engine.lower()
             if tts_engine == "piper":
                 tts_path = self.config.speech.tts_model_path.strip()
-                piper_bin = shutil.which("piper")
+                piper_bin = resolve_piper_executable("piper")
                 if piper_bin and tts_path and Path(tts_path).is_file():
                     checks.append(DiagnosticCheck(name="TTS Voice Model", result="PASS", detail=f"Piper ONNX model at {tts_path}"))
                 else:

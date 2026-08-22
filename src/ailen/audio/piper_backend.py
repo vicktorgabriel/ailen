@@ -7,6 +7,7 @@ external component: AILEN Core does not depend on it being installed.
 import logging
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import wave
@@ -21,6 +22,26 @@ from ailen.audio.contracts import (
 from ailen.domain.enums import ServiceStatus
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_piper_executable(binary_path: str = "piper") -> str | None:
+    """Resolve Piper from an explicit path, PATH, or the active Python environment."""
+    configured = Path(binary_path)
+    if configured.is_file():
+        return str(configured)
+
+    resolved = shutil.which(binary_path)
+    if resolved:
+        return resolved
+
+    # When AILEN is invoked directly as .venv/bin/ailen, the venv's bin
+    # directory is not guaranteed to be on PATH. Prefer its sibling executable
+    # before declaring Piper unavailable.
+    if not configured.parent.parts or str(configured.parent) == ".":
+        sibling = Path(sys.executable).resolve().with_name(configured.name)
+        if sibling.is_file():
+            return str(sibling)
+    return None
 
 
 class PiperTtsBackend(TtsBackend):
@@ -40,10 +61,7 @@ class PiperTtsBackend(TtsBackend):
         self._health_detail = "Uninitialized"
 
     def _resolve_binary(self) -> str | None:
-        configured = Path(self.binary_path)
-        if configured.is_file():
-            return str(configured)
-        return shutil.which(self.binary_path)
+        return resolve_piper_executable(self.binary_path)
 
     def _check_availability(self) -> bool:
         """Check if Piper binary and ONNX model are available."""

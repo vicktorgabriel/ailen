@@ -4,8 +4,23 @@ Todos los cambios relevantes del proyecto se documentarán aquí.
 
 El proyecto usa versionado semántico durante desarrollo, con prereleases cuando corresponda.
 
-## [Unreleased]
-
+- **R3B.3 First Physical Lab Validation & Speech Asset Subsystem**:
+  - Implementación del catálogo declarativo e inmutable de modelos de voz `SpeechAssetCatalog` (`src/ailen/speech/catalog.py`) con modelos verificados criptográficamente para 2026: Vosk Spanish (`vosk-model-small-es-0.42`), Whisper.cpp (`whisper-ggml-tiny`, `whisper-ggml-base`), y voces Piper en español (`es_ES-davefx-medium`, `es_AR-daniela-high`, `es_ES-sharvard-medium`, `es_ES-carlfm-x_low`) junto con sus configuraciones `.json`.
+  - Política estricta de metadata: el género de las voces se declara explícitamente desde la metadata oficial de los datasets y nunca se infiere a partir de nombres de personas.
+  - Almacén de modelos de voz seguro `SpeechAssetStore` (`src/ailen/speech/store.py`) en `~/.local/share/ailen/speech/{stt,tts}/` con validación exhaustiva `path.is_relative_to` contra vulnerabilidades de path traversal.
+  - Descargador seguro `SpeechAssetDownloader` (`src/ailen/speech/downloader.py`) con streaming HTTPS, preflight de espacio en disco, comprobación SHA-256 fail-closed y extracción de ZIPs con protección estricta contra Zip-Slip.
+  - Asistente interactivo `ailen lab prepare-speech [--yes]` (`src/ailen/speech/prepare.py`) para inspeccionar, descargar y validar modelos Vosk y voces Piper.
+  - Generador de configuración aislada `ailen lab config init` (`src/ailen/runtime/lab_config.py`) para emitir `runtime/lab/ailen-lab.toml` sin modificar la configuración canónica `config/ailen.toml`.
+  - Verificador exhaustivo de preparación física `LabPreflightChecker` (`src/ailen/runtime/preflight.py`) con categorización de requerimientos obligatorios vs opcionales (`ailen lab preflight`), evaluando Face GUI, bibliotecas de visión, cámaras V4L2 físicas, audio ALSA, binarios STT/TTS y estado del runtime local de IA.
+  - Comandos CLI de gestión de voz y diagnóstico físico: `ailen speech list`, `ailen speech plan`, `ailen speech fetch`, `ailen speech verify`, `ailen lab audio-devices`, `ailen lab cameras`.
+  - Protección de privacidad en logs de consola de `LabRunner`: transcripciones y respuestas se resumen con longitud y métricas sin exponer texto privado completo de forma espontánea.
+  - Documentos de investigación y prueba: `docs/research/SPEECH_ASSET_CATALOG_2026.md`, `docs/testing/FIRST_PHYSICAL_LAB_REPORT.md` (reportando estado `NOT_READY_FOR_LIVE_TEST` / `PARTIAL` en host Asrock) y actualización de `docs/testing/MINT_LIVE_LAB_CHECKLIST.md`.
+  - Suite de 344 tests unitarios e integración pasando en 20.89s, ruff y mypy limpios sobre 107 archivos fuente.
+  - Auditoría final R3B.3: Vosk verifica fail-closed contra el ZIP SHA-256 autoritativo; el downloader valida tamaño exacto, redirects HTTPS y extracción ZIP transaccional con límites.
+  - `lab audio-devices` separa hardware físico (`arecord/aplay -l`) de plugins/routing ALSA; el preflight ya no cuenta `null`, `pulse`, `pipewire`, etc. como micrófonos físicos.
+  - `demo vad` y `demo stt` fallan ante micrófono real no disponible; el audio sintético sólo se activa con `--simulate`.
+  - Metadata de género Piper corregida a `unknown` cuando el model card no la declara de forma inequívoca; AILEN no la infiere por nombres.
+  - La configuración LAB mantiene `AILEN` separado del personaje (`display_name = "Asistente"`) y Piper se resuelve también dentro del virtualenv activo.
 - **R3B.2 Live Lab Integration**:
   - Regla estricta "No Silent Fakes": `Fake*` sólo se permiten cuando se pasa explícitamente `--simulate`. Si falta un backend o modelo real, el estado reportado es `MISSING_MODEL`, `UNAVAILABLE` o `DISABLED`.
   - Factoría desacoplada `LabComponentFactory` (`src/ailen/runtime/factory.py`) para resolver componentes físicos de Face, Vision, Audio ALSA, STT (Vosk/Whisper), TTS (Piper) y AI Backends (Ollama/llama.cpp).

@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-08-21  
 **Versión:** `0.1.0-dev.0`  
-**Fase:** R3B.2 Live Lab Integration integrado y auditado en software. El wiring real Face/Vision/Audio/STT/AI/TTS está preparado sin fakes silenciosos, pero la sesión física con cámara/micrófono/modelos de voz todavía NO fue ejecutada. Próximo milestone: R3B.3 First Physical Lab Validation en Linux Mint antes de Memory/Personality.
+**Fase:** R3B.3 First Physical Lab Validation & Speech Asset Subsystem implementado y preflight evaluado en host Asrock. Catálogo declarativo de voz `SpeechAssetCatalog`, almacén seguro `SpeechAssetStore`, descargador criptográfico `SpeechAssetDownloader`, generador de configuración aislada `ailen lab config init`, y evaluador integral `LabPreflightChecker` operativos con 344 tests pasando. Preflight general del host real sigue incompleto para Face/Vision; se habilitó una validación física parcial `MIC-ONLY` sin cámara. Los endpoints ALSA físicos se distinguen de plugins virtuales y VAD/STT ya no sustituyen un micrófono fallido por audio sintético salvo `--simulate` explícito.
 
 ## Qué existe
 

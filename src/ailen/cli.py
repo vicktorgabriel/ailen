@@ -124,6 +124,7 @@ def create_parser() -> argparse.ArgumentParser:
     demo_vad.add_argument("--device", default="default", help="Input device (default: default)")
     demo_vad.add_argument("--threshold", type=float, default=0.02, help="VAD RMS threshold (default: 0.02)")
     demo_vad.add_argument("--duration", type=float, default=5.0, help="Run duration in seconds (default: 5.0)")
+    demo_vad.add_argument("--simulate", action="store_true", help="Use synthetic PCM instead of physical microphone")
 
     # Subcommand: demo stt
     demo_stt = demo_sub.add_parser("stt", help="Speech-to-Text transcription demo")
@@ -131,6 +132,7 @@ def create_parser() -> argparse.ArgumentParser:
     demo_stt.add_argument("--engine", default="mock", help="STT engine (mock, vosk, whisper_cpp)")
     demo_stt.add_argument("--model", default="", help="STT model path")
     demo_stt.add_argument("--duration", type=float, default=6.0, help="Listen duration in seconds (default: 6.0)")
+    demo_stt.add_argument("--simulate", action="store_true", help="Use synthetic test input; never enabled implicitly")
 
     # Subcommand: demo tts
     demo_tts = demo_sub.add_parser("tts", help="Text-to-Speech synthesis demo")
@@ -165,12 +167,50 @@ def create_parser() -> argparse.ArgumentParser:
     lab_start.add_argument("--duration", type=float, default=None, help="Run for N seconds and terminate cleanly")
     lab_doctor = lab_sub.add_parser("doctor", help="Run non-invasive system readiness diagnostic")
     lab_doctor.add_argument("--json", action="store_true", help="Output diagnostic report as JSON")
-    lab_prepare = lab_sub.add_parser("prepare-ai", help="Inspect and prepare local model and runtime for Lab Mode")
-    lab_prepare.add_argument("-y", "--yes", action="store_true", help="Automatically accept downloading missing model artifact")
-    lab_prepare.add_argument("--start-runtime", action="store_true", help="Temporarily start/health-check an AILEN-managed llama.cpp runtime, then stop it")
-    lab_prepare.add_argument("--purpose", choices=["SANITY", "BALANCED", "QUALITY"], default="BALANCED", help="Model execution purpose")
+    lab_preflight = lab_sub.add_parser("preflight", help="Run comprehensive preflight check for physical live lab test")
+    lab_preflight.add_argument("--json", action="store_true", help="Output preflight report as JSON")
+    lab_preflight.add_argument("--headless", action="store_true", default=False, help="Check with headless assumption")
+    lab_preflight.add_argument("--no-camera", action="store_true", default=False, help="Check with no-camera assumption")
+    lab_preflight.add_argument("--no-audio", action="store_true", default=False, help="Check with no-audio assumption")
+    lab_preflight.add_argument("--no-ai", action="store_true", default=False, help="Check with no-ai assumption")
+    lab_prepare_ai = lab_sub.add_parser("prepare-ai", help="Inspect and prepare local model and runtime for Lab Mode")
+    lab_prepare_ai.add_argument("-y", "--yes", action="store_true", help="Automatically accept downloading missing model artifact")
+    lab_prepare_ai.add_argument("--start-runtime", action="store_true", help="Temporarily start/health-check an AILEN-managed llama.cpp runtime, then stop it")
+    lab_prepare_ai.add_argument("--purpose", choices=["SANITY", "BALANCED", "QUALITY"], default="BALANCED", help="Model execution purpose")
+    lab_prep_speech = lab_sub.add_parser("prepare-speech", help="Inspect and prepare STT/TTS models and voice assets for Lab Mode")
+    lab_prep_speech.add_argument("-y", "--yes", action="store_true", help="Automatically download approved speech assets")
+    lab_prep_speech.add_argument("--stt", choices=["vosk", "whisper_cpp"], default="vosk", help="Target STT engine (default: vosk)")
+    lab_prep_speech.add_argument("--voice", default="es_ES-davefx-medium", help="Target Piper voice key")
+    lab_cfg_init = lab_sub.add_parser("config", help="Manage isolated lab configuration")
+    lab_cfg_sub = lab_cfg_init.add_subparsers(dest="lab_config_action", help="Lab config action")
+    lab_cfg_init_p = lab_cfg_sub.add_parser("init", help="Initialize runtime/lab/ailen-lab.toml without touching product config")
+    lab_cfg_init_p.add_argument("-f", "--force", action="store_true", help="Overwrite existing lab configuration")
+    lab_cfg_init_p.add_argument("--stt", choices=["vosk", "whisper_cpp"], default="vosk", help="Target STT engine")
+    lab_cfg_init_p.add_argument("--voice", default="es_ES-davefx-medium", help="Target TTS voice key")
+    lab_cfg_init_p.add_argument("--ai-endpoint", default="http://127.0.0.1:11434/v1", help="Target Local AI endpoint")
+    lab_cfg_init_p.add_argument("--ai-model", default="qwen3.5:9b", help="Target Local AI model name")
+    lab_audio = lab_sub.add_parser("audio-devices", help="List audio capture and playback devices with ALSA IDs")
+    lab_audio.add_argument("--json", action="store_true", help="Output as JSON")
+    lab_cams = lab_sub.add_parser("cameras", help="List detected camera devices and paths")
+    lab_cams.add_argument("--json", action="store_true", help="Output as JSON")
     lab_bench = lab_sub.add_parser("benchmark", help="Run reproducible lab benchmark harness")
     lab_bench.add_argument("--output", default="runtime/lab/benchmarks", help="Destination directory for benchmark artifact")
+
+    # Command: speech
+    speech_parser = subparsers.add_parser("speech", help="Manage offline speech assets (Vosk, Whisper, Piper voices)")
+    speech_sub = speech_parser.add_subparsers(dest="speech_action", help="Speech action")
+    speech_list = speech_sub.add_parser("list", help="List all catalog speech assets (STT models, TTS voices)")
+    speech_list.add_argument("--json", action="store_true", help="Output as JSON")
+    speech_list.add_argument("--engine", help="Filter by engine (vosk, whisper_cpp, piper)")
+    speech_plan = speech_sub.add_parser("plan", help="Show recommended STT and TTS models for speech pipeline")
+    speech_plan.add_argument("--stt", default="vosk", help="Target STT engine (vosk, whisper_cpp)")
+    speech_plan.add_argument("--voice", default="es_ES-davefx-medium", help="Target TTS voice key")
+    speech_plan.add_argument("--json", action="store_true", help="Output as JSON")
+    speech_fetch = speech_sub.add_parser("fetch", help="Download and verify a speech asset into SpeechAssetStore")
+    speech_fetch.add_argument("asset_id", help="Speech asset ID (e.g. vosk-model-small-es-0.42, es_ES-davefx-medium)")
+    speech_fetch.add_argument("-y", "--yes", action="store_true", help="Accept download confirmation")
+    speech_verify = speech_sub.add_parser("verify", help="Verify SHA-256 checksum of an installed speech asset")
+    speech_verify.add_argument("asset_id", help="Speech asset ID to verify")
 
     # Command: models
     models_parser = subparsers.add_parser("models", help="Manage local GGUF model catalog and storage")
@@ -713,18 +753,25 @@ def cmd_demo_vad(args: argparse.Namespace) -> int:
     print(" Presioná Ctrl+C para detener.")
     print("==========================================================")
 
+    simulate = bool(getattr(args, "simulate", False))
     backend.start()
     health = backend.health()
-    use_synthetic = health.status.value != "HEALTHY"
-    if use_synthetic:
-        print(f"Aviso: Backend ALSA en estado {health.status.value} ({health.detail}); ejecutando demo con stream simulado.")
+    if not simulate and health.status.value != "HEALTHY":
+        backend.stop()
+        print(
+            f"ERROR: el micrófono ALSA no pudo abrirse: {health.status.value} ({health.detail}). "
+            "No se usará audio sintético. Use --simulate sólo si desea una prueba lógica."
+        )
+        return 1
+    if simulate:
+        print("SIMULATION MODE: la entrada física no participa en esta prueba.")
 
     start_t = time.time()
     try:
         step = 0
         while time.time() - start_t < duration:
             step += 1
-            if not use_synthetic:
+            if not simulate:
                 frame = backend.read_frame(timeout_seconds=0.05)
             else:
                 # Alternate 1.5s silence and 1.0s tone (voice simulation)
@@ -779,12 +826,25 @@ def cmd_demo_stt(args: argparse.Namespace, config_path: str | None) -> int:
     else:
         stt_backend = FakeSttBackend(canned_text="Hola AILEN demo stt")
 
+    simulate = bool(getattr(args, "simulate", False))
+    if engine == "mock" and not simulate:
+        print("ERROR: STT 'mock' no es una validación física. Use --engine vosk/whisper_cpp o --simulate.")
+        return 1
+
     alsa_in = AlsaAudioInputBackend(device=device, sample_rate=16000, channels=1)
     alsa_in.start()
     is_real = alsa_in.health().status.value == "HEALTHY"
+    alsa_health = alsa_in.health()
     alsa_in.stop()
 
-    audio_input: Any = AlsaAudioInputBackend(device=device) if is_real else FakeAudioInputBackend()
+    if not simulate and not is_real:
+        print(
+            f"ERROR: el micrófono ALSA no pudo abrirse: {alsa_health.status.value} "
+            f"({alsa_health.detail}). No se inyectará audio sintético."
+        )
+        return 1
+
+    audio_input: Any = FakeAudioInputBackend() if simulate else AlsaAudioInputBackend(device=device)
 
     coordinator = AudioInteractionCoordinator(
         audio_input=audio_input,
@@ -797,8 +857,8 @@ def cmd_demo_stt(args: argparse.Namespace, config_path: str | None) -> int:
     print(f" Estado backend STT: {stt_backend.health().status.value} ({stt_backend.health().detail})")
     print("==========================================================")
 
-    if not is_real:
-        print("Aviso: Dispositivo de micrófono no disponible; inyectando enunciado sintético simulado.")
+    if simulate:
+        print("SIMULATION MODE: inyectando audio sintético; el micrófono físico no participa.")
         # Inject pre-roll, speech tone, and silence
         frames = [b"\x00\x00" * 320] * 5
         frames.extend([generate_tone_pcm(300.0, 20.0, amplitude=0.08)] * 30)
@@ -1157,6 +1217,143 @@ def cmd_lab_benchmark(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_lab_preflight(args: argparse.Namespace, config_path: str | None) -> int:
+    """Run comprehensive physical lab preflight check."""
+    from ailen.runtime.preflight import LabPreflightChecker
+
+    cfg = load_config(config_path)
+    checker = LabPreflightChecker(config=cfg)
+    if getattr(args, "json", False):
+        rep = checker.run_all(
+            headless=getattr(args, "headless", False),
+            no_camera=getattr(args, "no_camera", False),
+            no_audio=getattr(args, "no_audio", False),
+            no_ai=getattr(args, "no_ai", False),
+        )
+        print(json.dumps(rep.to_dict(), indent=2, ensure_ascii=False))
+        return 0 if rep.overall_status == "READY_FOR_LIVE_TEST" else 1
+    return checker.print_report(
+        headless=getattr(args, "headless", False),
+        no_camera=getattr(args, "no_camera", False),
+        no_audio=getattr(args, "no_audio", False),
+        no_ai=getattr(args, "no_ai", False),
+    )
+
+
+def cmd_lab_prepare_speech(args: argparse.Namespace, config_path: str | None) -> int:
+    """Inspect or download required STT and TTS models for Lab Mode."""
+    from ailen.speech.prepare import LabSpeechPreparer
+
+    cfg = load_config(config_path)
+    preparer = LabSpeechPreparer(config=cfg)
+    _report, code = preparer.run_prepare(
+        auto_download=getattr(args, "yes", False),
+        stt_engine=getattr(args, "stt", "vosk"),
+        voice_key=getattr(args, "voice", "es_ES-davefx-medium"),
+    )
+    return code
+
+
+def cmd_lab_config(args: argparse.Namespace) -> int:
+    """Initialize or manage isolated lab configuration at runtime/lab/ailen-lab.toml."""
+    action = getattr(args, "lab_config_action", None)
+    if action == "init":
+        from ailen.runtime.lab_config import init_lab_config
+
+        out_path, created = init_lab_config(
+            force=getattr(args, "force", False),
+            stt_engine=getattr(args, "stt", "vosk"),
+            tts_voice=getattr(args, "voice", "es_ES-davefx-medium"),
+            ai_endpoint=getattr(args, "ai_endpoint", "http://127.0.0.1:11434/v1"),
+            ai_model=getattr(args, "ai_model", "qwen3.5:9b"),
+        )
+        if created:
+            print(f"[OK] Isolated lab configuration created at: {out_path}")
+        else:
+            print(f"[!] Lab configuration already exists at: {out_path} (use -f/--force to overwrite)")
+        return 0
+    print("Uso: ailen lab config [init]")
+    return 1
+
+
+def cmd_lab_audio_devices(args: argparse.Namespace, config_path: str | None) -> int:
+    """List physical ALSA hardware separately from virtual routing endpoints."""
+    del config_path
+    from ailen.audio.alsa_backend import AlsaDeviceEnumerator
+
+    enumerator = AlsaDeviceEnumerator()
+    capture_hw = enumerator.list_hardware_devices(is_input=True)
+    playback_hw = enumerator.list_hardware_devices(is_input=False)
+    endpoints = enumerator.list_devices()
+
+    if getattr(args, "json", False):
+        payload = {
+            "hardware_capture": [
+                {"id": d.id, "name": d.name} for d in capture_hw
+            ],
+            "hardware_playback": [
+                {"id": d.id, "name": d.name} for d in playback_hw
+            ],
+            "routing_endpoints": [
+                {
+                    "id": d.id,
+                    "name": d.name,
+                    "is_input": d.is_input,
+                    "is_output": d.is_output,
+                    "is_default": d.is_default,
+                }
+                for d in endpoints
+            ],
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print("==================================================================")
+    print("             ALSA PHYSICAL HARDWARE ENDPOINTS                    ")
+    print("==================================================================")
+    if capture_hw:
+        print("CAPTURE (use these first for microphone tests):")
+        for d in capture_hw:
+            print(f"  [MIC] {d.id:<32} : {d.name}")
+    else:
+        print("CAPTURE: no hardware endpoints reported by `arecord -l`.")
+    if playback_hw:
+        print("PLAYBACK:")
+        for d in playback_hw:
+            print(f"  [OUT] {d.id:<32} : {d.name}")
+    else:
+        print("PLAYBACK: no hardware endpoints reported by `aplay -l`.")
+
+    print("------------------------------------------------------------------")
+    print("ALSA ROUTING/PLUGIN ENDPOINTS (not proof of physical hardware):")
+    for d in endpoints:
+        if d.is_default or d.id in {"pipewire", "pulse"}:
+            dtype = "INPUT" if d.is_input else "OUTPUT"
+            default_tag = " (DEFAULT)" if d.is_default else ""
+            print(f"  [{dtype}] {d.id:<26} : {d.name}{default_tag}")
+    print("==================================================================")
+    return 0
+
+
+def cmd_lab_cameras(args: argparse.Namespace) -> int:
+    """List physical camera devices detected in the system."""
+    detector = HardwareDetector()
+    report = detector.detect()
+    if getattr(args, "json", False):
+        print(json.dumps([{"device_path": c.device_path, "index": c.index, "name": c.name, "is_available": c.is_available} for c in report.cameras], indent=2, ensure_ascii=False))
+        return 0
+    print("==================================================================")
+    print("                    DETECTED CAMERAS                              ")
+    print("==================================================================")
+    if report.cameras:
+        for c in report.cameras:
+            print(f"Camera [{c.index}]: {c.device_path} ({c.name})")
+    else:
+        print("No physical V4L2 cameras detected.")
+    print("==================================================================")
+    return 0
+
+
 def cmd_lab(args: argparse.Namespace, config_path: str | None) -> int:
     """Execute lab subcommand."""
     action = getattr(args, "lab_action", None)
@@ -1166,11 +1363,189 @@ def cmd_lab(args: argparse.Namespace, config_path: str | None) -> int:
         return cmd_lab_start(args, config_path)
     elif action == "doctor":
         return cmd_lab_doctor(args, config_path)
+    elif action == "preflight":
+        return cmd_lab_preflight(args, config_path)
     elif action == "prepare-ai":
         return cmd_lab_prepare_ai(args, config_path)
+    elif action == "prepare-speech":
+        return cmd_lab_prepare_speech(args, config_path)
+    elif action == "config":
+        return cmd_lab_config(args)
+    elif action == "audio-devices":
+        return cmd_lab_audio_devices(args, config_path)
+    elif action == "cameras":
+        return cmd_lab_cameras(args)
     elif action == "benchmark":
         return cmd_lab_benchmark(args)
-    print("Uso: ailen lab [inspect|start|doctor|prepare-ai|benchmark]")
+    print("Uso: ailen lab [inspect|start|doctor|preflight|prepare-ai|prepare-speech|config|audio-devices|cameras|benchmark]")
+    return 1
+
+
+def cmd_speech_list(args: argparse.Namespace) -> int:
+    """List all speech models and voices in the catalog."""
+    from ailen.speech.catalog import SpeechAssetCatalog
+    from ailen.speech.store import SpeechAssetStore
+
+    catalog = SpeechAssetCatalog()
+    store = SpeechAssetStore()
+    assets = catalog.list_assets(engine=getattr(args, "engine", None))
+
+    if getattr(args, "json", False):
+        out = []
+        for a in assets:
+            d = a.to_dict()
+            d["installed"] = store.exists(a)
+            d["verified"] = store.verify(a) if store.exists(a) else False
+            out.append(d)
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return 0
+
+    print(f"{'ASSET ID':<32} {'ENGINE':<12} {'TYPE':<12} {'LOCALE':<8} {'GENDER':<8} {'SIZE (MB)':<10} {'INSTALLED'}")
+    print("-" * 95)
+    for a in assets:
+        inst = "YES" if store.exists(a) else "NO"
+        mb = a.expected_size_bytes / (1024 * 1024)
+        print(f"{a.asset_id:<32} {a.engine:<12} {a.asset_type.value:<12} {a.locale:<8} {a.voice_gender.value:<8} {mb:<10.1f} {inst}")
+    return 0
+
+
+def cmd_speech_plan(args: argparse.Namespace) -> int:
+    """Show recommended STT and TTS models for speech pipeline."""
+    from ailen.speech.prepare import LabSpeechPreparer
+
+    preparer = LabSpeechPreparer()
+    report = preparer.inspect(
+        stt_engine=getattr(args, "stt", "vosk"),
+        voice_key=getattr(args, "voice", "es_ES-davefx-medium"),
+    )
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "stt": {
+                "engine": report.stt.engine,
+                "target_asset": report.stt.target_asset.to_dict() if report.stt.target_asset else None,
+                "installed": report.stt.is_installed,
+                "verified": report.stt.is_verified,
+                "runtime_available": report.stt.runtime_available,
+            },
+            "tts": {
+                "engine": report.tts.engine,
+                "target_asset": report.tts.target_asset.to_dict() if report.tts.target_asset else None,
+                "installed": report.tts.is_installed,
+                "verified": report.tts.is_verified,
+                "runtime_available": report.tts.runtime_available,
+            },
+        }, indent=2, ensure_ascii=False))
+        return 0
+
+    print("==================================================================")
+    print("                   RECOMMENDED SPEECH PLAN                        ")
+    print("==================================================================")
+    if report.stt.target_asset:
+        print(f"STT Model      : {report.stt.target_asset.asset_id} ({report.stt.engine})")
+        print(f"  Installed    : {'YES' if report.stt.is_installed else 'NO'}")
+        print(f"  Runtime      : {report.stt.runtime_detail}")
+    if report.tts.target_asset:
+        print(f"TTS Voice      : {report.tts.target_asset.asset_id} (piper / {report.tts.target_asset.voice_gender.value})")
+        print(f"  Installed    : {'YES' if report.tts.is_installed else 'NO'}")
+        print(f"  Runtime      : {report.tts.runtime_detail}")
+    print("==================================================================")
+    return 0
+
+
+def cmd_speech_fetch(args: argparse.Namespace) -> int:
+    """Download and verify speech asset into SpeechAssetStore."""
+    from ailen.speech.catalog import SpeechAssetCatalog
+    from ailen.speech.downloader import SpeechAssetDownloader, SpeechDownloadError
+    from ailen.speech.store import SpeechAssetStore
+
+    asset_id = args.asset_id
+    catalog = SpeechAssetCatalog()
+    desc = catalog.get(asset_id)
+    if not desc:
+        print(f"Error: Speech asset '{asset_id}' not found in catalog. Use 'ailen speech list' to view available assets.")
+        return 1
+
+    store = SpeechAssetStore()
+    if store.exists(desc) and store.verify(desc):
+        print(f"Asset '{asset_id}' is already installed at {store.get_asset_path(desc)}")
+        return 0
+
+    mb = desc.expected_size_bytes / (1024 * 1024)
+    print("==================================================================")
+    print("                 SPEECH ASSET DOWNLOAD REQUEST                    ")
+    print("==================================================================")
+    print(f"Asset ID     : {desc.asset_id}")
+    print(f"Engine       : {desc.engine}")
+    print(f"Type         : {desc.asset_type.value}")
+    print(f"Download Size: ~{mb:.1f} MB")
+    print(f"Destination  : {store.get_asset_path(desc)}")
+    print(f"SHA-256      : {desc.sha256}")
+    print("==================================================================")
+
+    if not getattr(args, "yes", False):
+        try:
+            confirm = input(f"¿Desea descargar '{asset_id}' (~{mb:.1f} MB)? [y/N]: ").strip().lower()
+            if confirm not in ("y", "yes", "s", "si", "sí"):
+                print("Descarga cancelada por el usuario.")
+                return 0
+        except (EOFError, KeyboardInterrupt):
+            print("\nOperación cancelada.")
+            return 1
+
+    downloader = SpeechAssetDownloader(store=store, catalog=catalog)
+    try:
+        def on_prog(downloaded: int, total: int) -> None:
+            pct = (downloaded / total * 100.0) if total > 0 else 0
+            mb_d = downloaded / (1024 * 1024)
+            mb_t = total / (1024 * 1024)
+            print(f"\rDescargando: {mb_d:.1f}/{mb_t:.1f} MB ({pct:.1f}%)", end="", flush=True)
+
+        target = downloader.download(desc, progress_callback=on_prog)
+        print(f"\nDescarga y verificación completadas con éxito: {target}")
+        return 0
+    except SpeechDownloadError as exc:
+        print(f"\nError en la descarga: {exc}")
+        return 1
+
+
+def cmd_speech_verify(args: argparse.Namespace) -> int:
+    """Verify SHA-256 checksum of an installed speech asset."""
+    from ailen.speech.catalog import SpeechAssetCatalog
+    from ailen.speech.store import SpeechAssetStore
+
+    asset_id = args.asset_id
+    catalog = SpeechAssetCatalog()
+    desc = catalog.get(asset_id)
+    if not desc:
+        print(f"Error: Speech asset '{asset_id}' not found in catalog.")
+        return 1
+
+    store = SpeechAssetStore()
+    if not store.exists(desc):
+        print(f"Error: Speech asset '{asset_id}' is not installed in local store.")
+        return 1
+
+    print(f"Verifying SHA-256 for '{asset_id}'...")
+    valid = store.verify(desc)
+    if valid:
+        print(f"SUCCESS: Integrity check passed for '{asset_id}' (SHA-256 match).")
+        return 0
+    print(f"FAILURE: SHA-256 mismatch for '{asset_id}'!")
+    return 1
+
+
+def cmd_speech(args: argparse.Namespace) -> int:
+    """Execute speech subcommand."""
+    action = getattr(args, "speech_action", None)
+    if action == "list":
+        return cmd_speech_list(args)
+    elif action == "plan":
+        return cmd_speech_plan(args)
+    elif action == "fetch":
+        return cmd_speech_fetch(args)
+    elif action == "verify":
+        return cmd_speech_verify(args)
+    print("Uso: ailen speech [list|plan|fetch|verify]")
     return 1
 
 
@@ -1396,6 +1771,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "lab":
         return cmd_lab(args, args.config_path)
+
+    if args.command == "speech":
+        return cmd_speech(args)
 
     if args.command == "models":
         return cmd_models(args)

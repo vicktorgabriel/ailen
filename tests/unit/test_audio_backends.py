@@ -108,3 +108,18 @@ def test_piper_tts_backend_graceful_degradation_without_binary() -> None:
     output = backend.synthesize(SpeechRequest(text="Hola"))
     assert output.audio_data is None
     assert output.duration_ms == 0.0
+
+
+def test_alsa_hardware_parser_returns_plughw_endpoints() -> None:
+    enumerator = AlsaDeviceEnumerator()
+    sample = (
+        "**** List of CAPTURE Hardware Devices ****\n"
+        "card 2: Generic_1 [HD-Audio Generic], device 0: ALC892 Analog [ALC892 Analog]\n"
+        "card 2: Generic_1 [HD-Audio Generic], device 2: ALC892 Alt Analog [ALC892 Alt Analog]\n"
+    )
+    devices = enumerator._parse_hardware_lines(sample, is_input=True)
+    assert [d.id for d in devices] == [
+        "plughw:CARD=Generic_1,DEV=0",
+        "plughw:CARD=Generic_1,DEV=2",
+    ]
+    assert all(d.is_input and not d.is_output for d in devices)

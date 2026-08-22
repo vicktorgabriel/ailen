@@ -227,14 +227,18 @@ Debe quedar funcionando:
 
 ## Bloque 12 — R3B.3 First Physical Lab Validation
 
-- [ ] conectar cámara física en Asrock/Linux Mint y verificar detección real + gaze + debounce.
-- [ ] preparar dependencias opcionales de laboratorio sin modificar persistentemente el SO (`vision`, STT/TTS según assets elegidos).
-- [ ] definir/descargar assets STT español y TTS Piper con fuente, licencia, tamaño y hash verificados; ninguna descarga silenciosa.
-- [ ] descargar/verificar el modelo `SANITY` aprobado y validar `llama-server` CUDA bajo ownership de `LabRunner`.
-- [ ] ejecutar conversación física completa: presencia -> micrófono/VAD -> STT -> Router/LLM -> TTS -> parlantes -> Face.
-- [ ] medir latencias reales STT/AI/TTS, tokens cuando el backend los informe, Face FPS y Vision sampling.
-- [ ] comprobar half-duplex, estados `LISTENING/PROCESSING/SPEAKING` y cleanup con Ctrl+C.
-- [ ] corregir fallos descubiertos en la sesión real antes de declarar Linux Mint validado.
+- [x] implementar catálogo declarativo de modelos de voz y habla `SpeechAssetCatalog` (`src/ailen/speech/catalog.py`) con modelos Vosk, Whisper.cpp y voces Piper en español verificadas criptográficamente.
+- [x] implementar `SpeechAssetStore` (`src/ailen/speech/store.py`) en `~/.local/share/ailen/speech/{stt,tts}/` con protección estricta contra path traversal.
+- [x] implementar `SpeechAssetDownloader` (`src/ailen/speech/downloader.py`) con HTTPS forzado, streaming temporal, verificación SHA-256 fail-closed y extracción segura de zip (protección anti Zip-Slip).
+- [x] implementar flujo de preparación de modelos de voz `LabSpeechPreparer` (`src/ailen/speech/prepare.py`) y comando `ailen lab prepare-speech --yes`.
+- [x] implementar generador de configuración aislada de laboratorio `ailen lab config init` (`src/ailen/runtime/lab_config.py`) para `runtime/lab/ailen-lab.toml` (gitignored).
+- [x] implementar verificador exhaustivo de preparación física `LabPreflightChecker` (`src/ailen/runtime/preflight.py`) y comando `ailen lab preflight`.
+- [x] agregar comandos CLI para inspección y gestión: `ailen speech list/plan/fetch/verify`, `ailen lab audio-devices`, `ailen lab cameras`.
+- [x] documentar catálogo y especificaciones en `docs/research/SPEECH_ASSET_CATALOG_2026.md`.
+- [x] registrar estado de preflight y guía de remediación del host Asrock en `docs/testing/FIRST_PHYSICAL_LAB_REPORT.md`.
+- [ ] conectar periféricos físicos (cámara web USB, micrófono, parlantes) en Asrock / Linux Mint.
+- [ ] instalar dependencias opcionales en host (`python3-tk`, `.[vision,stt-vosk]`, binario `piper`) y ejecutar `ailen -c runtime/lab/ailen-lab.toml lab start`.
+- [ ] medir latencias físicas reales STT/AI/TTS, tokens y FPS de Face en sesión en vivo.
 - [ ] realizar después un segundo laboratorio en Windows 11 sin convertirlo en appliance.
 
 ## Bloque 13 — R3C Memory API + Personality + Tools

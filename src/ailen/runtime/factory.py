@@ -28,7 +28,7 @@ from ailen.audio.fake import (
     FakeSttBackend,
     FakeTtsBackend,
 )
-from ailen.audio.piper_backend import PiperTtsBackend
+from ailen.audio.piper_backend import PiperTtsBackend, resolve_piper_executable
 from ailen.audio.vosk_backend import VoskSttBackend
 from ailen.audio.whisper_backend import WhisperCppSttBackend
 from ailen.core.config import AILENConfig
@@ -395,7 +395,7 @@ class LabComponentFactory:
 
         engine = self.config.speech.tts_engine.lower()
         if engine == "piper":
-            piper_exe = shutil.which("piper")
+            piper_exe = resolve_piper_executable("piper")
             if not piper_exe:
                 return None, ComponentStatus(
                     name="TTS",

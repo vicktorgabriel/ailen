@@ -2,55 +2,67 @@
 
 Guía paso a paso para la primera sesión interactiva completa en la estación de desarrollo/laboratorio:
 
-## 1. Verificación Inicial de Dependencias y Hardware
+## 1. Verificación Preflight y Diagnóstico del Host
 
 ```bash
-# Diagnóstico integral de dependencias opcionales y estado del host
-./.venv/bin/python -m ailen.cli lab doctor
+# Diagnóstico integral no invasivo de dependencias y estado
+ailen lab doctor
 
-# Salida estructurada JSON si se requiere para scripts
-./.venv/bin/python -m ailen.cli lab doctor --json
+# Verificación de dispositivos de audio y cámaras conectadas
+ailen lab audio-devices
+ailen lab cameras
+
+# Preflight integral de preparación para prueba física en vivo
+ailen lab preflight
 ```
 
-## 2. Inspección y Planificación de Modelos
+## 2. Preparación de Configuración y Modelos de Voz (STT/TTS)
 
 ```bash
-# Inspeccionar hardware, runtimes detectados y plan recomendado
-./.venv/bin/python -m ailen.cli lab inspect
+# Listar modelos y voces verificadas 2026
+ailen speech list
 
-# Evaluar plan de modelos según propósito (SANITY, BALANCED, QUALITY)
-./.venv/bin/python -m ailen.cli models plan --purpose SANITY
-./.venv/bin/python -m ailen.cli models plan --purpose BALANCED
+# Generar archivo de configuración aislado de laboratorio (gitignored)
+ailen lab config init
+
+# Descargar y verificar modelos Vosk y Piper en ~/.local/share/ailen/speech/
+ailen lab prepare-speech --yes
 ```
 
-## 3. Preparación de Artefactos de IA
+## 3. Preparación de Modelo LLM Local
 
 ```bash
 # Inspeccionar estado del modelo local y runtimes
-./.venv/bin/python -m ailen.cli lab prepare-ai
+ailen lab prepare-ai
 
 # Descargar/verificar modelo y ejecutar smoke-test temporal del runtime (opcional)
-./.venv/bin/python -m ailen.cli lab prepare-ai --yes --start-runtime
-# El smoke-test se detiene al terminar; `ailen lab start` poseerá el runtime de la sesión.
+ailen lab prepare-ai --yes --start-runtime
 ```
 
-## 4. Prueba en Modo Simulación (Offline Verification)
+## 4. Validación Preflight con Configuración de Laboratorio
+
+```bash
+# Evaluar preflight con la configuración aislada de laboratorio
+ailen -c runtime/lab/ailen-lab.toml lab preflight
+```
+
+## 5. Prueba en Modo Simulación (Offline Verification)
 
 ```bash
 # Inicializar con backends sintéticos para validar GUI y flujo sin periféricos
-./.venv/bin/python -m ailen.cli lab start --simulate --duration 5
+ailen lab start --simulate --duration 5
 ```
 
-## 5. Prueba Físicamente Integrada
+## 6. Prueba Físicamente Integrada en Vivo
 
-Con micrófono, parlantes y cámara conectados:
+Con micrófono, parlantes y cámara web USB conectados:
 
 ```bash
 # Modo Dry-Run para verificar tabla de componentes sin entrar al loop
-./.venv/bin/python -m ailen.cli lab start --dry-run
+ailen -c runtime/lab/ailen-lab.toml lab start --dry-run
 
-# Modo interactivo en vivo
-./.venv/bin/python -m ailen.cli lab start
+# Modo interactivo en vivo completo
+ailen -c runtime/lab/ailen-lab.toml lab start
 ```
 
 ### Criterios de Aceptación:
@@ -61,3 +73,16 @@ Con micrófono, parlantes y cámara conectados:
 5. **AI:** El router determina destino (local Ollama / llama.cpp o reglas) y registra la latencia realmente observada. No se exige ni se declara un umbral de <1 s hasta medirlo.
 6. **TTS:** Piper sintetiza la voz en español y ALSA reproduce el audio con movimiento de boca (`speech_level`).
 7. **Cierre:** Al presionar `Ctrl+C`, se liberan todos los recursos, se detiene el runtime propio (si aplica) y se guarda el log de métricas en `runtime/lab/`.
+
+
+## Prueba MIC-ONLY cuando no hay cámara
+
+Esta prueba es válida como evidencia parcial y no requiere Tkinter, OpenCV, Piper ni LLM.
+
+```bash
+./.venv/bin/ailen lab audio-devices
+./.venv/bin/ailen demo vad --device <CAPTURE_DEVICE> --duration 10
+./.venv/bin/ailen demo stt --engine vosk --model ~/.local/share/ailen/speech/stt/vosk-model-small-es-0.42 --device <CAPTURE_DEVICE> --duration 15
+```
+
+No usar `--simulate` para una validación física. Si el micrófono no abre, VAD/STT deben fallar en vez de sustituirlo por audio sintético. `MIC PASS` requiere transcripción real.

@@ -1,6 +1,24 @@
+### R3B.3 — validación MIC-ONLY y verdad de audio
+
+- La falta de cámara no bloquea una evidencia física parcial: `MIC PASS` valida únicamente micrófono -> ALSA -> VAD -> STT real. Face/Vision quedan pendientes.
+- Los endpoints de plugins ALSA no demuestran hardware físico; `arecord/aplay -l` es la fuente del preflight para cards/devices y la señal se confirma únicamente ejecutando VAD/STT.
+- Las demos físicas no pueden caer silenciosamente a audio sintético. `--simulate` debe ser explícito.
+- Vosk sólo se considera verificado si el ZIP descargado conserva y pasa el SHA-256 del catálogo; una carpeta extraída por sí sola no prueba integridad.
+- El género de una voz no se deduce del nombre del dataset/voice. Si la fuente oficial no lo declara inequívocamente, se registra `unknown`.
+
 # Decisiones recientes — AILEN
 
 ## 2026-08-21
+
+### R3B.3 First Physical Lab Validation & Speech Asset Subsystem
+
+- **Catálogo Declarativo Criptográfico de Modelos de Voz (`SpeechAssetCatalog`)**: Todo modelo STT y voz TTS se declara de forma inmutable con URL HTTPS, tamaño exacto en bytes, SHA-256 de 64 hex, licencia y referencia de dataset. Se verificaron para 2026: Vosk Spanish (`vosk-model-small-es-0.42`), Whisper.cpp (`whisper-ggml-tiny`, `whisper-ggml-base`), y voces Piper en español (`es_ES-davefx-medium`, `es_AR-daniela-high`, `es_ES-sharvard-medium`, `es_ES-carlfm-x_low`) junto con sus `.onnx.json`.
+- **Prohibición de Deducción de Género por Nombre**: El género de las voces Piper se toma exclusivamente de la metadata oficial del dataset (OpenSLR 61, Harvard, etc.) o se asigna como `unknown` (multi-speaker). Queda prohibido inferir el género a partir de nombres de personas.
+- **Seguridad en Almacén y Descargas de Habla (`SpeechAssetStore` & `SpeechAssetDownloader`)**: Almacenamiento en `~/.local/share/ailen/speech/{stt,tts}/` con validación estricta contra path traversal (`is_relative_to`) y fail-closed ante checksum mismatch. Extracción de archivos comprimidos (`.zip` de Vosk) con protección rigurosa contra vulnerabilidades Zip-Slip.
+- **Aislamiento de Configuración de Laboratorio (`init_lab_config`)**: El comando `ailen lab config init` genera `runtime/lab/ailen-lab.toml` (gitignored), permitiendo configurar periféricos y modelos locales de prueba sin alterar la configuración canónica `config/ailen.toml`.
+- **Verificador Preflight Integral de Preparación Física (`LabPreflightChecker`)**: Evalúa requisitos obligatorios (`[REQ]`) y opcionales (`[OPT]`) antes de una prueba en vivo (`ailen lab preflight`), auditando Face GUI (Tkinter), bibliotecas y cámaras físicas de visión (V4L2), dispositivos de captura y reproducción de audio ALSA, binarios y modelos STT/TTS, y disponibilidad del runtime local de IA.
+- **Protección de Privacidad en Consola de Laboratorio**: `LabRunner` emite métricas de longitud y latencia en turnos de conversación (`[stt]` y `[ai]`), evitando volcar el texto completo de transcripciones o respuestas privadas a la salida estándar o logs por defecto.
+- **Evaluación del Host Asrock**: El preflight reportó `NOT_READY_FOR_LIVE_TEST` de manera honesta y descriptiva, guiando con precisión la remediación de dependencias del sistema operativo (`python3-tk`), virtuales (`.[vision,stt-vosk]`) y periféricos antes de iniciar la sesión interactiva en vivo.
 
 ### R3B.2 Live Lab — auditoría final
 

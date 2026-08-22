@@ -5,6 +5,8 @@ without requiring heavy external C wrappers or PortAudio dependencies.
 """
 
 import logging
+import os
+import re
 import select
 import shutil
 import subprocess
@@ -58,6 +60,62 @@ class AlsaDeviceEnumerator(AudioDeviceEnumerator):
             except Exception as e:  # noqa: BLE001
                 logger.debug("Failed to list ALSA playback devices: %s", e)
 
+        return devices
+
+    def list_hardware_devices(self, is_input: bool) -> list[AudioDevice]:
+        """List physical ALSA card/device endpoints using ``-l`` rather than plugins.
+
+        ``arecord -L``/``aplay -L`` include virtual plugins such as ``null``,
+        ``pulse`` and rate converters. They are useful routing endpoints but do
+        not prove that physical capture/playback hardware exists. This method
+        requests the hardware list with a stable C locale and returns ``plughw``
+        IDs suitable for AILEN's PCM format conversion.
+        """
+        binary = "arecord" if is_input else "aplay"
+        if not shutil.which(binary):
+            return []
+        try:
+            env = dict(os.environ)
+            env["LC_ALL"] = "C"
+            result = subprocess.run(
+                [binary, "-l"],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                check=False,
+                env=env,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to list ALSA hardware devices: %s", exc)
+            return []
+        if result.returncode != 0:
+            return []
+        return self._parse_hardware_lines(result.stdout, is_input=is_input)
+
+    def _parse_hardware_lines(self, output: str, is_input: bool) -> list[AudioDevice]:
+        """Parse stable ``arecord/aplay -l`` C-locale card/device lines."""
+        devices: list[AudioDevice] = []
+        pattern = re.compile(
+            r"^card\s+(?P<card>\d+):\s+(?P<card_id>[^\s]+)\s+\[(?P<card_name>.*?)\],\s+"
+            r"device\s+(?P<device>\d+):\s+(?P<device_name>.*?)\s+\[.*?\]$"
+        )
+        for raw_line in output.splitlines():
+            match = pattern.match(raw_line.strip())
+            if not match:
+                continue
+            card_id = match.group("card_id")
+            device_id = match.group("device")
+            endpoint = f"plughw:CARD={card_id},DEV={device_id}"
+            name = f"{match.group('card_name')}, {match.group('device_name')}"
+            devices.append(
+                AudioDevice(
+                    id=endpoint,
+                    name=name,
+                    is_input=is_input,
+                    is_output=not is_input,
+                    is_default=False,
+                )
+            )
         return devices
 
     def _parse_alsa_lines(self, output: str, is_input: bool) -> list[AudioDevice]:
