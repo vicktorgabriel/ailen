@@ -176,6 +176,12 @@ class AudioInteractionCoordinator:
 
     def _handle_voice_started(self) -> None:
         """Handle transition when voice activity starts."""
+        if self.state_manager and self.state_manager.current_state in {
+            AssistantState.PROCESSING,
+            AssistantState.SPEAKING,
+            AssistantState.TOOL,
+        }:
+            return
         if self.state_manager:
             try:
                 self.state_manager.transition_to(AssistantState.LISTENING, reason="voice_detected")
@@ -283,6 +289,8 @@ class AudioInteractionCoordinator:
             except Exception as e:  # noqa: BLE001
                 logger.debug("Ignored state transition to SPEAKING: %s", e)
 
+        restore_state = prev_state
+
         if self.face_controller:
             self.face_controller.set_state(AssistantState.SPEAKING)
 
@@ -321,11 +329,11 @@ class AudioInteractionCoordinator:
             # 3. Clean up mouth and return to previous state
             if self.face_controller:
                 self.face_controller.set_speech_level(0.0)
-                self.face_controller.set_state(prev_state)
+                self.face_controller.set_state(restore_state)
 
             if self.state_manager:
                 try:
-                    self.state_manager.transition_to(prev_state, reason="tts_finished")
+                    self.state_manager.transition_to(restore_state, reason="tts_finished")
                 except Exception as e:  # noqa: BLE001
                     logger.debug("Ignored state transition back: %s", e)
 

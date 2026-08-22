@@ -34,6 +34,7 @@ from ailen.face.null import NullFaceController
 from ailen.hardware.contracts import HardwareCapabilityReport
 from ailen.hardware.detector import HardwareDetector
 from ailen.infrastructure.sqlite.connection import SQLiteManager
+from ailen.infrastructure.sqlite.migrations import MigrationRunner
 from ailen.memory.repository import MemoryRepository
 from ailen.models.catalog import ModelCatalog, ModelPurpose
 from ailen.models.planner import ModelPlan, ModelPlanner
@@ -225,6 +226,7 @@ class LabRunner:
             db_path = Path(self.config.memory.sqlite_path)
             db_path.parent.mkdir(parents=True, exist_ok=True)
             self.db_mgr = SQLiteManager(str(db_path))
+            MigrationRunner(self.db_mgr).run_migrations()
             self.memory_repo = MemoryRepository(self.db_mgr)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not initialize SQLite memory: %s", exc)
@@ -261,7 +263,11 @@ class LabRunner:
         # 10. Wire Conversation Coordinator. Cloud/LAN policies are the same
         # audited policies used by normal Core, including budget enforcement.
         if self.ai_backends:
-            context_builder = AiContextBuilder(repository=self.memory_repo)
+            context_builder = AiContextBuilder(
+                repository=self.memory_repo,
+                request_timeout_seconds=self.config.ai.local.timeout_seconds,
+                max_output_tokens=min(self.config.ai.max_tokens, 128),
+            )
             router = RuleBasedRouter()
             orchestrator = AiOrchestrator(
                 backends=self.ai_backends,
@@ -330,6 +336,10 @@ class LabRunner:
                 return
             self._is_processing_interaction = True
 
+        if self.audio_coordinator:
+            self.audio_coordinator.turn_gate.start_processing()
+            self.audio_coordinator.collector.reset()
+
         threading.Thread(target=self._process_conversation, args=(text,), daemon=True).start()
 
     def _on_speech_finished_event(self, event: Any) -> None:
@@ -376,6 +386,9 @@ class LabRunner:
         except Exception as exc:  # noqa: BLE001
             logger.error("Error processing conversation turn: %s", exc)
         finally:
+            if self.audio_coordinator:
+                self.audio_coordinator.turn_gate.stop_processing()
+
             with self._interaction_lock:
                 self._is_processing_interaction = False
 

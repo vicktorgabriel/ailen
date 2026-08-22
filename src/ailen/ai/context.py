@@ -25,6 +25,8 @@ class AiContextBuilder:
         max_memories: int = 5,
         max_facts: int = 5,
         max_char_budget: int = 4000,
+        request_timeout_seconds: float = 10.0,
+        max_output_tokens: int = 512,
     ) -> None:
         self.repository = repository
         self.default_identity_name = default_identity_name
@@ -32,6 +34,8 @@ class AiContextBuilder:
         self.max_memories = max_memories
         self.max_facts = max_facts
         self.max_char_budget = max_char_budget
+        self.request_timeout_seconds = max(0.1, request_timeout_seconds)
+        self.max_output_tokens = max(1, max_output_tokens)
 
     def build_request(
         self,
@@ -51,6 +55,12 @@ class AiContextBuilder:
             f"Eres {name}, un asistente inteligente físico y local. "
             f"Modo actual: {mode.value}. Sé conciso, claro y directo en español."
         )
+        request_metadata = metadata or {}
+        if request_metadata.get("voice_output"):
+            system_context += (
+                " La respuesta se reproducirá por voz: usa frases breves, sin Markdown, "
+                "sin emojis, sin bloques de código y sin símbolos decorativos salvo que te los pidan."
+            )
 
         messages: list[ChatMessage] = []
         retrieved_memories: list[str] = []
@@ -95,10 +105,10 @@ class AiContextBuilder:
             retrieved_memory=retrieved_memories,
             mode=mode,
             allowed_tools=allowed_tools or [],
-            max_output_tokens=512,
-            timeout_seconds=10.0,
+            max_output_tokens=self.max_output_tokens,
+            timeout_seconds=self.request_timeout_seconds,
             privacy_level=privacy_level,
-            metadata=metadata or {},
+            metadata=request_metadata,
         )
 
         # 6. Apply Outbound Privacy Policy for destination (e.g. Cloud or untrusted LAN)

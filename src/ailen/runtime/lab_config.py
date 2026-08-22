@@ -55,7 +55,7 @@ tts_model_path = "{tts_model_path}"
 tts_config_path = "{tts_config_path}"
 vad_engine = "energy"
 vad_threshold = 0.02
-silence_timeout_ms = 700
+silence_timeout_ms = 500
 min_speech_ms = 250
 max_utterance_seconds = 15.0
 half_duplex = true
@@ -71,8 +71,8 @@ min_confidence = 0.5
 [ai]
 provider = "local"
 model = "{ai_model}"
-max_tokens = 512
-timeout_seconds = 15.0
+max_tokens = 96
+timeout_seconds = 60.0
 daily_budget_usd = 0.0
 allow_cloud = false
 
@@ -81,7 +81,7 @@ enabled = true
 endpoint = "{ai_endpoint}"
 model = "{ai_model}"
 trusted = true
-timeout_seconds = 15.0
+timeout_seconds = 60.0
 
 [memory]
 sqlite_path = "runtime/lab/ailen_lab.db"

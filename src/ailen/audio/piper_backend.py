@@ -38,7 +38,10 @@ def resolve_piper_executable(binary_path: str = "piper") -> str | None:
     # directory is not guaranteed to be on PATH. Prefer its sibling executable
     # before declaring Piper unavailable.
     if not configured.parent.parts or str(configured.parent) == ".":
-        sibling = Path(sys.executable).resolve().with_name(configured.name)
+        # Do not resolve sys.executable here: virtualenv Python is commonly a
+        # symlink to /usr/bin/python, while console scripts such as `piper` live
+        # next to the venv launcher in .venv/bin.
+        sibling = Path(sys.executable).absolute().with_name(configured.name)
         if sibling.is_file():
             return str(sibling)
     return None

@@ -11,10 +11,12 @@ from ailen.ai.contracts import AiBackend
 from ailen.ai.fake import FakeAiBackend
 from ailen.ai.http_backend import GenericOpenAiBackend
 from ailen.ai.lan_backend import LanBrainAiBackend
+from ailen.ai.ollama_backend import OllamaNativeBackend
 from ailen.ai.secrets import SecretResolver
 from ailen.audio.alsa_backend import (
     AlsaAudioInputBackend,
     AlsaAudioOutputBackend,
+    AlsaDeviceEnumerator,
 )
 from ailen.audio.contracts import (
     AudioInputBackend,
@@ -39,7 +41,7 @@ from ailen.face.gui import TkinterFaceController
 from ailen.face.null import NullFaceController
 from ailen.hardware.contracts import HardwareCapabilityReport
 from ailen.models.planner import ModelPlan
-from ailen.runtime.contracts import ExternalRuntimeDescriptor, RuntimeStatus
+from ailen.runtime.contracts import ExternalRuntimeDescriptor, RuntimeStatus, RuntimeType
 from ailen.runtime.inventory import RuntimeModelInventory
 from ailen.vision.contracts import VisionBackend
 from ailen.vision.fake import FakeVisionBackend
@@ -266,26 +268,54 @@ class LabComponentFactory:
 
             report_inputs = self.hardware_report.audio_inputs if self.hardware_report else []
             report_outputs = self.hardware_report.audio_outputs if self.hardware_report else []
-            if not report_inputs or not report_outputs:
+            enumerator = AlsaDeviceEnumerator()
+            hardware_inputs = enumerator.list_hardware_devices(is_input=True)
+            hardware_outputs = enumerator.list_hardware_devices(is_input=False)
+            routing_endpoints = enumerator.list_devices()
+
+            if not report_inputs and not hardware_inputs:
                 return None, None, ComponentStatus(
                     name="Audio",
                     backend="ALSA",
                     state="UNAVAILABLE",
-                    detail="No real audio input/output endpoints detected",
-                    remediation="Connect/configure microphone and speakers, then run `ailen lab doctor`",
+                    detail="No real audio capture hardware detected",
+                    remediation="Connect/configure microphone and run `ailen lab audio-devices`",
+                )
+            if not report_outputs and not hardware_outputs:
+                return None, None, ComponentStatus(
+                    name="Audio",
+                    backend="ALSA",
+                    state="UNAVAILABLE",
+                    detail="No real audio playback hardware detected",
+                    remediation="Connect/configure speakers/headphones and run `ailen lab audio-devices`",
                 )
 
-            input_ids = {d.id for d in report_inputs}
-            output_ids = {d.id for d in report_outputs}
+            # HardwareCapabilityReport uses /proc/asound IDs (e.g. hw:03-00),
+            # while the operator-facing lab CLI intentionally recommends ALSA
+            # `plughw:CARD=...,DEV=...` endpoints from arecord/aplay -l. Accept
+            # either source so a device proven by the lab CLI is not rejected by
+            # the factory merely because the two enumerators use different IDs.
+            input_ids = (
+                {d.id for d in report_inputs}
+                | {d.id for d in hardware_inputs}
+                | {d.id for d in routing_endpoints if d.is_input}
+            )
+            output_ids = (
+                {d.id for d in report_outputs}
+                | {d.id for d in hardware_outputs}
+                | {d.id for d in routing_endpoints if d.is_output}
+            )
             if in_dev != "default" and in_dev not in input_ids:
                 return None, None, ComponentStatus(
                     name="Audio", backend="ALSA", state="UNAVAILABLE",
                     detail=f"Configured input device '{in_dev}' was not detected",
+                    remediation="Run `ailen lab audio-devices` and choose a listed physical capture endpoint",
                 )
             if out_dev != "default" and out_dev not in output_ids:
                 return None, None, ComponentStatus(
                     name="Audio", backend="ALSA", state="UNAVAILABLE",
                     detail=f"Configured output device '{out_dev}' was not detected",
+                    remediation="Run `ailen lab audio-devices` and choose a listed physical playback endpoint",
                 )
 
             in_backend = AlsaAudioInputBackend(device=in_dev, sample_rate=self.config.audio.sample_rate)
@@ -486,14 +516,26 @@ class LabComponentFactory:
                     break
 
             if resolved_model:
-                backends["local"] = GenericOpenAiBackend(
-                    endpoint=rt.endpoint,
-                    model=resolved_model,
-                    provider_name=rt.runtime_type.value.lower(),
-                    is_local=True,
-                    timeout_seconds=self.config.ai.local.timeout_seconds,
-                )
-                local_problem = f"{rt.runtime_type.value} at {rt.endpoint} using '{resolved_model}'"
+                if rt.runtime_type == RuntimeType.OLLAMA:
+                    backends["local"] = OllamaNativeBackend(
+                        endpoint=rt.endpoint,
+                        model=resolved_model,
+                        timeout_seconds=self.config.ai.local.timeout_seconds,
+                        think=False,
+                    )
+                    local_problem = (
+                        f"Ollama native API at {rt.endpoint} using '{resolved_model}' "
+                        "with thinking disabled for voice latency"
+                    )
+                else:
+                    backends["local"] = GenericOpenAiBackend(
+                        endpoint=rt.endpoint,
+                        model=resolved_model,
+                        provider_name=rt.runtime_type.value.lower(),
+                        is_local=True,
+                        timeout_seconds=self.config.ai.local.timeout_seconds,
+                    )
+                    local_problem = f"{rt.runtime_type.value} at {rt.endpoint} using '{resolved_model}'"
                 break
 
             local_problem = (

@@ -10,6 +10,7 @@ import re
 import select
 import shutil
 import subprocess
+import time
 
 from ailen.audio.contracts import (
     AudioBackendHealth,
@@ -216,6 +217,23 @@ class AlsaAudioInputBackend(AudioInputBackend):
                 stderr=subprocess.PIPE,
                 bufsize=self.frame_bytes_size * 4,
             )
+            # arecord may fail immediately after Popen for an invalid/busy ALSA
+            # endpoint. Give it a short probe window before reporting HEALTHY.
+            time.sleep(0.05)
+            return_code = self._process.poll()
+            if return_code is not None:
+                stderr = b""
+                if self._process.stderr is not None:
+                    stderr = self._process.stderr.read()
+                detail = stderr.decode("utf-8", errors="replace").strip()
+                self._process = None
+                self._running = False
+                self._health_status = ServiceStatus.UNHEALTHY
+                self._health_detail = (
+                    f"arecord failed for {self.device} (code {return_code})"
+                    + (f": {detail}" if detail else "")
+                )
+                return
             self._running = True
             self._health_status = ServiceStatus.HEALTHY
             self._health_detail = f"Recording from {self.device} @ {self.sample_rate}Hz"
@@ -319,11 +337,15 @@ class AlsaAudioOutputBackend(AudioOutputBackend):
         try:
             self._health_status = ServiceStatus.HEALTHY
             self._health_detail = f"Playing on {self.device}"
+            expected_seconds = 0.0
+            if not is_wav and sample_rate > 0 and channels > 0:
+                expected_seconds = len(audio_data) / float(sample_rate * channels * 2)
+            playback_timeout = min(180.0, max(30.0, expected_seconds + 15.0))
             result = subprocess.run(
                 cmd,
                 input=audio_data,
                 capture_output=True,
-                timeout=30.0,
+                timeout=playback_timeout,
                 check=False,
             )
             if result.returncode != 0:

@@ -78,9 +78,10 @@ class SpeechAssetStore:
 
         if descriptor.engine == "piper":
             if descriptor.asset_type == SpeechAssetType.TTS_CONFIG:
-                filename = clean_id if clean_id.endswith((".onnx.json", ".json")) else f"{clean_id}.onnx.json"
-                if not filename.endswith(".json"):
-                    filename = f"{filename}.json"
+                # Catalog config IDs historically ended in `.json`, while Piper
+                # expects the sidecar next to the model as `<model>.onnx.json`.
+                stem = clean_id.removesuffix(".json")
+                filename = stem if stem.endswith(".onnx.json") else f"{stem}.onnx.json"
             else:
                 filename = clean_id if clean_id.endswith(".onnx") else f"{clean_id}.onnx"
             target = (self._tts_dir / filename).resolve()

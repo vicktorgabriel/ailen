@@ -123,6 +123,8 @@ El proyecto usa versionado semántico durante desarrollo, con prereleases cuando
 
 ### Fixed
 
+- Lab físico de voz: PipeWire como routing compartido en Mint, Piper resuelto desde virtualenv, migraciones SQLite antes de memoria, gate durante PROCESSING/TTS, backend Ollama nativo `/api/chat` con thinking desactivado y keep-alive, normalización de texto para TTS y timeout de playback proporcional a la duración.
+- Validación física end-to-end con auricular/micrófono USB G600: Vosk -> qwen3.5:9b -> Piper -> reproducción real.
 - Flujo de wake del `InteractionCoordinator`: presencia durante `SLEEP` ahora produce `WAKE` antes de permitir un saludo posterior, en lugar de perder el estado de sueño al transicionar.
 - Login administrativo ahora verifica realmente **usuario + contraseña**; el usuario persistido dejó de ser un dato decorativo.
 - SQLite restringe el archivo de datos a modo `0600` en POSIX porque contiene memoria privada y material derivado de credenciales.

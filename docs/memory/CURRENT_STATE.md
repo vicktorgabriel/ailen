@@ -128,3 +128,13 @@ El repositorio Git local está inicializado en `main` y conectado a `git@github.
 - costo cloud estimado pero aún no medido con tráfico real;
 - nombre `AILEN` fijado para proyecto/plataforma; queda pendiente sólo la verificación marcaria/legal antes de comercialización formal;
 - soporte de equipos de 2 GB sujeto a pruebas reales.
+
+## Actualización física R3B.3 — 2026-08-22
+
+- `AUDIO CONVERSATION PASS` confirmado en Asrock/Linux Mint con G600 USB, sin simulación.
+- Pipeline validado: micrófono -> VAD -> Vosk -> Router -> Ollama `qwen3.5:9b` -> Piper -> auricular.
+- Mint Lab usa routing `pipewire` para evitar exclusión `arecord`/`aplay` sobre el mismo hardware USB.
+- Ollama local usa backend nativo `/api/chat`, `think=false` y keep-alive de laboratorio para reducir cold-start; la identidad sigue viviendo en Core.
+- Modo voz normaliza Markdown/URLs/símbolos antes de Piper y acota respuestas; defaults LAB: 500 ms de silencio final y 96 tokens máximos.
+- Suite posterior a la validación: 349 tests; Ruff, mypy sobre 109 source files y diff-check verdes.
+- Falta para cerrar validación física global: cámara + Vision/Face. Después corresponde comparar perfil rápido 4B frente a 9B y mejorar robustez STT.

@@ -13,6 +13,7 @@ from ailen.ai.orchestrator import AiOrchestrator
 from ailen.ai.router import RoutePlan, RouteRequest, RuleBasedRouter
 from ailen.audio.contracts import Transcript
 from ailen.audio.coordinator import AudioInteractionCoordinator
+from ailen.audio.speech_text import normalize_text_for_speech
 from ailen.domain.enums import DeviceProfile, PrivacyLevel, SocialMode
 
 logger = logging.getLogger("ailen.core.conversation")
@@ -96,6 +97,7 @@ class ConversationCoordinator:
             identity_name=self.identity_name,
             destination=plan.primary_backend,
             lan_trusted=self.lan_brain_trusted,
+            metadata={"voice_output": self.audio_coordinator is not None},
         )
 
         # 3. Execute inference via orchestrator
@@ -104,7 +106,9 @@ class ConversationCoordinator:
         # 4. Speak response through AudioInteractionCoordinator if present
         if self.audio_coordinator and response.text.strip():
             try:
-                self.audio_coordinator.speak(response.text, voice_id=self.tts_voice_id)
+                spoken_text = normalize_text_for_speech(response.text)
+                if spoken_text:
+                    self.audio_coordinator.speak(spoken_text, voice_id=self.tts_voice_id)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Error outputting audio speech: %s", e)
 

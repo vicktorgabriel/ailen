@@ -146,3 +146,6 @@
 - Ningún agente debe hacer commit/push; la integración se revisará completa antes del primer commit.
 - `TASKS.md` es la cola inmediata y `docs/operations/R1_PARALLEL_WORK.md` contiene los prompts/alcances listos para usar.
 - Face/STT/TTS/LLM reales se validarán por POC/benchmark antes de fijarlos como dependencia definitiva.
+- **Lab de voz: PipeWire sobre acceso exclusivo `plughw`**: en Linux Mint, conversación simultánea de captura/reproducción usa el endpoint ALSA `pipewire`; `plughw` queda útil para diagnóstico físico pero puede bloquear playback mientras `arecord` mantiene abierto el G600.
+- **Ollama nativo para conversación rápida**: cuando el runtime detectado es Ollama, AILEN usa `/api/chat` en loopback con `think=false` y keep-alive de 30 minutos en Lab. El shim OpenAI-compatible sigue disponible para runtimes genéricos, pero no es la vía preferida para modelos Qwen con thinking en conversación de voz.
+- **Perfil de voz breve**: el Lab reduce silencio final a 500 ms y máximo de salida a 96 tokens. El texto TTS es una proyección normalizada de la respuesta (sin Markdown/URLs/código decorativo), no una mutación de la respuesta original.

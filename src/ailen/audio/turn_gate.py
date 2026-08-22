@@ -38,6 +38,7 @@ class AudioTurnGate:
         self._lock = threading.Lock()
 
         self._state: GateState = GateState.LISTENING_ALLOWED
+        self._blockers: set[str] = set()
         self._speaking_end_time: float = float("-inf")
 
     @property
@@ -49,18 +50,35 @@ class AudioTurnGate:
     def start_speaking(self) -> None:
         """Signal that speech synthesis/playback has started. Blocks input."""
         with self._lock:
+            self._blockers.add("speaking")
+            self._state = GateState.SPEAKING_BLOCKED
+
+    def start_processing(self) -> None:
+        """Block microphone ingestion while an AI turn is being processed."""
+        with self._lock:
+            self._blockers.add("processing")
             self._state = GateState.SPEAKING_BLOCKED
 
     def stop_speaking(self) -> None:
-        """Signal that speech synthesis/playback has finished. Starts settling cooldown."""
+        """Release the speaking blocker; input opens only when no blockers remain."""
         with self._lock:
-            self._state = GateState.LISTENING_ALLOWED
-            self._speaking_end_time = self._clock()
+            self._blockers.discard("speaking")
+            if not self._blockers:
+                self._state = GateState.LISTENING_ALLOWED
+                self._speaking_end_time = self._clock()
+
+    def stop_processing(self) -> None:
+        """Release the AI-processing blocker and reopen input when safe."""
+        with self._lock:
+            self._blockers.discard("processing")
+            if not self._blockers:
+                self._state = GateState.LISTENING_ALLOWED
+                self._speaking_end_time = self._clock()
 
     def is_listening_allowed(self) -> bool:
         """Return True if microphone input should be processed, False if blocked."""
         with self._lock:
-            if self._state == GateState.SPEAKING_BLOCKED:
+            if self._blockers or self._state == GateState.SPEAKING_BLOCKED:
                 return False
 
             now = self._clock()

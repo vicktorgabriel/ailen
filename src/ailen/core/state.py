@@ -53,6 +53,7 @@ VALID_TRANSITIONS: dict[AssistantState, set[AssistantState]] = {
         AssistantState.IDLE,
         AssistantState.ATTENTION,
         AssistantState.LISTENING,
+        AssistantState.PROCESSING,
         AssistantState.ERROR,
     },
     AssistantState.SLEEP: {

@@ -69,3 +69,20 @@ def test_turn_gate_settling_cooldown_after_speech() -> None:
     clock.advance(0.15)
     assert gate.is_listening_allowed() is True
     assert gate.filter_frame(b"audio") == b"audio"
+
+
+def test_turn_gate_processing_and_speaking_blockers_are_nested() -> None:
+    clock = ControllableClock(100.0)
+    gate = AudioTurnGate(settling_cooldown_seconds=0.2, clock=clock)
+
+    gate.start_processing()
+    assert gate.is_listening_allowed() is False
+
+    gate.start_speaking()
+    gate.stop_speaking()
+    assert gate.is_listening_allowed() is False  # processing still owns the gate
+
+    gate.stop_processing()
+    assert gate.is_listening_allowed() is False  # settling cooldown
+    clock.advance(0.21)
+    assert gate.is_listening_allowed() is True
