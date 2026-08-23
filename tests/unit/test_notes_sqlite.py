@@ -64,3 +64,14 @@ def test_notes_tool_integration(tmp_path: Path) -> None:
     res_search = tool.execute({"action": "search", "query": "oscilador"}, ToolContext())
     assert res_search.success is True
     assert res_search.data["count"] == 1
+
+
+def test_notes_search_matches_noncontiguous_meaningful_tokens(tmp_path: Path) -> None:
+    mgr = SQLiteManager(str(tmp_path / "token_notes.db"))
+    MigrationRunner(mgr).run_migrations()
+    repo = MemoryRepository(mgr)
+    repo.create_note(content="comprar estaño mañana")
+
+    assert [n.content for n in repo.search_notes("comprar mañana")] == ["comprar estaño mañana"]
+    assert [n.content for n in repo.search_notes("qué tengo que comprar mañana")] == ["comprar estaño mañana"]
+    assert repo.search_notes("%") == []

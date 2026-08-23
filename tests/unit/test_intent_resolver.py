@@ -174,3 +174,15 @@ def test_intent_resolver_volume_set_level() -> None:
     resolution = resolver.resolve("volumen al 70%")
     assert resolution.tool_name == "volume"
     assert resolution.tool_args == {"action": "set", "level": 70}
+
+
+def test_intent_resolver_asr_tolerant_phrases() -> None:
+    resolver = IntentResolver()
+    assert resolver.resolve("hora es").tool_name == "clock"
+    assert resolver.resolve("notas tengo").tool_args == {"action": "list"}
+    note = resolver.resolve("nota comprar estaño mañana")
+    assert note.tool_name == "notes"
+    assert note.tool_args == {"action": "create", "text": "comprar estaño mañana"}
+    vol = resolver.resolve("ajá un poquito más el volumen")
+    assert vol.tool_name == "volume"
+    assert vol.tool_args == {"action": "step_up", "step": 10}

@@ -140,8 +140,14 @@ class NotesTool:
 
             if not results:
                 msg = f"No se encontraron notas con '{query}'."
+            elif len(results) == 1:
+                msg = f"Encontré esta nota: {results[0]['content']}."
             else:
-                msg = f"Se encontraron {len(results)} notas con '{query}'."
+                preview = "; ".join(
+                    f"{i + 1}) {item['content']}"
+                    for i, item in enumerate(results[:5])
+                )
+                msg = f"Encontré {len(results)} notas: {preview}."
 
             return ToolResult(
                 success=True,

@@ -58,6 +58,7 @@ from ailen.tools.builtin import (
 )
 from ailen.tools.executor import ToolExecutor
 from ailen.tools.registry import ToolRegistry
+from ailen.tools.semantic_intent import SemanticToolIntentResolver
 from ailen.vision.contracts import VisionBackend
 from ailen.vision.debouncer import VisionDebouncer
 
@@ -343,10 +344,16 @@ class LabRunner:
                 daily_budget_usd=self.config.ai.cloud.daily_budget_usd,
                 monthly_budget_usd=self.config.ai.cloud.monthly_budget_usd,
             )
+            semantic_intent_resolver = SemanticToolIntentResolver(
+                backend=self.ai_backends.get("local"),
+                registry=self.tool_registry,
+                repository=self.memory_repo,
+            )
             self.conversation_coordinator = ConversationCoordinator(
                 context_builder=context_builder,
                 router=router,
                 orchestrator=orchestrator,
+                semantic_intent_resolver=semantic_intent_resolver,
                 audio_coordinator=self.audio_coordinator,
                 tool_executor=self.tool_executor,
                 profile=self.detected_profile,

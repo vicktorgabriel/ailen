@@ -20,6 +20,8 @@ class IntentResolution:
     requires_llm: bool = False
     confidence: float = 1.0
     raw_text: str = ""
+    source: str = "deterministic"
+    latency_ms: float = 0.0
 
 
 class IntentResolver:
@@ -140,7 +142,7 @@ class IntentResolver:
             "qué hora es", "que hora es", "dime la hora", "decime la hora",
             "hora actual", "qué hora tenemos", "que hora tenemos",
             "qué día es hoy", "que dia es hoy", "fecha de hoy", "cuál es la fecha", "cual es la fecha",
-            "la hora", "hora",
+            "la hora", "hora", "hora es", "la hora es", "ahora es",
         }
         if clean in clock_exact:
             return IntentResolution(
@@ -186,6 +188,21 @@ class IntentResolver:
                 confidence=1.0,
                 raw_text=raw_text,
             )
+
+        # ASR-tolerant phrasing: keep it conservative by requiring the word volumen.
+        if "volumen" in clean:
+            if any(term in clean for term in ("más", "mas", "subí", "subi", "sube", "subir", "aumenta", "aumentar")):
+                return IntentResolution(
+                    intent="volume", tool_name="volume",
+                    tool_args={"action": "step_up", "step": 10},
+                    requires_llm=False, confidence=0.95, raw_text=raw_text,
+                )
+            if any(term in clean for term in ("menos", "bajá", "baja", "bajar", "disminuí", "disminui", "disminuir")):
+                return IntentResolution(
+                    intent="volume", tool_name="volume",
+                    tool_args={"action": "step_down", "step": 10},
+                    requires_llm=False, confidence=0.95, raw_text=raw_text,
+                )
 
         # Set specific level: e.g. "volumen al 70%", "poné el volumen en 50", "volumen 80"
         match_set = re.search(
@@ -354,6 +371,7 @@ class IntentResolver:
         if clean in {
             "leeme las notas", "léeme las notas", "qué notas tengo", "que notas tengo",
             "listar notas", "ver notas", "cuáles son mis notas", "cuales son mis notas", "mis notas",
+            "notas tengo", "notas", "qué notas", "que notas",
         }:
             return IntentResolution(
                 intent="notes_list",
@@ -370,7 +388,7 @@ class IntentResolver:
             "tomá nota que ", "toma nota que ", "tomá nota: ", "toma nota: ", "tomá nota ", "toma nota ",
             "guardá una nota que dice ", "guarda una nota que dice ", "guardá una nota ", "guarda una nota ",
             "creá una nota que dice ", "crea una nota que dice ", "creá una nota ", "crea una nota ",
-            "guardar nota ", "crear nota ",
+            "guardar nota ", "crear nota ", "nota: ", "nota ",
         )
         for prefix in prefixes:
             remainder = self._strip_prefix_preserving_case(raw_text, prefix)

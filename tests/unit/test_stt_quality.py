@@ -37,3 +37,14 @@ def test_substantive_speech_passes() -> None:
     assert assessment.reprompt_reason == "VALID_SPEECH"
     assert assessment.heuristic_quality >= 0.8
     assert assessment.word_count == 5
+
+
+def test_vague_single_word_fragment_reprompts() -> None:
+    evaluator = SttQualityEvaluator()
+    for text in ("es", "la", "ahora", "ajá"):
+        assessment = evaluator.evaluate(text)
+        assert assessment.should_reprompt, text
+        assert assessment.reprompt_reason == "AMBIGUOUS_SINGLE_WORD_FRAGMENT"
+
+    assert evaluator.evaluate("hora").should_reprompt is False
+    assert evaluator.evaluate("notas").should_reprompt is False

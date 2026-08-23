@@ -69,6 +69,25 @@ class SttQualityEvaluator:
 
         words = [w for w in re.split(r"\s+", clean) if w]
         char_len = len(clean)
+        normalized = clean.lower().strip(" ¿?¡!.,;:")
+
+        # Common one-word fillers/fragments from Vosk should not be handed to
+        # the conversational model, which otherwise tends to complete them from
+        # stale context. Keep known one-word commands usable.
+        vague_single_words = {
+            "es", "el", "la", "lo", "un", "una", "que", "qué", "esto", "eso",
+            "ahora", "bueno", "bien", "aja", "ajá",
+        }
+        meaningful_single_commands = {
+            "hora", "notas", "silencio", "mute", "pausa", "siguiente", "diagnóstico", "diagnostico",
+        }
+        if len(words) == 1 and normalized in vague_single_words and normalized not in meaningful_single_commands:
+            return SttQualityAssessment(
+                raw_text=raw, cleaned_text=clean, word_count=1, char_count=char_len,
+                is_empty=False, is_too_short=False, is_fragment=True,
+                heuristic_quality=0.25, should_reprompt=True,
+                reprompt_reason="AMBIGUOUS_SINGLE_WORD_FRAGMENT",
+            )
 
         # 2. Too short / Noise check
         is_too_short = char_len < self.min_chars

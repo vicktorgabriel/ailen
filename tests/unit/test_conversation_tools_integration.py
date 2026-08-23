@@ -30,6 +30,7 @@ from ailen.tools.builtin.web_search import (
 from ailen.tools.executor import ToolExecutor
 from ailen.tools.intent_resolver import IntentResolver
 from ailen.tools.registry import ToolRegistry
+from ailen.tools.semantic_intent import SemanticToolIntentResolver
 
 
 def build_test_coordinator(
@@ -261,3 +262,56 @@ def test_conversation_persists_completed_turns_without_duplicate_current_message
         contents = [m.content for m in second_request.messages]
         assert contents.count("Segunda pregunta") == 1
         assert "Primera pregunta" in contents
+
+
+def test_semantic_tool_fallback_can_answer_contextual_note_query(tmp_path: Path) -> None:
+    db = SQLiteManager(tmp_path / "semantic_integration.db")
+    MigrationRunner(db).run_migrations()
+    repo = MemoryRepository(db)
+    session = repo.create_session(mode=SocialMode.WORKSHOP)
+    repo.create_note(content="comprar estaño mañana")
+
+    conversational_ai = FakeAiBackend()
+    semantic_ai = FakeAiBackend(canned_response=(
+        '{"kind":"tool","tool":"notes","arguments":{"action":"search","query":"comprar mañana"},"confidence":0.9}'
+    ))
+    router = RuleBasedRouter()
+    orchestrator = AiOrchestrator(backends={"local": conversational_ai}, router=router, repository=repo)
+    notes_tool = NotesTool(repository=repo)
+    registry = ToolRegistry([notes_tool])
+    executor = ToolExecutor(registry=registry, repository=repo)
+    semantic = SemanticToolIntentResolver(semantic_ai, registry, repo)
+    coordinator = ConversationCoordinator(
+        context_builder=AiContextBuilder(repository=repo),
+        router=router,
+        orchestrator=orchestrator,
+        tool_executor=executor,
+        semantic_intent_resolver=semantic,
+        profile=DeviceProfile.LOCAL,
+        mode=SocialMode.WORKSHOP,
+        privacy_level=PrivacyLevel.PRIVATE,
+        repository=repo,
+    )
+
+    conversational_ai.generate = MagicMock(side_effect=conversational_ai.generate)
+    response, plan = coordinator.handle_user_input(
+        "cosa tengo que comprar mañana",
+        session_id=session.session_id,
+    )
+
+    assert not conversational_ai.generate.called
+    assert response.provider == "tool"
+    assert "comprar estaño mañana" in response.text
+    assert plan.reason_code == "SEMANTIC_LOCAL_TOOL"
+
+
+def test_generic_repetitive_followup_is_removed() -> None:
+    assert ConversationCoordinator._strip_generic_followup(
+        "Hola, estoy bien. ¿En qué te puedo ayudar hoy?"
+    ) == "Hola, estoy bien."
+    assert ConversationCoordinator._strip_generic_followup(
+        "Hola. Estoy funcionando correctamente. ¿En qué puedo ayudarte hoy?"
+    ) == "Hola. Estoy funcionando correctamente."
+    assert ConversationCoordinator._strip_generic_followup(
+        "No entendí bien, ¿podés repetirlo?"
+    ) == "No entendí bien, ¿podés repetirlo?"

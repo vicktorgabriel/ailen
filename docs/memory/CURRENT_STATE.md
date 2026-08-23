@@ -176,3 +176,15 @@ El repositorio Git local está inicializado en `main` y conectado a `git@github.
   - Vosk small-es 0.42: OK, latencia ~407 ms, WER 0.143 (transcribió "detectó" en vez de "detecto"). Ejemplo del problema de calidad de Vosk.
   - whisper.cpp: `NOT_INSTALLED` (binario y modelo ggml ausentes); sin descarga automática.
 - Limitación conocida web_fetch: validación DNS anti-SSRF es pre-conexión; DNS rebinding sofisticado requiere transporte con IP fijada (pendiente, documentado en WEB_SEARCH_BOUNDARY.md).
+
+## Mejora de comprensión de voz — 2026-08-23
+
+- Sesión física auditada: 24 utterances; Vosk aceptó 22, pero el problema principal fue el resolver demasiado literal.
+- Fast path ampliado para ASR imperfecto (`hora es`, `notas tengo`, `nota ...`, variaciones de `más/menos volumen`).
+- Nuevo fallback semántico local restringido: Qwen puede interpretar intención y proponer una tool local permitida, pero Core valida esquema/permisos y ejecuta. Network/destructive quedan fuera de este parser.
+- Consultas contextuales de notas ya pueden recuperar contenido por tokens (`qué tengo que comprar mañana` -> `comprar estaño mañana`).
+- Fragmentos vagos de una sola palabra se repreguntan para evitar que el LLM complete desde contexto viejo.
+- Contexto Vision deja de ser saliente en cada respuesta; no debe repetirse la presencia salvo relevancia.
+- ClockTool usa hora local del sistema, no UTC.
+- Baseline de cierre: 487 tests; Ruff/mypy/diff-check verdes.
+- Siguiente validación física: repetir la conversación de voz y medir cuántos turnos terminan en reprompt, tool determinista, semantic-tool y chat real. STT Vosk sigue siendo una limitación independiente y debe compararse con Whisper.cpp usando WER real G600.

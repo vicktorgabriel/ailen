@@ -1,11 +1,11 @@
 """Clock tool for AILEN.
 
-Provides deterministic local/UTC time and date without calling any LLM.
+Provides deterministic local system time and date without calling any LLM.
 See ADR-010.
 """
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, ClassVar
 
 from ailen.domain.enums import PrivacyLevel, SocialMode
@@ -35,7 +35,7 @@ class ClockTool:
     timeout_seconds: float = 2.0
 
     def __init__(self, time_provider: Callable[[], datetime] | None = None) -> None:
-        self.time_provider = time_provider or (lambda: datetime.now(UTC))
+        self.time_provider = time_provider or (lambda: datetime.now().astimezone())
 
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         now = self.time_provider()

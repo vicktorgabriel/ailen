@@ -22,6 +22,7 @@ from ailen.memory.repository import MemoryRepository
 from ailen.tools.contracts import ToolContext
 from ailen.tools.executor import ToolExecutor
 from ailen.tools.intent_resolver import IntentResolver
+from ailen.tools.semantic_intent import SemanticToolIntentResolver
 
 logger = logging.getLogger("ailen.core.conversation")
 
@@ -37,6 +38,7 @@ class ConversationCoordinator:
         audio_coordinator: AudioInteractionCoordinator | None = None,
         tool_executor: ToolExecutor | None = None,
         intent_resolver: IntentResolver | None = None,
+        semantic_intent_resolver: SemanticToolIntentResolver | None = None,
         profile: DeviceProfile = DeviceProfile.HYBRID,
         mode: SocialMode = SocialMode.WORKSHOP,
         privacy_level: PrivacyLevel = PrivacyLevel.PRIVATE,
@@ -56,6 +58,7 @@ class ConversationCoordinator:
         self.audio_coordinator = audio_coordinator
         self.tool_executor = tool_executor
         self.intent_resolver = intent_resolver or IntentResolver()
+        self.semantic_intent_resolver = semantic_intent_resolver
         self.profile = profile
         self.mode = mode
         self.privacy_level = privacy_level
@@ -84,6 +87,21 @@ class ConversationCoordinator:
 
         # 1. Deterministic Intent Resolution
         resolution = self.intent_resolver.resolve(text)
+        if (
+            resolution.tool_name is None
+            and resolution.intent == "chat"
+            and resolution.confidence < 0.9
+            and self.semantic_intent_resolver is not None
+        ):
+            semantic_resolution = self.semantic_intent_resolver.resolve(
+                text,
+                session_id=session_id,
+                mode=self.mode,
+                privacy_level=self.privacy_level,
+            )
+            if semantic_resolution is not None:
+                resolution = semantic_resolution
+
         effective_intent = resolution.intent if intent == "chat" else intent
 
         web_tool_context = False
@@ -111,11 +129,15 @@ class ConversationCoordinator:
                     provider="tool",
                     model=resolution.tool_name,
                     finish_reason="tool_direct",
-                    latency_ms=tool_result.latency_ms,
+                    latency_ms=tool_result.latency_ms + resolution.latency_ms,
                 )
                 plan = RoutePlan(
                     primary_backend="rule",
-                    reason_code="RULE_ONLY_TOOL",
+                    reason_code=(
+                        "SEMANTIC_LOCAL_TOOL"
+                        if resolution.source == "semantic_local"
+                        else "RULE_ONLY_TOOL"
+                    ),
                     context_budget=0,
                     request_timeout=2.0,
                     privacy_decision="LOCAL_RULE_ONLY",
@@ -205,12 +227,37 @@ class ConversationCoordinator:
 
         # 5. Execute inference via orchestrator
         response, plan = self.orchestrator.execute(ai_req, plan=plan, session_id=session_id)
+        response.text = self._strip_generic_followup(response.text)
 
         # 6. Speak response through AudioInteractionCoordinator if present
         self._speak_if_enabled(response.text)
         self._persist_turn(session_id, user_text, response)
 
         return response, plan
+
+    @staticmethod
+    def _strip_generic_followup(text: str) -> str:
+        """Remove repetitive canned closing questions when useful content precedes them."""
+        cleaned = text.strip()
+        tails = (
+            "¿En qué te puedo ayudar hoy?",
+            "¿En qué puedo ayudarte hoy?",
+            "¿En qué puedo ayudarte?",
+            "¿En qué te puedo ayudar?",
+            "¿Cómo puedo ayudarte?",
+            "¿Cómo te puedo ayudar?",
+            "¿Qué necesitás?",
+            "¿Qué necesitas?",
+            "¿Qué sigue?",
+            "¿Hay algo más en lo que pueda ayudarte?",
+        )
+        lowered = cleaned.casefold()
+        for tail in tails:
+            if lowered.endswith(tail.casefold()) and len(cleaned) > len(tail):
+                prefix = cleaned[: -len(tail)].rstrip()
+                if prefix:
+                    return prefix
+        return cleaned
 
     def _persist_turn(self, session_id: str | None, user_text: str, response: AiResponse) -> None:
         """Persist one completed conversational turn after request construction.

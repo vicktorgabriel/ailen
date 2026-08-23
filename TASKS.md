@@ -287,6 +287,20 @@ Debe quedar funcionando:
 - [ ] backend de reproducción musical real (PipeWire/MPRIS/local player) detrás de `MusicService`; hasta entonces `MusicTool()` devuelve `UNAVAILABLE`.
 - [ ] instalar/evaluar Whisper.cpp sólo con autorización del operador y decidir baseline STT por WER real G600.
 
+## Bloque 16 — Voice Understanding + Semantic Tool Fallback
+
+- [x] auditar sesión física real y comparar transcripts vs tools ejecutadas.
+- [x] tolerancia ASR determinista para clock/notes/volume.
+- [x] reprompt para fragmentos de una palabra demasiado ambiguos.
+- [x] parser semántico local restringido a tools locales no-network/no-destructive, con schema validation posterior.
+- [x] búsqueda de notas por frase + tokens significativos y respuesta con contenido.
+- [x] reducir repetición de contexto Vision y coletillas genéricas.
+- [x] corregir ClockTool de UTC a hora local.
+- [x] integración real con qwen3.5:9b sobre frases fallidas de la sesión.
+- [x] 487 tests + Ruff + mypy 129 source files + diff-check.
+- [ ] repetir sesión física G600 y registrar tasa de tool hit / semantic fallback / reprompt / chat.
+- [ ] comparar Vosk vs Whisper.cpp con 10-20 utterances reales antes de cambiar baseline STT.
+
 ## Reglas del board
 
 - No marcar hardware como validado sin prueba real.

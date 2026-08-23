@@ -4,6 +4,17 @@ Todos los cambios relevantes del proyecto se documentarán aquí.
 
 El proyecto usa versionado semántico durante desarrollo, con prereleases cuando corresponda.
 
+- **Voice Understanding / Semantic Tool Fallback — 2026-08-23**:
+  - Auditoría de una sesión física real mostró 24 utterances, 22 transcripciones aceptadas y sólo 5 activaciones de tools; frases ASR como `hora es`, `notas tengo` y `nota comprar estaño mañana` caían innecesariamente al LLM.
+  - `IntentResolver` ahora tolera variantes ASR frecuentes para hora, notas y volumen sin sumar latencia; `SttQualityEvaluator` repromptea fragmentos de una sola palabra demasiado ambiguos en vez de enviarlos al LLM.
+  - Nuevo `SemanticToolIntentResolver`: usa exclusivamente un backend local confiable como parser JSON acotado cuando las reglas fallan. El modelo sólo puede proponer tools registradas, no-network y no-destructive; Core revalida argumentos y `ToolExecutor` mantiene toda la autoridad.
+  - La resolución semántica se activa sólo para frases con indicios de tools/contexto corto, evitando una segunda inferencia para charla normal. En Ryzen 5 5500 + `qwen3.5:9b`, fallback contextual medido ~1.3-1.9 s; comandos deterministas comunes quedan ~1-15 ms.
+  - Búsqueda de notas mejorada: phrase match primero y fallback por tokens significativos con LIKE escapado; consultas como `qué tengo que comprar mañana` recuperan `comprar estaño mañana`. `NotesTool.search` devuelve el contenido útil, no sólo el conteo.
+  - Prompt conversacional reduce repetición: el estado de cámara es contexto silencioso salvo relevancia, no se repiten datos previos de rutina y se eliminan coletillas genéricas repetitivas al final de respuestas con contenido.
+  - `ClockTool` corregido para hora local del sistema (`datetime.now().astimezone()`); antes respondía UTC.
+  - Integración real sin efectos físicos: `hora es` -> ClockTool, `nota comprar estaño mañana` -> NotesTool, `notas tengo` -> NotesTool, `cosa tengo que comprar mañana` -> semantic local -> NotesTool, y `ajá un poquito más el volumen` -> VolumeTool.
+  - Cierre de calidad: 487 tests, Ruff limpio, mypy limpio en 129 source files y `git diff --check` limpio antes del build final.
+
 - **Cierre auditado post-oX Alpha — R3C / Vision / STT (2026-08-23)**:
   - Persistencia conversacional real cableada en `LabRunner`: cada sesión usa un `sess-*` SQLite propio, persiste turnos `user/assistant` después de construir el request para evitar duplicar el mensaje actual y cierra `ended_at` al apagar. Prueba multi-turn real con `qwen3.5:9b` recuperó correctamente contexto del turno anterior.
   - Política outbound para tools separada de la disponibilidad cloud mediante `[network].outbound_web_enabled`; un proveedor web ya no depende de que exista backend cloud.

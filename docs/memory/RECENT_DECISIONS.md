@@ -218,3 +218,11 @@
 - Datos de WebSearch son externos/no confiables: campos acotados, URLs saneadas y prompt injection tratado en system+turn context. WebFetch sólo HTTPS.
 - `MusicTool` sin backend real debe devolver `UNAVAILABLE`; el backend in-memory no representa reproducción física.
 - Benchmark Vision nunca duplica frames que no observó y permite fase `uncontrolled` cuando no existe ground truth.
+
+### Semantic tool fallback local — 2026-08-23
+
+- Las reglas deterministas siguen siendo la primera opción por latencia y seguridad.
+- Cuando una frase parece comando pero no coincide con reglas, sólo el backend `local` puede actuar como parser semántico JSON; cloud/LAN/network tools no participan.
+- El parser semántico nunca ejecuta: sólo propone una tool allowlisted y argumentos, que vuelven a pasar por schema + `ToolExecutor`.
+- Los fragmentos STT vagos no deben resolverse inventando continuidad; se solicita repetición.
+- Estado físico Vision es contexto silencioso y no una frase que el modelo deba repetir en cada respuesta.

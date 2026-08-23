@@ -85,9 +85,10 @@ class AiContextBuilder:
                         else ""
                     )
                     system_context += (
-                        " Core informa que el detector facial verificado está activo y detecta una persona frente al dispositivo"
-                        f"{count_text}. Podés decir que detectás un rostro o presencia frente a la cámara. "
-                        "La visión actual no reconoce identidad, objetos, gestos, acciones, ropa ni detalles de escena."
+                        " Core informa silenciosamente que el detector facial verificado está activo y detecta una persona frente al dispositivo"
+                        f"{count_text}. Usá ese dato sólo si la pregunta trata de visión/presencia o si es realmente relevante; "
+                        "no lo menciones de rutina en otras respuestas. La visión actual no reconoce identidad, objetos, gestos, "
+                        "acciones, ropa ni detalles de escena."
                     )
                 elif not face_detection_verified:
                     system_context += (
@@ -103,7 +104,13 @@ class AiContextBuilder:
             else:
                 system_context += " Core no informa una cámara de presencia activa en este turno."
 
-        system_context += " Respondé al contenido de la pregunta; no repitas ni parafrasees la pregunta como respuesta."
+        system_context += (
+            " Respondé al contenido de la pregunta; no repitas ni parafrasees la pregunta como respuesta. "
+            "No cierres cada respuesta con preguntas genéricas como '¿Qué necesitás?' o '¿Qué sigue?'. "
+            "No repitas datos de turnos anteriores salvo que el usuario los pida o sean necesarios. "
+            "Si el texto parece un fragmento de STT y no podés inferirlo con seguridad, pedí que lo repita en vez de inventar una continuidad. "
+            "No interpretes automáticamente palabras como comprar o vender como finanzas: respetá el contexto cotidiano."
+        )
 
         messages: list[ChatMessage] = []
         retrieved_memories: list[str] = []

@@ -452,21 +452,54 @@ class MemoryRepository:
             ]
 
     def search_notes(self, query: str, limit: int = 50) -> list[NoteItem]:
-        """Search notes matching a substring query."""
+        """Search notes by phrase first, then by all meaningful query tokens."""
+        clean_query = " ".join(query.strip().split())
+        if not clean_query:
+            return []
+
+        def escape_like(value: str) -> str:
+            return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
         with self.db_manager.connection() as conn:
             cursor = conn.cursor()
-            pattern = f"%{query}%"
+            phrase_pattern = f"%{escape_like(clean_query)}%"
             cursor.execute(
                 """
                 SELECT note_id, content, created_at, updated_at
                 FROM notes
-                WHERE content LIKE ?
+                WHERE content LIKE ? ESCAPE '\\'
                 ORDER BY created_at DESC
                 LIMIT ?;
                 """,
-                (pattern, limit),
+                (phrase_pattern, limit),
             )
             rows = cursor.fetchall()
+
+            if not rows:
+                stopwords = {
+                    "que", "qué", "cual", "cuál", "cosa", "tengo", "tenia", "tenía",
+                    "de", "del", "la", "el", "los", "las", "un", "una", "para", "por",
+                }
+                tokens = [
+                    token
+                    for token in clean_query.lower().split()
+                    if len(token) >= 3 and token not in stopwords
+                ][:8]
+                if tokens:
+                    clauses = " AND ".join("LOWER(content) LIKE ? ESCAPE '\\'" for _ in tokens)
+                    params = [f"%{escape_like(token)}%" for token in tokens]
+                    cursor.execute(
+                        f"""
+                        SELECT note_id, content, created_at, updated_at
+                        FROM notes
+                        WHERE {clauses}
+                        ORDER BY created_at DESC
+                        LIMIT ?;
+                        """,
+                        (*params, limit),
+                    )
+                    rows = cursor.fetchall()
+
             return [
                 NoteItem(
                     note_id=r["note_id"],
