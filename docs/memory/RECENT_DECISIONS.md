@@ -1,3 +1,23 @@
+### R3C — Product Behaviors, Controlled Tools & Safe Web Boundary
+
+- **Timeout de herramientas no bloqueante**: `ToolExecutor` ejecuta cada tool en un worker pool sin context manager; ante timeout se devuelve control inmediatamente (`shutdown(wait=False, cancel_futures=True)`). Un tool colgado ya no congela la conversación hasta que su hilo muere.
+- **Gates explícitos de red y destructividad en tools**: tools con `requires_network=true` se deniegan con `NETWORK_UNAVAILABLE` cuando no hay conectividad (`ToolContext.internet_available`, cableado desde ConversationCoordinator). Tools `destructive=true` requieren `confirm=true` explícito y están prohibidos en SHOP/PUBLIC. Hoy ningún tool builtin es destructivo; el gate queda cerrado por defecto.
+- **PROCESSING -> ATTENTION válida; PROCESSING -> LISTENING prohibida**: tras cada conversación el runner vuelve a ATTENTION (rostro presente) o IDLE sin desincronizar StateManager y Face. La raza PROCESSING->LISTENING sigue bloqueada por la máquina de estados con regresión testada.
+- **Notas por voz preservan casing original**: `IntentResolver` extrae el contenido del texto crudo (colapsando whitespace, quitando signos iniciales) en vez del texto lowercased; la query de web_search se extrae igual para evitar desalineación por "¿" o mayúscula inicial.
+- **Búsqueda web explícita prevalece sobre negativos conceptuales**: "buscá en internet el volumen de un cilindro" es una orden inequívoca de búsqueda y va a `web_search`; los negativos ("volumen de un cilindro") siguen bloqueando fast-paths locales. Preferencia por falso negativo se mantiene salvo orden explícita del usuario.
+- **Preflight YuNet fail-closed real**: con `detector=yunet` el preflight instancia `FaceDetectorYN.create()` (valida ONNX legible) y exige score threshold en (0,1]. PASS nunca proviene sólo de la existencia del archivo. Haar valida carga efectiva del cascade y permanece experimental.
+- **Benchmark vision CPU-first (`ailen lab benchmark-vision`)**: mide latencia por frame del detector real sobre cámara física sin GUI ni persistencia de frames. El operador etiqueta la fase (`--phase empty|face|movement`); el sistema NO infiere falsos positivos sin ground truth. YuNet medido ~49 ms avg / p95 ~91 ms a 5 FPS en CPU (Ryzen 5 5500) — apto para hardware objetivo; RTX 3060 no es requisito.
+- **Benchmark STT multi-motor (`ailen lab benchmark-stt`)**: mismo WAV -> múltiples motores; WER propio con normalización española (lowercase, puntuación básica, whitespace; acentos preservados); sin referencia no se inventa accuracy; motores ausentes = `NOT_INSTALLED`; jamás descarga modelos. Grabación por micrófono sólo con `--record N --out ruta` explícitos.
+- **Limitación conocida SSRF**: la validación DNS de `WebFetchPolicy` ocurre antes de conectar; un atacante con DNS rebinding podría eludirla entre validación y conexión. Mitigación futura: transporte con IP fijada/pinning. Documentado como deuda en WEB_SEARCH_BOUNDARY.md.
+
+- **El LLM nunca ejecuta acciones directamente**: Todo control del sistema operativo (audio, timer, hora, música, notas, status) se ejecuta mediante herramientas fuertemente tipadas y validadas por el Core (`ToolRegistry` y `ToolExecutor`).
+- **Filtrado estricto de falsos positivos en IntentResolver**: Los falsos positivos son peores que los falsos negativos. Consultas conceptuales o explicativas (ej. "¿cuál es el volumen de un cilindro?", "¿qué batería usa esta notebook?", "explicame qué es un temporizador") son filtradas y dirigidas exclusivamente al flujo conversacional del LLM.
+- **Acciones simples responden sin LLM (`RULE_ONLY_TOOL`)**: Para órdenes locales directas ("subí el volumen", "qué hora es", "poné un temporizador"), el sistema ejecuta la herramienta y devuelve la respuesta formateada directamente, ahorrando tiempo de inferencia y consumo de hardware.
+- **Frontera de búsqueda web desacoplada de proveedor**: `WebSearchTool` utiliza la interfaz `WebSearchProvider`. Si no hay motor configurado, `UnconfiguredWebSearchProvider` devuelve `status="UNCONFIGURED"` de forma limpia sin intentar scraping frágil. Los resultados válidos se sanitizan antes de inyectarse al LLM para su síntesis.
+- **Defensas Anti-SSRF obligatorias en `WebFetchTool`**: `WebFetchPolicy` valida esquema HTTPS, resuelve DNS y verifica que todas las direcciones IP de destino no pertenezcan a loopback, RFC1918, link-local o endpoints de metadata cloud (`169.254.169.254`, `metadata.google.internal`). Las redirecciones se inspeccionan una a una (máximo 3) y se impone un límite de payload de 256 KiB con allowlist de Content-Type (`text/html`, `application/json`, etc.).
+- **Persistencia de notas en SQLite**: Las notas de usuario se almacenan en la tabla `notes` con consultas parametrizadas, protegiendo el sistema de inyecciones SQL.
+- **Auditoría con redacción de secretos**: Todo evento de herramienta se registra en SQLite `tool_events` y en `EventBus` con redacción automática de contraseñas, tokens y claves de API.
+
 ### R3B.4 — Adaptive Runtime, Model Residency & Voice Latency
 
 - **InferenceProfile desacoplado de DeviceProfile**: `DeviceProfile` define la topología (`SATELLITE`, `CLOUD`, `HYBRID`, `LOCAL`, `LAN_BRAIN`), mientras que `InferenceProfile` define la capacidad local recomendada (`RULE_ONLY`, `FAST`, `BALANCED`, `QUALITY`).
@@ -168,3 +188,33 @@
 - **AILEN sin GPU obligatoria**: la selección de inferencia se adapta al hardware. Equipos débiles conservan Core/tools y delegan a LAN/cloud; equipos capaces usan un modelo local pequeño/medio. La GPU de Asrock no define requisitos comerciales.
 - **Sin model hopping por turno**: AILEN selecciona un modelo estable por nodo/sesión y lo mantiene residente de forma acotada; cambiar modelos por consulta penaliza cold-start y memoria.
 - **Tools antes que LLM para acciones básicas**: música, volumen, timer, hora, notas y status se resuelven de forma determinista cuando el intent es claro. Web sólo mediante herramientas controladas por Core.
+
+### Vision física y compatibilidad OpenCV — 2026-08-23
+
+- Mientras el backend POC dependa de `CascadeClassifier`, `[vision]` queda limitado a OpenCV 4.x; OpenCV 5 mueve Haar a contrib y no es compatible con esta ruta actual.
+- El preflight valida la API/cascade real, no sólo `import cv2`.
+- Cámara configurada ausente puede reemplazarse por un endpoint V4L2 detectado automáticamente.
+- Presencia usa histéresis: adquisición rápida con tolerancia a misses cortos y salida más lenta; eventos de presencia representan transiciones reales.
+
+### Haar no autoriza afirmaciones visuales — 2026-08-23
+
+- El backend Haar queda como experimental y sin autoridad para que el LLM afirme "te veo"/"te detecto".
+- `profileface` se retira como fallback por falsos positivos observados.
+- YuNet (`FaceDetectorYN`) se evalúa como detector facial CPU-first con confidence real; sólo se promoverá tras control negativo y pruebas físicas repetibles.
+
+### YuNet promovido en Lab — 2026-08-23
+
+- YuNet (`FaceDetectorYN`) se promueve como detector preferido del Lab actual tras control negativo limpio y detección facial con confidence ~0.92-0.95.
+- Haar permanece como fallback experimental sin autoridad suficiente para afirmaciones visuales fuertes.
+- `VisionConfig` ahora distingue detector, modelo y score threshold; el preflight valida el detector realmente configurado.
+- La capacidad visual sigue limitada a rostro/presencia/posición aproximada; no hay reconocimiento de objetos ni comprensión multimodal de escena.
+
+### Cierre auditado R3C post-oX Alpha — 2026-08-23
+
+- Las tools de red usan una política outbound explícita (`network.outbound_web_enabled`) separada de cloud/LLM.
+- Una tool destructiva no se ejecuta todavía aunque haya `confirm=true`: queda bloqueada hasta existir un executor aislado/cancelable.
+- Los timeouts de tools no destructivas devuelven control mediante worker daemon, pero no equivalen a hard-cancel de una operación ya iniciada.
+- La conversación de producción crea/cierra una sesión SQLite `sess-*` y persiste turnos al completarlos; `lab_*` queda reservado a telemetría.
+- Datos de WebSearch son externos/no confiables: campos acotados, URLs saneadas y prompt injection tratado en system+turn context. WebFetch sólo HTTPS.
+- `MusicTool` sin backend real debe devolver `UNAVAILABLE`; el backend in-memory no representa reproducción física.
+- Benchmark Vision nunca duplica frames que no observó y permite fase `uncontrolled` cuando no existe ground truth.

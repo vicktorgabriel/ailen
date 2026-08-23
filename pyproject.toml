@@ -35,7 +35,7 @@ hardware = [
     "psutil>=5.9.0",
 ]
 vision = [
-    "opencv-python-headless>=4.8.0",
+    "opencv-python-headless>=4.8.0,<5",
 ]
 stt-vosk = [
     "vosk>=0.3.45",

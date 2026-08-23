@@ -238,8 +238,9 @@ Debe quedar funcionando:
 - [x] registrar estado de preflight y guía de remediación del host Asrock en `docs/testing/FIRST_PHYSICAL_LAB_REPORT.md`.
 - [x] conectar y validar G600 físico (micrófono + auricular) en Asrock / Linux Mint; pipeline voz end-to-end `AUDIO CONVERSATION PASS`.
 - [x] instalar/configurar Vosk + Piper y ejecutar `ailen -c runtime/lab/ailen-lab.toml lab start --headless --no-camera` con hardware real.
-- [x] medir latencias físicas reales STT/AI/TTS y tokens en sesión de voz; FPS de Face sigue pendiente hasta disponer de cámara/GUI.
-- [ ] conectar cámara, instalar dependencias Face/Vision necesarias y completar presencia/gaze/Face físico.
+- [x] medir latencias físicas reales STT/AI/TTS y tokens en sesión de voz; Vision/presencia/gaze también validados físicamente.
+- [x] conectar webcam reciclada USB y validar detección facial/posición con YuNet; Haar queda experimental.
+- [x] instalar Tkinter y abrir Face GUI física integrada con Lab; queda repetir experiencia completa tras mejoras STT/cámara.
 - [ ] realizar después un segundo laboratorio en Windows 11 sin convertirlo en appliance.
 
 ## Bloque 13 — R3B.4 Adaptive Runtime + Voice Latency
@@ -255,15 +256,36 @@ Debe quedar funcionando:
 
 ## Bloque 14 — R3C Product Behaviors + Controlled Tools + Web
 
-- [ ] intent resolver determinista para acciones simples antes del LLM.
-- [ ] tools reales allowlisted: hora, timer, volumen, música, notas y status.
-- [ ] `ToolRegistry`/`ToolExecutor` con schema estricto, permisos por modo y argumentos validados.
-- [ ] `web_search` provider-agnostic controlado por Core; sin Internet irrestricto para el LLM.
-- [ ] `web_fetch` opcional con HTTPS, límites de bytes/timeouts, sanitización y política de destinos.
-- [ ] devolver resultados de tools al LLM sólo cuando haga falta redactar/resumir.
-- [ ] privacidad/budget para búsqueda remota y cloud; costos del proveedor visibles en onboarding.
-- [ ] onboarding/configuración mínima: auto-detect hardware, recomendar perfil y pedir sólo decisiones/credenciales necesarias.
-- [ ] Memory API y personalidad encima de estas fronteras, sin modificar seguridad/permisos.
+- [x] intent resolver determinista para acciones simples antes del LLM con filtrado estricto de negativos conceptuales (`src/ailen/tools/intent_resolver.py`).
+- [x] tools allowlisted: hora, timer, volumen, música, notas y status; `MusicTool` tiene contrato/routing pero backend físico real aún pendiente.
+- [x] `ToolRegistry`/`ToolExecutor` con schema estricto, permisos por SocialMode, niveles de privacidad, timeout acotado y auditoría SQLite (`tool_events`).
+- [x] `web_search` provider-agnostic (`WebSearchProvider`, `WebSearchTool`, `UnconfiguredWebSearchProvider`, `FakeWebSearchProvider`) controlado por Core; sin Internet irrestricto para el LLM.
+- [x] `web_fetch` seguro con `WebFetchPolicy`, HTTPS por defecto, límite de 256 KiB, allowlist de Content-Type, inspección de redirecciones y defensas anti-SSRF (bloqueo de loopback, RFC1918, link-local y endpoints de metadata cloud).
+- [x] devolver resultados de tools al LLM sólo cuando haga falta redactar/resumir; respuesta directa para acciones locales simples.
+- [x] privacidad/budget para búsqueda remota y cloud; costos del proveedor visibles (`FREE`, `PAID`, `UNKNOWN`).
+- [x] persistencia SQLite para notas (`notes` table, migración 0003) con queries parametrizadas.
+- [x] integración en `ConversationCoordinator` y `LabRunner` con bypass determinista de LLM (`RULE_ONLY_TOOL`).
+- [x] documentos de investigación: `docs/research/CONTROLLED_TOOLS_ARCHITECTURE.md`, `docs/research/WEB_SEARCH_BOUNDARY.md`.
+- [x] Suite auditada de R3C con 430 tests offline, ruff limpio, mypy en 126 archivos fuente, diff-check limpio y wheel construible.
+
+## Bloque 15 — Auditoría R3C + STT Quality + Vision YuNet Hardening
+
+- [x] auditoría completa del working tree R3C sin commit (tools, executor, intent resolver, web boundary, memoria, visión).
+- [x] fix `ToolExecutor`: timeout no bloquea al llamador mediante worker daemon; red outbound explícita; tools destructivas fail-closed hasta executor cancelable (`src/ailen/tools/executor.py`).
+- [x] fix máquina de estados: `PROCESSING -> ATTENTION` válida; `PROCESSING -> LISTENING` prohibido con regresión (`src/ailen/core/state.py`).
+- [x] fix `IntentResolver`: notas preservan casing original; query web extraída del texto crudo; búsqueda web explícita prevalece sobre negativos conceptuales.
+- [x] hardening preflight: YuNet instancia realmente `FaceDetectorYN` (no basta archivo existente), valida score threshold; Haar valida carga del cascade (`src/ailen/runtime/preflight.py`).
+- [x] benchmark vision CPU-first: `ailen lab benchmark-vision` con latencia avg/p50/p95/max, detecciones, confianza, gaze por fase y reporte JSON (`src/ailen/vision/benchmark.py`).
+- [x] medición física YuNet en CPU: ~49 ms avg / p95 ~91 ms a 5 FPS con confianza ~0.91 (Ryzen 5 5500); Haar ~67 ms avg con picos >500 ms.
+- [x] benchmark STT reproducible: `ailen lab benchmark-stt` multi-motor sobre mismos WAVs, WER propio con normalización española, `NOT_INSTALLED` sin descargas, grabación sólo con autorización explícita (`src/ailen/audio/stt_benchmark.py`).
+- [x] medición Vosk small-es sobre utterance Piper: WER 0.143 en muestra única (transcripto "detectó" vs "detecto"); whisper.cpp queda `NOT_INSTALLED`.
+- [x] regresión explícita de historial reciente: m0..m7 con limit=3 devuelve m5,m6,m7 incluso con timestamps idénticos (desempate por rowid).
+- [x] cierre post-auditoría: 478 tests offline; ruff limpio; mypy limpio en 128 archivos fuente; diff-check limpio; wheel construible.
+
+- [x] persistencia conversacional real: `LabRunner` crea/cierra sesión `sess-*` y `ConversationCoordinator` persiste turnos sin duplicar input actual.
+- [x] WebSearch hardening: resultados acotados/no confiables; WebFetch HTTPS-only; política `[network].outbound_web_enabled` separada de cloud.
+- [ ] backend de reproducción musical real (PipeWire/MPRIS/local player) detrás de `MusicService`; hasta entonces `MusicTool()` devuelve `UNAVAILABLE`.
+- [ ] instalar/evaluar Whisper.cpp sólo con autorización del operador y decidir baseline STT por WER real G600.
 
 ## Reglas del board
 

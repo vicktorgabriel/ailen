@@ -69,8 +69,9 @@ class InteractionCoordinator:
         current_time = self._now()
 
         if obs.present:
-            # Detect new presence appearance
-            is_new = not self._current_presence or not self._presence_session_greeted
+            # Detect new stable presence transition separately from greeting state.
+            was_present = self._current_presence
+            is_new = not was_present or not self._presence_session_greeted
             self._current_presence = True
 
             # Preserve the pre-transition sleep state so SocialEngine can emit WAKE.
@@ -117,19 +118,20 @@ class InteractionCoordinator:
                 if decision.expression_hint:
                     self.face_controller.set_expression(decision.expression_hint)
 
-            # Publish domain event
-            self.event_bus.create_and_publish(
-                event_type=EventType.PRESENCE_DETECTED,
-                payload={
-                    "present": True,
-                    "faces_count": obs.faces_count,
-                    "decision_action": decision.action.value,
-                    "reason_code": decision.reason_code,
-                    "greeting_intent": decision.greeting_intent,
-                    "expression_hint": decision.expression_hint,
-                },
-                source="interaction_coordinator",
-            )
+            # Presence events represent transitions, not every camera observation.
+            if not was_present:
+                self.event_bus.create_and_publish(
+                    event_type=EventType.PRESENCE_DETECTED,
+                    payload={
+                        "present": True,
+                        "faces_count": obs.faces_count,
+                        "decision_action": decision.action.value,
+                        "reason_code": decision.reason_code,
+                        "greeting_intent": decision.greeting_intent,
+                        "expression_hint": decision.expression_hint,
+                    },
+                    source="interaction_coordinator",
+                )
 
             return decision
 

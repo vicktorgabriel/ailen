@@ -1,8 +1,8 @@
 # Estado actual — AILEN
 
-**Fecha:** 2026-08-22
+**Fecha:** 2026-08-23
 **Versión:** `0.1.0-dev.0`  
-**Fase:** R3B.4 Adaptive Runtime + Voice Latency auditado e integrado. Hardware real selecciona `InferenceProfile` (`RULE_ONLY`, `FAST`, `BALANCED`, `QUALITY`) y alimenta `ModelPlanner`; Ollama usa backend nativo con `think=false` y residencia por perfil. Benchmark corregido: `qwen3.5:9b` ~1.76 s promedio en batería larga / ~42.6 tok/s y `qwen2.5-coder:3b` ~0.57 s / ~127 tok/s; los turnos físicos cortos del 9B siguen típicamente ~0.55–0.85 s. Piper usa API Python por chunks, cachea/precalienta la voz y mantiene fallback CLI. TTFAR está conectado al primer PCM enviado a playback; STT dudoso repregunta antes del LLM. Fast-path sólo prepara clasificación para R3C, todavía no ejecuta tools. Audio conversation PASS real con G600; cámara/Face siguen pendientes.
+**Fase:** R3C auditado y endurecido sobre `1a94116`: tools allowlisted y routing determinista integrados; historial conversacional real persistido en SQLite; red de tools gobernada por `[network].outbound_web_enabled` independiente de cloud; WebSearch aún sin proveedor real y WebFetch HTTPS-only; música tiene contrato/routing pero sin backend físico real (`UNAVAILABLE`); tools destructivas fail-closed hasta executor cancelable. Vision usa YuNet verificado para rostro/posición y Haar queda experimental. STT Vosk small-es sigue siendo el principal problema de calidad y Whisper.cpp permanece `NOT_INSTALLED`. Suite actual: 478 tests, Ruff/mypy/diff-check verdes.
 
 ## Qué existe
 
@@ -41,7 +41,7 @@
 - Baseline de despliegue aceptado en ADR-008: Debian 13 stable amd64 netinst/minimal, sin entorno de escritorio; con Tkinter se usa sólo Xorg/xinit/python3-tk y los nodos headless no instalan X;
 - Backend gráfico POC `TkinterFaceController` (sin dependencia pip, requiere `python3-tk`/stack gráfico del sistema) y `NullFaceController` para headless; consumo real pendiente de benchmark físico;
 - `VisionDebouncer` temporal para presencia física basado en `presence_debounce_seconds`;
-- Backend de cámara POC `OpenCvVisionBackend` con Haar cascade a 5 FPS / 320px y degradación limpia;
+- Backend de cámara `OpenCvVisionBackend` con YuNet preferido en Lab para rostro/posición y Haar experimental como fallback;
 - Formato canónico de audio: PCM 16-bit signed LE, mono, 16000 Hz (`src/ailen/audio/pcm.py`) con RMS matemático puro;
 - VAD en Python puro (`EnergyVad`) con umbral configurable y hangover; benchmark lógico DEV documentado sin extrapolar porcentaje de CPU a hardware objetivo;
 - `UtteranceCollector` con defaults actuales de pre-roll 200 ms, mínimo de habla 250 ms, silencio final 700 ms y corte máximo 15 s;
@@ -114,7 +114,7 @@ La base Foundation/Core/Web, Face/Vision, Audio/VAD/STT/TTS y R3A AI Router ya e
 
 ## Próximo milestone
 
-`R3C — Product Behaviors + Controlled Tools + Web`: implementar acciones locales allowlisted (hora, timer, volumen, música, notas, status) y acceso web mediante tools controladas por Core. La cámara/Face física de R3B.3 permanece como validación pendiente paralela cuando haya cámara disponible; no bloquea el avance del pipeline de voz ya validado.
+`R3C` queda implementado y auditado en su boundary actual. Próximo foco: medir STT real sobre frases G600 y comparar Vosk con Whisper.cpp cuando el operador autorice/instale sus assets; en paralelo falta backend musical físico y proveedor WebSearch real.
 
 Trabajo inmediato definido en `TASKS.md` y `docs/operations/AGENT_HANDOFF.md`.
 
@@ -137,7 +137,7 @@ El repositorio Git local está inicializado en `main` y conectado a `git@github.
 - Ollama local usa backend nativo `/api/chat`, `think=false` y keep-alive de laboratorio para reducir cold-start; la identidad sigue viviendo en Core.
 - Modo voz normaliza Markdown/URLs/símbolos antes de Piper y acota respuestas; defaults LAB: 500 ms de silencio final y 96 tokens máximos.
 - Suite posterior a la validación: 349 tests; Ruff, mypy sobre 109 source files y diff-check verdes.
-- Falta para cerrar validación física global: cámara + Vision/Face. Después corresponde comparar perfil rápido 4B frente a 9B y mejorar robustez STT.
+- Cámara YuNet y Face GUI Tkinter ya están disponibles en Lab; queda mejorar robustez STT y repetir Vision con una cámara mejor cuando esté disponible.
 
 ## Decisión adaptativa posterior al AUDIO CONVERSATION PASS — 2026-08-22
 
@@ -156,3 +156,23 @@ El repositorio Git local está inicializado en `main` y conectado a `git@github.
 - El planner prefiere el menor footprint entre candidatos que ya satisfacen propósito/perfil.
 - El backend OpenAI-compatible genérico no expone `reasoning_content` ni recibe controles específicos de Ollama.
 - `RecommendedDeployment` reutiliza `HardwareDetector`; modelo y costo externo permanecen desconocidos hasta resolución/configuración real.
+
+## Validación física Vision — 2026-08-23
+
+- Webcam reciclada de notebook convertida a USB detectada como `HD Webcam`; stream usable `/dev/video1`.
+- OpenCV 4.14.0 + Haar frontal/profile fallback; `/dev/video1` auto-seleccionado si `/dev/video0` no existe.
+- `ailen demo vision` confirmó presencia y gaze variable; `lab start --headless` registró 211 observaciones y 2 transiciones reales en 12.34 s.
+- Estado: `YUNET FACE DETECTION PASS` con la webcam reciclada actual. Tkinter/Face GUI disponibles. Haar queda experimental; YuNet es el detector preferido del Lab para rostro/posición, con limitación de estabilidad en baja luz/movimiento.
+
+- YuNet 30 s controlado: tramo inicial sin persona limpio, rostro presente con confidence ~0.92-0.95 y gaze variable. PASS para face detection; objetos/escena siguen fuera de capacidad.
+
+## Validación física Benchmarks — 2026-08-23
+
+- `ailen lab benchmark-vision` (CPU, Ryzen 5 5500, 640x480, 5 FPS):
+  - YuNet: 60/60 detecciones con rostro presente; latencia avg ~49 ms, p50 ~51 ms, p95 ~91 ms, max ~159 ms; confianza avg/min ~0.91/0.89; gaze x [+0.74,+0.85], y [-0.24,-0.22]. Aceptable a 5 FPS en CPU puro.
+  - Haar (experimental): 40/40 con rostro presente pero avg ~67 ms con picos >500 ms y sin confianza calibrada.
+  - Reportes JSON en `runtime/lab/vision_benchmarks/`; fases etiquetadas por el operador (`--phase`), sin inferencia de falsos positivos automática.
+- `ailen lab benchmark-stt`: utterance generada con Piper ("Detecto un rostro frente a la cámara."), mismo WAV por motor:
+  - Vosk small-es 0.42: OK, latencia ~407 ms, WER 0.143 (transcribió "detectó" en vez de "detecto"). Ejemplo del problema de calidad de Vosk.
+  - whisper.cpp: `NOT_INSTALLED` (binario y modelo ggml ausentes); sin descarga automática.
+- Limitación conocida web_fetch: validación DNS anti-SSRF es pre-conexión; DNS rebinding sofisticado requiere transporte con IP fijada (pendiente, documentado en WEB_SEARCH_BOUNDARY.md).

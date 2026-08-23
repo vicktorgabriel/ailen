@@ -65,8 +65,14 @@ vad_sensitivity = 2
 enabled = true
 camera_device = "/dev/video0"
 fps = 5
+detector = "haar"
+detector_model_path = ""
+detector_score_threshold = 0.8
 presence_debounce_seconds = 2.0
 min_confidence = 0.5
+
+[network]
+outbound_web_enabled = true
 
 [ai]
 provider = "local"

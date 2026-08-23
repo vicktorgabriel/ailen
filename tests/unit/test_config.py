@@ -33,10 +33,13 @@ class TestConfig(unittest.TestCase):
         cfg.node.profile = DeviceProfile.LOCAL
         cfg.social.default_mode = SocialMode.SHOP
         cfg.web.port = 9090
+        cfg.network.outbound_web_enabled = True
 
         toml_str = dump_config_toml(cfg)
         self.assertIn('node_id = "test-node-custom"', toml_str)
         self.assertIn('port = 9090', toml_str)
+        self.assertIn('[network]', toml_str)
+        self.assertIn('outbound_web_enabled = true', toml_str)
 
         with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w", encoding="utf-8") as tmp:
             tmp.write(toml_str)
@@ -48,6 +51,7 @@ class TestConfig(unittest.TestCase):
             self.assertEqual(loaded_cfg.node.profile, DeviceProfile.LOCAL)
             self.assertEqual(loaded_cfg.social.default_mode, SocialMode.SHOP)
             self.assertEqual(loaded_cfg.web.port, 9090)
+            self.assertTrue(loaded_cfg.network.outbound_web_enabled)
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)

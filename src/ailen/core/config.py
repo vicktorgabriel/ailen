@@ -55,10 +55,13 @@ class AudioConfig:
 
 @dataclass
 class VisionConfig:
-    """Camera and presence detection configuration."""
+    """Camera and face/presence detection configuration."""
     enabled: bool = True
     camera_device: str = "/dev/video0"
     fps: int = 5
+    detector: str = "haar"
+    detector_model_path: str = ""
+    detector_score_threshold: float = 0.8
     presence_debounce_seconds: float = 2.0
     min_confidence: float = 0.5
 
@@ -176,6 +179,12 @@ class WebConfig:
 
 
 @dataclass
+class NetworkConfig:
+    """Outbound network policy for controlled tools, separate from cloud AI."""
+    outbound_web_enabled: bool = False
+
+
+@dataclass
 class UpdatesConfig:
     """System updates configuration."""
     channel: str = "beta"  # "nightly", "beta", "stable"
@@ -207,6 +216,7 @@ class AILENConfig:
     personality: PersonalityConfig = field(default_factory=PersonalityConfig)
     social: SocialConfig = field(default_factory=SocialConfig)
     web: WebConfig = field(default_factory=WebConfig)
+    network: NetworkConfig = field(default_factory=NetworkConfig)
     updates: UpdatesConfig = field(default_factory=UpdatesConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
@@ -347,6 +357,11 @@ def load_config_from_dict(raw: dict[str, Any]) -> AILENConfig:
             if hasattr(cfg.web, k):
                 setattr(cfg.web, k, v)
 
+    if "network" in raw and isinstance(raw["network"], dict):
+        for k, v in raw["network"].items():
+            if hasattr(cfg.network, k):
+                setattr(cfg.network, k, v)
+
     if "updates" in raw and isinstance(raw["updates"], dict):
         for k, v in raw["updates"].items():
             if hasattr(cfg.updates, k):
@@ -452,6 +467,12 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("vision.presence_debounce_seconds must be >= 0")
     if not (0.0 <= config.vision.min_confidence <= 1.0):
         errors.append("vision.min_confidence must be between 0.0 and 1.0")
+    if config.vision.detector not in {"haar", "yunet"}:
+        errors.append("vision.detector must be one of: haar, yunet")
+    if not (0.0 <= config.vision.detector_score_threshold <= 1.0):
+        errors.append("vision.detector_score_threshold must be between 0.0 and 1.0")
+    if config.vision.detector == "yunet" and not config.vision.detector_model_path.strip():
+        errors.append("vision.detector_model_path is required when vision.detector=yunet")
     if config.ai.timeout_seconds <= 0:
         errors.append("ai.timeout_seconds must be positive")
     if config.ai.daily_budget_usd < 0:

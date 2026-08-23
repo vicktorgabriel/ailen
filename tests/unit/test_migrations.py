@@ -23,13 +23,13 @@ class TestMigrations(unittest.TestCase):
 
             # First run applies migration
             applied = runner.run_migrations()
-            self.assertEqual(applied, 2)
-            self.assertEqual(runner.get_current_version(), 2)
+            self.assertEqual(applied, 3)
+            self.assertEqual(runner.get_current_version(), 3)
 
             # Second run is idempotent (0 applied)
             applied_again = runner.run_migrations()
             self.assertEqual(applied_again, 0)
-            self.assertEqual(runner.get_current_version(), 2)
+            self.assertEqual(runner.get_current_version(), 3)
 
             # Check that tables exist
             with db_mgr.connection() as conn:
@@ -43,6 +43,8 @@ class TestMigrations(unittest.TestCase):
                 self.assertIn("business_facts", tables)
                 self.assertIn("system_events", tables)
                 self.assertIn("admin_credentials", tables)
+                self.assertIn("notes", tables)
+                self.assertIn("tool_events", tables)
 
     def test_migration_0002_admin_credentials_single_row(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

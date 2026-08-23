@@ -60,6 +60,7 @@ def test_lab_runner_single_flight_serialization() -> None:
     mock_resp.provider = "fake"
     mock_resp.model = "fake"
     mock_resp.usage = None
+    mock_resp.latency_ms = 10.0
     mock_conv.handle_user_input.return_value = (mock_resp, MagicMock())
     runner.conversation_coordinator = mock_conv
 
@@ -74,7 +75,11 @@ def test_lab_runner_single_flight_serialization() -> None:
 
     # Allow thread to run
     time.sleep(0.1)
-    mock_conv.handle_user_input.assert_called_once_with("Hola Ailén", session_id=runner._session_id)
+    assert runner._conversation_session_id is not None
+    mock_conv.handle_user_input.assert_called_once_with(
+        "Hola Ailén",
+        session_id=runner._conversation_session_id,
+    )
 
 
 def test_lab_runner_vision_presence_and_gaze() -> None:

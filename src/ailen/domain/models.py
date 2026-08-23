@@ -111,6 +111,15 @@ class MemoryItem:
 
 
 @dataclass
+class NoteItem:
+    """A persisted user note."""
+    note_id: str
+    content: str
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass
 class BusinessFact:
     """Business knowledge administered by the owner."""
     fact_id: str

@@ -4,6 +4,48 @@ Todos los cambios relevantes del proyecto se documentarán aquí.
 
 El proyecto usa versionado semántico durante desarrollo, con prereleases cuando corresponda.
 
+- **Cierre auditado post-oX Alpha — R3C / Vision / STT (2026-08-23)**:
+  - Persistencia conversacional real cableada en `LabRunner`: cada sesión usa un `sess-*` SQLite propio, persiste turnos `user/assistant` después de construir el request para evitar duplicar el mensaje actual y cierra `ended_at` al apagar. Prueba multi-turn real con `qwen3.5:9b` recuperó correctamente contexto del turno anterior.
+  - Política outbound para tools separada de la disponibilidad cloud mediante `[network].outbound_web_enabled`; un proveedor web ya no depende de que exista backend cloud.
+  - `ToolExecutor` usa worker daemon para timeouts no destructivos; un timeout deja de bloquear shutdown, pero no puede matar de forma segura un hilo Python ya ejecutando. Tools `destructive=true` quedan fail-closed (`DESTRUCTIVE_EXECUTION_UNSUPPORTED`) hasta disponer de aislamiento cancelable.
+  - `WebSearch` acota/sanitiza campos del proveedor y marca resultados como contenido web no confiable antes del LLM; `WebFetch` es HTTPS-only, bloquea credenciales embebidas, exige Content-Type permitido y mantiene defensas SSRF/redirect.
+  - `MusicTool` deja de fingir reproducción: sin backend musical real devuelve `UNAVAILABLE`; `LocalMusicService` queda sólo como backend inyectable de prueba/estado. Volumen no inventa un nivel base si no puede leerlo y `SystemStatusTool` no expone rutas de disco.
+  - Benchmark Vision corregido para no clonar métricas de frames no observados, agrega fase `uncontrolled` y auto-selección de cámara física como el Lab. Muestra no controlada posterior: `/dev/video1`, YuNet, 20 frames, inferencia ~9.8 ms avg; no se infiere precisión sin ground truth.
+  - Benchmark STT rechaza engines desconocidos explícitamente y garantiza cleanup del backend de captura en grabación autorizada. Whisper.cpp sigue `NOT_INSTALLED`; no se descargó ningún modelo.
+  - Cierre de calidad: 478 tests offline, Ruff limpio, mypy limpio en 128 source files y `git diff --check` limpio antes del build final.
+
+- **Auditoría R3C + STT Quality + Vision YuNet Hardening**:
+  - Corrección de defectos reales detectados en auditoría:
+    - `ToolExecutor`: el timeout ya no bloquea al llamador hasta que la herramienta colgada termina (se elimina el `shutdown(wait=True)` implícito del context manager); se agregan gates de política para `requires_network` (denegación `NETWORK_UNAVAILABLE` sin conectividad) y `destructive` (requiere `confirm=true` explícita y prohibición en modos `SHOP`/`PUBLIC`).
+    - Máquina de estados: `PROCESSING -> ATTENTION` ahora es transición válida; el runner ya no queda desincronizado tras cada conversación con rostro presente. `PROCESSING -> LISTENING` sigue prohibido (regresión testada).
+    - `IntentResolver`: las notas creadas por voz conservan mayúsculas y puntuación originales; la query de `web_search` se extrae del texto crudo de forma insensible a mayúsculas y signos iniciales (antes quedaba desalineada con "¿" o inicial mayúscula); una búsqueda web explícita ("buscá en internet X") ya no es secuestrada por los filtros negativos conceptuales.
+    - `MemoryRepository.get_session_messages()`: mantiene el fix "últimos N en orden cronológico" y agrega desempate por `rowid` cuando `created_at` colisiona.
+    - Preflight: si `detector=yunet`, instancia realmente `FaceDetectorYN.create()` durante el chequeo (valida ONNX legible, no basta con que el archivo exista) y valida rango de `detector_score_threshold`; Haar valida carga real del cascade.
+    - `WebFetchTool`: cierre explícito del body de `HTTPError` en redirecciones y errores.
+  - Nuevos benchmarks reproducibles, CPU-first y sin descargas:
+    - `ailen lab benchmark-vision`: mide latencia por frame del detector real (avg/p50/p95/max), tasa de detección, confianza avg/min y rangos de gaze por fase (`--phase empty|face|movement`), exporta JSON en `runtime/lab/vision_benchmarks/`. Sin GUI ni persistencia de frames.
+    - `ailen lab benchmark-stt`: pasa el mismo WAV por múltiples motores (`--engines vosk,whisper_cpp`) comparando transcripto y latencia; WER propio con normalización española (minúsculas, puntuación básica, whitespace); soporta `--wav` repetible, `--reference`, `--record N --out ruta` (grabación sólo con autorización explícita) y `--json`. Motores o modelos ausentes reportan `NOT_INSTALLED`; nunca descarga.
+    - Instrumentación de `OpenCvVisionBackend`: contadores `frames_processed` y `last_inference_ms`.
+  - Mediciones físicas en host de desarrollo (Ryzen 5 5500, CPU): YuNet ~49 ms avg / p95 ~91 ms a 640x480 con confianza ~0.91-0.92 (válido a 5 FPS); Haar ~67 ms avg con picos >500 ms y sin confianza. Vosk small-es sobre utterance Piper: WER 0.143 en muestra única. Whisper.cpp: `NOT_INSTALLED` (sin descarga).
+  - Suite ampliada a 468 tests offline; Ruff limpio, mypy limpio en 128 archivos fuente, diff-check limpio y wheel reproducible en verde.
+
+- **R3C Product Behaviors + Controlled Tools + Safe Web Boundary**:
+  - Implementación del subsistema de herramientas controladas `ToolRegistry` (`src/ailen/tools/registry.py`) con catálogo explícito por allowlist, prohibiendo importaciones dinámicas arbitrarias.
+  - Implementación de `ToolExecutor` (`src/ailen/tools/executor.py`) aplicando validación de schemas de argumentos (`validate_args`), verificación de permisos por `SocialMode`, niveles de privacidad (`PrivacyLevel`), timeouts acotados por hilos, eventos en `EventBus` (`TOOL_REQUESTED`, `TOOL_COMPLETED`) y auditoría SQLite sanitizada con redacción de credenciales en `tool_events`.
+  - Intent resolver determinista conservador `IntentResolver` (`src/ailen/tools/intent_resolver.py`) para extraer intenciones y argumentos estructurados (`clock`, `timer`, `volume`, `music_play`, `music_pause`, `music_resume`, `music_next`, `music_stop`, `music_status`, `notes_create`, `notes_list`, `system_status`, `web_search`), con filtrado estricto de casos negativos conceptuales (ej. "volumen de un cilindro", "batería de notebook", "explicar temporizador") para prevenir falsos positivos.
+  - Herramientas locales iniciales:
+    - `ClockTool` (`src/ailen/tools/builtin/clock.py`): hora y fecha con proveedor inyectable.
+    - `TimerTool` y `TimerService` (`src/ailen/tools/builtin/timer.py`): temporizadores en memoria thread-safe con creación, listado y cancelación.
+    - `VolumeTool` y `SystemAudioVolumeService` (`src/ailen/tools/builtin/volume.py`): control seguro de volumen en Linux Mint/Debian (`wpctl`/`pactl`/`amixer`, `shell=False`), reportando `UNAVAILABLE` si no hay backend sin fabricar éxitos sintéticos.
+    - `MusicTool` y `LocalMusicService` (`src/ailen/tools/builtin/music.py`): máquina de estados de reproducción local controlada.
+    - `NotesTool` (`src/ailen/tools/builtin/notes.py`) y migración SQLite 0003 (`src/ailen/infrastructure/sqlite/migrations/0003_notes.sql`): persistencia de notas con consultas SQL parametrizadas.
+    - `SystemStatusTool` (`src/ailen/tools/builtin/system_status.py`): diagnóstico sanitizado de CPU, RAM, GPU, audio y disco sin exponer secretos ni rutas de usuario privadas.
+  - Frontera de búsqueda y extracción web segura:
+    - `WebSearchTool` y `WebSearchProvider` (`src/ailen/tools/builtin/web_search.py`): desacoplado de proveedor, con fallback por defecto `UnconfiguredWebSearchProvider` (`status="UNCONFIGURED"`), tiers de costo (`FREE`, `PAID`, `UNKNOWN`) y salida estructurada.
+    - `WebFetchTool` y `WebFetchPolicy` (`src/ailen/tools/builtin/web_fetch.py`): HTTPS por defecto, límite de payload de 256 KiB, allowlist estricta de Content-Type, inspección paso a paso de redirecciones y defensas robustas contra SSRF (bloqueo de loopback, RFC1918, link-local y endpoints de metadata cloud).
+  - Integración en `ConversationCoordinator` (`src/ailen/core/conversation.py`) y `LabRunner` (`src/ailen/runtime/runner.py`): las herramientas locales simples responden directamente (`RULE_ONLY_TOOL`) sin llamar al LLM; las búsquedas web con resultados inyectan snippets sanitizados al contexto del LLM para síntesis y emisión por voz TTS.
+  - Documentos de investigación y arquitectura: `docs/research/CONTROLLED_TOOLS_ARCHITECTURE.md` y `docs/research/WEB_SEARCH_BOUNDARY.md`.
+  - Suite de 430 tests pasando, Ruff limpio, mypy limpio sobre 126 archivos fuente, git diff-check limpio y construcción de wheel exitosa.
 - **R3B.4 Adaptive Runtime + Voice Latency**:
   - Abstracción e implementación de `InferenceProfile` (`RULE_ONLY`, `FAST`, `BALANCED`, `QUALITY`) desacoplada de `DeviceProfile` para categorizar la capacidad local del nodo.
   - Selector determinista `recommend_inference_profile` (`src/ailen/models/inference_profile.py`) con soporte de primera clase para CPU-only (2 GB, 4 GB, 8 GB, 16+ GB) y escalonamiento de VRAM para GPUs modestas y potentes.
@@ -21,6 +63,12 @@ El proyecto usa versionado semántico durante desarrollo, con prereleases cuando
   - Piper usa la API Python `AudioChunk` cuando está disponible, mantiene la voz cargada, reproduce por chunks y conserva el CLI como fallback; Lab precalienta Piper antes de abrir el micrófono.
   - El backend genérico nunca expone `reasoning_content` como respuesta y no admite payloads específicos de proveedor implícitos.
   - Cierre auditado: 387 tests pasando, Ruff limpio, mypy limpio sobre 114 archivos fuente, diff-check y wheel reproducible en verde.
+- **Vision physical validation follow-up (2026-08-23)**:
+  - Webcam reciclada USB validada en `/dev/video1`; presencia/gaze físicos pasan.
+  - `[vision]` limitado a `opencv-python-headless<5` mientras el backend use Haar Cascade.
+  - Preflight valida `CascadeClassifier` + cascade asset; `demo vision` falla correctamente si backend no abre.
+  - Auto-selección de cámara física cuando la ruta configurada no existe; histéresis de presencia y eventos de transición corregidos.
+  - Suite actual: 432 tests, Ruff/mypy/diff-check verdes.
 - **R3B.3 First Physical Lab Validation & Speech Asset Subsystem**:
   - Implementación del catálogo declarativo e inmutable de modelos de voz `SpeechAssetCatalog` (`src/ailen/speech/catalog.py`) con modelos verificados criptográficamente para 2026: Vosk Spanish (`vosk-model-small-es-0.42`), Whisper.cpp (`whisper-ggml-tiny`, `whisper-ggml-base`), y voces Piper en español (`es_ES-davefx-medium`, `es_AR-daniela-high`, `es_ES-sharvard-medium`, `es_ES-carlfm-x_low`) junto con sus configuraciones `.json`.
   - Política estricta de metadata: el género de las voces se declara explícitamente desde la metadata oficial de los datasets y nunca se infiere a partir de nombres de personas.

@@ -199,15 +199,36 @@ class LabComponentFactory:
         try:
             from ailen.vision.opencv_backend import OpenCvVisionBackend
 
+            configured_device = self.config.vision.camera_device
+            detected_devices = [
+                camera.device_path
+                for camera in (self.hardware_report.cameras if self.hardware_report else [])
+                if camera.is_available
+            ]
+            selected_device = configured_device
+            auto_selected = False
+            if configured_device not in detected_devices and detected_devices:
+                selected_device = detected_devices[0]
+                auto_selected = True
+
             backend = OpenCvVisionBackend(
-                camera_device=self.config.vision.camera_device,
+                camera_device=selected_device,
                 fps=self.config.vision.fps,
+                detector=self.config.vision.detector,
+                yunet_model_path=self.config.vision.detector_model_path,
+                yunet_score_threshold=self.config.vision.detector_score_threshold,
             )
+            detail = (
+                f"Camera device '{selected_device}' selected @ {self.config.vision.fps} FPS "
+                f"with detector={self.config.vision.detector}"
+            )
+            if auto_selected:
+                detail += f" (configured '{configured_device}' not detected; auto-selected physical camera)"
             return backend, ComponentStatus(
                 name="Vision",
                 backend="OpenCV",
                 state="READY",
-                detail=f"Camera device '{self.config.vision.camera_device}' active @ {self.config.vision.fps} FPS",
+                detail=detail,
             )
         except Exception as exc:  # noqa: BLE001
             return None, ComponentStatus(

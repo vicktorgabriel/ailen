@@ -41,6 +41,7 @@ VALID_TRANSITIONS: dict[AssistantState, set[AssistantState]] = {
         AssistantState.TOOL,
         AssistantState.SPEAKING,
         AssistantState.IDLE,
+        AssistantState.ATTENTION,
         AssistantState.ERROR,
     },
     AssistantState.TOOL: {

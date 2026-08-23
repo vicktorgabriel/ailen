@@ -39,6 +39,9 @@ frame_ms = 20.0
 enabled = true
 camera_device = "/dev/video0"
 fps = 5
+detector = "haar"              # haar (experimental) or yunet
+detector_model_path = ""        # required for yunet; provisioned asset path
+detector_score_threshold = 0.8
 presence_debounce_seconds = 2.0
 min_confidence = 0.5
 
@@ -119,6 +122,11 @@ host = "127.0.0.1"
 port = 8080
 session_expiry_hours = 24
 rate_limit_rpm = 60
+
+[network]
+# Outbound network permission for controlled WebSearch/WebFetch tools.
+# Independent from ai.cloud.enabled/allow_cloud.
+outbound_web_enabled = false
 
 [updates]
 channel = "beta"               # nightly, beta, stable

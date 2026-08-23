@@ -2,6 +2,7 @@
 
 from ailen.core.config import AILENConfig
 from ailen.hardware.contracts import (
+    CameraDeviceReport,
     CpuInfo,
     HardwareCapabilityReport,
     OsFamily,
@@ -60,6 +61,27 @@ def test_factory_vision_no_cameras_detected() -> None:
     assert vision is None
     assert status.state in ("DISABLED", "UNAVAILABLE")
 
+
+
+def test_factory_vision_auto_selects_detected_camera_when_configured_missing() -> None:
+    cfg = AILENConfig()
+    cfg.vision.camera_device = "/dev/video0"
+    report = HardwareCapabilityReport(
+        timestamp_utc="2026-08-23T00:00:00Z",
+        os_name="linux",
+        os_version="6.8.0",
+        os_distribution="Linux Mint",
+        os_family=OsFamily.LINUX,
+        cpu=CpuInfo(model="x86", architecture="x86_64", physical_cores=4, logical_cores=8),
+        ram=RamInfo(total_bytes=16_000_000_000, available_bytes=12_000_000_000),
+        cameras=[CameraDeviceReport(device_path="/dev/video1", index=1, name="HD Webcam")],
+    )
+    factory = LabComponentFactory(config=cfg, hardware_report=report)
+    vision, status = factory.build_vision()
+    assert vision is not None
+    assert getattr(vision, "camera_device", None) == "/dev/video1"
+    assert status.state == "READY"
+    assert "auto-selected physical camera" in status.detail
 
 def test_factory_vision_simulated() -> None:
     cfg = AILENConfig()

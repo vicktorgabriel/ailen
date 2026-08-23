@@ -64,3 +64,62 @@ def test_context_builder_with_sqlite_memories_and_sessions() -> None:
                 privacy_level=PrivacyLevel.PRIVATE,
                 destination="cloud",
             )
+
+
+def test_context_builder_includes_bounded_local_vision_state() -> None:
+    builder = AiContextBuilder(default_identity_name="AILEN")
+    req = builder.build_request(
+        user_message="¿Me ves?",
+        destination="local",
+        metadata={
+            "voice_output": True,
+            "runtime_context": {
+                "camera_active": True,
+                "presence_detected": True,
+                "faces_count": 1,
+                "face_detection_verified": True,
+                "visual_capability": "face_detection_with_confidence",
+            },
+        },
+    )
+    assert "detector facial verificado está activo" in req.system_context
+    assert "detecta una persona" in req.system_context
+    assert "no reconoce identidad" in req.system_context
+    assert "no repitas ni parafrasees" in req.system_context
+
+
+def test_context_builder_does_not_send_runtime_vision_state_to_cloud() -> None:
+    builder = AiContextBuilder(default_identity_name="AILEN")
+    req = builder.build_request(
+        user_message="Hola",
+        destination="cloud",
+        privacy_level=PrivacyLevel.PUBLIC,
+        metadata={
+            "runtime_context": {
+                "camera_active": True,
+                "presence_detected": True,
+                "faces_count": 1,
+            },
+        },
+    )
+    assert "cámara de presencia" not in req.system_context
+    assert "detecta una persona" not in req.system_context
+
+
+def test_context_builder_marks_experimental_vision_as_unverified() -> None:
+    builder = AiContextBuilder(default_identity_name="AILEN")
+    req = builder.build_request(
+        user_message="¿Me ves?",
+        destination="local",
+        metadata={
+            "runtime_context": {
+                "camera_active": True,
+                "presence_detected": True,
+                "faces_count": 1,
+                "face_detection_verified": False,
+                "visual_capability": "experimental_presence_only",
+            },
+        },
+    )
+    assert "modo experimental" in req.system_context
+    assert "No digas que ves o detectás" in req.system_context

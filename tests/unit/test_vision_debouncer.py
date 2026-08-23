@@ -144,3 +144,32 @@ def test_debouncer_reset() -> None:
     debouncer.reset()
     assert debouncer.stable_presence is False
     assert debouncer.latest_raw is None
+
+
+def test_debouncer_hysteresis_tolerates_short_detection_misses() -> None:
+    clock = ControllableClock(0.0)
+    debouncer = VisionDebouncer(
+        debounce_seconds=2.0,
+        clock=clock,
+        presence_confirm_seconds=0.8,
+        absence_confirm_seconds=2.0,
+        dropout_grace_seconds=0.6,
+    )
+    seen = PresenceObservation(present=True, faces_count=1, primary_x_normalized=0.2)
+    missed = PresenceObservation(present=False)
+
+    debouncer.update(seen)
+    clock.advance(0.3)
+    debouncer.update(missed)  # brief detector dropout, candidate must survive
+    clock.advance(0.2)
+    debouncer.update(seen)
+    clock.advance(0.4)
+    stable = debouncer.update(seen)
+    assert stable.present is True
+
+    clock.advance(0.4)
+    assert debouncer.update(missed).present is True
+    clock.advance(1.0)
+    assert debouncer.update(missed).present is True
+    clock.advance(1.1)
+    assert debouncer.update(missed).present is False

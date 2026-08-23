@@ -1,15 +1,74 @@
-"""Tools package: contracts and fake baseline tools."""
+"""Tools package for AILEN Core: contracts, registry, executor, intent resolver, and builtin tools."""
 
-from ailen.tools.contracts import Tool, ToolContext, ToolResult, validate_args
-from ailen.tools.fake import ClockTool, FakeNotesTool, FakeVolumeTool, build_fake_tools
+from ailen.tools.builtin import (
+    AudioVolumeService,
+    ClockTool,
+    FakeAudioVolumeService,
+    FakeWebSearchProvider,
+    LocalMusicService,
+    MusicService,
+    MusicTool,
+    NotesTool,
+    SystemAudioVolumeService,
+    SystemStatusTool,
+    TimerEntry,
+    TimerService,
+    TimerTool,
+    UnconfiguredWebSearchProvider,
+    VolumeTool,
+    WebFetchPolicy,
+    WebFetchTool,
+    WebSearchProvider,
+    WebSearchRequest,
+    WebSearchResponse,
+    WebSearchResult,
+    WebSearchTool,
+)
+from ailen.tools.contracts import (
+    ALL_SOCIAL_MODES,
+    Tool,
+    ToolContext,
+    ToolResult,
+    validate_args,
+)
+from ailen.tools.executor import ToolExecutor
+from ailen.tools.fake import FakeNotesTool, FakeVolumeTool, build_fake_tools
+from ailen.tools.intent_resolver import IntentResolution, IntentResolver
+from ailen.tools.registry import ToolRegistry
 
 __all__ = [
+    "ALL_SOCIAL_MODES",
+    "AudioVolumeService",
     "ClockTool",
+    "FakeAudioVolumeService",
     "FakeNotesTool",
     "FakeVolumeTool",
+    "FakeWebSearchProvider",
+    "IntentResolution",
+    "IntentResolver",
+    "LocalMusicService",
+    "MusicService",
+    "MusicTool",
+    "NotesTool",
+    "SystemAudioVolumeService",
+    "SystemStatusTool",
+    "TimerEntry",
+    "TimerService",
+    "TimerTool",
     "Tool",
     "ToolContext",
+    "ToolExecutor",
+    "ToolRegistry",
     "ToolResult",
+    "UnconfiguredWebSearchProvider",
+    "VolumeTool",
+    "WebFetchPolicy",
+    "WebFetchTool",
+    "WebSearchProvider",
+    "WebSearchRequest",
+    "WebSearchResponse",
+    "WebSearchResult",
+    "WebSearchTool",
     "build_fake_tools",
     "validate_args",
 ]

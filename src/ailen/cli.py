@@ -116,6 +116,9 @@ def create_parser() -> argparse.ArgumentParser:
     # Subcommand: demo vision
     demo_vis = demo_sub.add_parser("vision", help="Camera presence detection and debounce demo")
     demo_vis.add_argument("--camera", default="/dev/video0", help="Camera device path or index (default: /dev/video0)")
+    demo_vis.add_argument("--detector", choices=("haar", "yunet"), default="haar", help="Face detector (default: haar)")
+    demo_vis.add_argument("--model", default="", help="YuNet ONNX model path when --detector=yunet")
+    demo_vis.add_argument("--score", type=float, default=0.8, help="YuNet score threshold 0..1 (default: 0.8)")
     demo_vis.add_argument("--debounce", type=float, default=2.0, help="Debounce window in seconds (default: 2.0)")
     demo_vis.add_argument("--duration", type=float, default=10.0, help="Run duration in seconds (default: 10.0)")
 
@@ -201,6 +204,28 @@ def create_parser() -> argparse.ArgumentParser:
     lab_bench_ai.add_argument("--warmup", type=int, default=1, help="Warmup turns per model (default: 1)")
     lab_bench_ai.add_argument("--turns", type=int, default=None, help="Number of benchmark prompts to evaluate")
     lab_bench_ai.add_argument("--json", action="store_true", help="Output benchmark report as JSON")
+    lab_bench_vis = lab_sub.add_parser("benchmark-vision", help="Benchmark face detector latency/detections on real camera (CPU-first, no GUI)")
+    lab_bench_vis.add_argument("--camera", default="", help="Camera device path (default from lab config)")
+    lab_bench_vis.add_argument("--detector", choices=("haar", "yunet"), default="", help="Face detector (default from lab config)")
+    lab_bench_vis.add_argument("--model", default="", help="YuNet ONNX model path when --detector=yunet")
+    lab_bench_vis.add_argument("--score", type=float, default=0.0, help="YuNet score threshold 0..1 (0 keeps config default)")
+    lab_bench_vis.add_argument("--fps", type=int, default=5, help="Requested capture FPS (default: 5)")
+    lab_bench_vis.add_argument("--frames", type=int, default=150, help="Number of frames to sample (default: 150)")
+    lab_bench_vis.add_argument("--phase", choices=("uncontrolled", "empty", "face", "movement"), default="uncontrolled", help="Scene phase label; use uncontrolled when ground truth is unknown")
+    lab_bench_vis.add_argument("--timeout", type=float, default=120.0, help="Max seconds to wait for frames (default: 120)")
+    lab_bench_vis.add_argument("--output", default="runtime/lab/vision_benchmarks", help="Directory for JSON report artifact")
+    lab_bench_vis.add_argument("--json", action="store_true", help="Print report as JSON instead of table")
+    lab_bench_stt = lab_sub.add_parser("benchmark-stt", help="Benchmark STT engines (Vosk vs whisper.cpp) over WAV files; never downloads models")
+    lab_bench_stt.add_argument("--wav", action="append", default=[], help="Path to a 16 kHz mono PCM16 WAV file (repeatable)")
+    lab_bench_stt.add_argument("--engines", default="vosk,whisper_cpp", help="Comma-separated engines to compare (default: vosk,whisper_cpp)")
+    lab_bench_stt.add_argument("--reference", default="", help="Expected transcript text for WER computation")
+    lab_bench_stt.add_argument("--record", type=float, default=0.0, help="Record N seconds from mic into --out WAV before benchmarking (explicit operator consent)")
+    lab_bench_stt.add_argument("--out", default="", help="WAV output path for --record (required with --record)")
+    lab_bench_stt.add_argument("--audio-device", default="default", help="ALSA capture device for --record (default: default)")
+    lab_bench_stt.add_argument("--vosk-model", default="", help="Vosk model directory (default from lab config)")
+    lab_bench_stt.add_argument("--whisper-binary", default="whisper-cli", help="whisper.cpp binary name/path")
+    lab_bench_stt.add_argument("--whisper-model", default="", help="whisper.cpp ggml model file path")
+    lab_bench_stt.add_argument("--json", action="store_true", help="Print results as JSON")
 
     # Command: speech
     speech_parser = subparsers.add_parser("speech", help="Manage offline speech assets (Vosk, Whisper, Piper voices)")
@@ -510,29 +535,65 @@ def cmd_demo_vision(args: argparse.Namespace, config_path: str | None) -> int:
     from ailen.vision.opencv_backend import OpenCvVisionBackend
 
     camera_dev = getattr(args, "camera", "/dev/video0")
+    detector = str(getattr(args, "detector", "haar"))
+    model_path = str(getattr(args, "model", ""))
+    score_threshold = float(getattr(args, "score", 0.8))
     debounce_sec = float(getattr(args, "debounce", 2.0))
     duration = float(getattr(args, "duration", 10.0))
 
-    backend = OpenCvVisionBackend(camera_device=camera_dev, fps=5)
-    debouncer = VisionDebouncer(debounce_seconds=debounce_sec)
+    backend = OpenCvVisionBackend(
+        camera_device=camera_dev,
+        fps=5,
+        detector=detector,
+        yunet_model_path=model_path,
+        yunet_score_threshold=score_threshold,
+    )
+    debouncer = VisionDebouncer(
+        debounce_seconds=debounce_sec,
+        presence_confirm_seconds=min(0.8, debounce_sec),
+        absence_confirm_seconds=debounce_sec,
+        dropout_grace_seconds=min(0.6, debounce_sec),
+    )
 
     print("==========================================================")
     print(" AILEN Vision POC — Demo de Presencia y Debounce")
-    print(f" Dispositivo: {camera_dev} | Ventana Debounce: {debounce_sec}s | Duración: {duration}s")
+    print(f" Dispositivo: {camera_dev} | Detector: {detector} | Ventana Debounce: {debounce_sec}s | Duración: {duration}s")
     print("==========================================================")
 
     backend.start()
     health = backend.health()
     print(f"Estado del backend: {health.status.value} ({health.detail})")
+    if health.status.value != "HEALTHY":
+        backend.stop()
+        print("ERROR: Vision backend is not healthy; physical camera test aborted.")
+        return 1
 
     start_t = time.time()
+    samples = 0
+    raw_hits = 0
+    stable_hits = 0
+    stable_transitions = 0
+    last_stable = False
+    gaze_x_values: list[float] = []
+    gaze_y_values: list[float] = []
     try:
         while time.time() - start_t < duration:
             raw = backend.get_latest_presence()
             stable = debouncer.update(raw)
             elapsed = time.time() - start_t
+            samples += 1
+            raw_hits += int(raw.present)
+            stable_hits += int(stable.present)
+            if stable.present != last_stable:
+                stable_transitions += 1
+                last_stable = stable.present
+            if stable.present and stable.primary_x_normalized is not None:
+                gaze_x_values.append(stable.primary_x_normalized)
+            if stable.present and stable.primary_y_normalized is not None:
+                gaze_y_values.append(stable.primary_y_normalized)
+            confidence_text = f" conf={raw.confidence:.3f}" if raw.confidence is not None else ""
             print(
-                f"[{elapsed:4.1f}s] Raw present={raw.present!s:5} (Caras: {raw.faces_count}) "
+                f"[{elapsed:4.1f}s] Raw present={raw.present!s:5} (Caras: {raw.faces_count}){confidence_text} "
                 f"--> Debounced present={stable.present!s:5} "
                 f"| Gaze=({stable.primary_x_normalized or 0.0:+.2f}, {stable.primary_y_normalized or 0.0:+.2f})"
             )
@@ -542,6 +603,19 @@ def cmd_demo_vision(args: argparse.Namespace, config_path: str | None) -> int:
     finally:
         backend.stop()
 
+    raw_rate = (100.0 * raw_hits / samples) if samples else 0.0
+    stable_rate = (100.0 * stable_hits / samples) if samples else 0.0
+    print("----------------------------------------------------------")
+    print(
+        f"Resumen: muestras={samples}, detección_raw={raw_hits}/{samples} ({raw_rate:.1f}%), "
+        f"presencia_estable={stable_hits}/{samples} ({stable_rate:.1f}%), "
+        f"transiciones={stable_transitions}"
+    )
+    if gaze_x_values and gaze_y_values:
+        print(
+            f"Rango gaze: x=[{min(gaze_x_values):+.2f}, {max(gaze_x_values):+.2f}] "
+            f"y=[{min(gaze_y_values):+.2f}, {max(gaze_y_values):+.2f}]"
+        )
     print("Demo vision completada.")
     return 0
 
@@ -1265,6 +1339,195 @@ def cmd_lab_benchmark_ai(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_lab_benchmark_vision(args: argparse.Namespace, config_path: str | None) -> int:
+    """Benchmark the configured face detector on the real camera (CPU-first)."""
+    import time as _time
+
+    from ailen.vision.benchmark import build_report, collect_samples
+    from ailen.vision.opencv_backend import OpenCvVisionBackend
+
+    cfg = load_config(config_path)
+    detector = str(getattr(args, "detector", "") or cfg.vision.detector)
+    model_path = str(getattr(args, "model", "") or cfg.vision.detector_model_path)
+    score = float(getattr(args, "score", 0.0) or 0.0)
+    if score <= 0.0:
+        score = float(cfg.vision.detector_score_threshold)
+    explicit_camera = str(getattr(args, "camera", "") or "").strip()
+    camera_dev: str | int = explicit_camera or cfg.vision.camera_device
+    if not explicit_camera:
+        from ailen.hardware.detector import HardwareDetector
+
+        detected_cameras = [
+            camera.device_path
+            for camera in HardwareDetector().detect().cameras
+            if camera.is_available
+        ]
+        if str(camera_dev) not in detected_cameras and detected_cameras:
+            camera_dev = detected_cameras[0]
+    fps = int(getattr(args, "fps", 5) or 5)
+    max_frames = max(1, int(getattr(args, "frames", 150)))
+    phase = str(getattr(args, "phase", "uncontrolled"))
+    timeout_s = float(getattr(args, "timeout", 120.0))
+
+    if detector == "yunet" and not model_path.strip():
+        print("ERROR: --detector yunet requiere --model o vision.detector_model_path en la config.")
+        return 1
+
+    backend = OpenCvVisionBackend(
+        camera_device=camera_dev,
+        fps=fps,
+        detector=detector,
+        yunet_model_path=model_path,
+        yunet_score_threshold=score,
+    )
+    backend.start()
+    try:
+        health = backend.health()
+        print("==========================================================")
+        print(" AILEN Vision Detector Benchmark (CPU-first, sin GUI)")
+        print(f" Dispositivo: {camera_dev} | Detector: {detector} | FPS: {fps} | Fase: {phase}")
+        print("==========================================================")
+        if health.status.value != "HEALTHY":
+            print(f"ERROR: backend de visión no sano: {health.detail}")
+            return 1
+
+        start_t = _time.monotonic()
+        samples = collect_samples(backend, max_frames=max_frames, timeout_seconds=timeout_s)
+        duration_s = _time.monotonic() - start_t
+    finally:
+        backend.stop()
+
+    report = build_report(
+        detector=detector,
+        camera_device=str(camera_dev),
+        requested_fps=fps,
+        phase=phase,
+        samples=samples,
+        duration_s=duration_s,
+    )
+
+    if getattr(args, "json", False):
+        print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+    else:
+        conf_avg = f"{report.confidence_avg:.3f}" if report.confidence_avg is not None else "-"
+        conf_min = f"{report.confidence_min:.3f}" if report.confidence_min is not None else "-"
+        gaze_x = f"[{report.gaze_x_range[0]:+.2f}, {report.gaze_x_range[1]:+.2f}]" if report.gaze_x_range else "-"
+        gaze_y = f"[{report.gaze_y_range[0]:+.2f}, {report.gaze_y_range[1]:+.2f}]" if report.gaze_y_range else "-"
+        print(f"Frames muestreados : {report.frames} ({duration_s:.1f}s)")
+        print(f"Detecciones        : {report.detections}/{report.frames} ({report.detection_rate:.1f}%)")
+        print(f"Latencia avg/p50/p95/max ms: {report.avg_latency_ms:.1f} / {report.p50_latency_ms:.1f} / "
+              f"{report.p95_latency_ms:.1f} / {report.max_latency_ms:.1f}")
+        print(f"Confianza avg/min  : {conf_avg} / {conf_min}")
+        print(f"Gaze x/y           : {gaze_x} / {gaze_y}")
+
+    out_dir = Path(str(getattr(args, "output", "runtime/lab/vision_benchmarks")))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"vision_benchmark_{int(_time.time())}.json"
+    out_file.write_text(json.dumps(report.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"Reporte guardado en: {out_file}")
+    return 0
+
+
+def cmd_lab_benchmark_stt(args: argparse.Namespace, config_path: str | None) -> int:
+    """Benchmark STT engines over identical WAV inputs; never downloads models."""
+    from ailen.audio.stt_benchmark import SttBenchmarkRunner
+
+    cfg = load_config(config_path)
+    wav_paths = [str(p) for p in getattr(args, "wav", []) if str(p).strip()]
+    record_seconds = float(getattr(args, "record", 0.0) or 0.0)
+    out_path = str(getattr(args, "out", "") or "")
+
+    if record_seconds > 0:
+        if not out_path:
+            print("ERROR: --record requiere --out <ruta.wav> para guardar el audio autorizado.")
+            return 1
+        recorded = _record_wav_authorized(
+            device=str(getattr(args, "audio_device", "default")),
+            seconds=record_seconds,
+            out_path=out_path,
+        )
+        if recorded != 0:
+            return recorded
+        wav_paths.append(out_path)
+
+    if not wav_paths:
+        print("ERROR: se requiere al menos un archivo WAV (--wav ruta.wav) o --record N.")
+        return 1
+
+    engines_list = [e.strip() for e in str(getattr(args, "engines", "vosk,whisper_cpp")).split(",") if e.strip()]
+    reference = str(getattr(args, "reference", "") or "").strip() or None
+
+    vosk_model = str(getattr(args, "vosk_model", "") or cfg.speech.stt_model_path)
+    runner = SttBenchmarkRunner(
+        vosk_model_path=vosk_model,
+        whisper_binary=str(getattr(args, "whisper_binary", "whisper-cli")),
+        whisper_model_path=str(getattr(args, "whisper_model", "")),
+        language=cfg.speech.stt_language,
+    )
+    try:
+        results = runner.run(wav_paths, engines=engines_list, reference=reference)
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps([r.to_dict() for r in results], indent=2, ensure_ascii=False))
+    else:
+        print("==================================================================")
+        print("AILEN — STT BENCHMARK")
+        print("==================================================================")
+        for r in results:
+            wer_text = "-" if r.wer is None else f"{r.wer:.3f}"
+            lat_text = "-" if r.latency_ms is None else f"{r.latency_ms:.0f}"
+            print(f"{r.engine:<12} {r.status:<14} lat={lat_text:>6}ms words={r.word_count:<3} WER={wer_text:<7} {Path(r.wav_path).name}")
+            if r.transcript:
+                print(f"             transcript: {r.transcript[:120]}")
+            if r.detail and r.status != "OK":
+                print(f"             detalle: {r.detail[:120]}")
+        print("==================================================================")
+    return 0
+
+
+def _record_wav_authorized(device: str, seconds: float, out_path: str) -> int:
+    """Record an explicit operator-authorized WAV via the ALSA input backend."""
+    import time as _time
+    import wave as _wave
+
+    from ailen.audio.alsa_backend import AlsaAudioInputBackend
+
+    backend = AlsaAudioInputBackend(device=device, sample_rate=16000, channels=1)
+    frames: list[bytes] = []
+    try:
+        backend.start()
+        health = backend.health()
+        if health.status.value != "HEALTHY":
+            print(f"ERROR: captura de audio no disponible: {health.detail}")
+            return 1
+
+        start_t = _time.monotonic()
+        while _time.monotonic() - start_t < seconds:
+            frame = backend.read_frame(timeout_seconds=0.2)
+            if frame:
+                frames.append(frame)
+    finally:
+        backend.stop()
+
+    pcm = b"".join(frames)
+    if not pcm:
+        print("ERROR: no se capturó audio.")
+        return 1
+
+    destination = Path(out_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with _wave.open(str(destination), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(pcm)
+    print(f"Audio grabado ({len(pcm) / 32000.0:.1f}s) en: {destination}")
+    return 0
+
+
 def cmd_lab_preflight(args: argparse.Namespace, config_path: str | None) -> int:
     """Run comprehensive physical lab preflight check."""
     from ailen.runtime.preflight import LabPreflightChecker
@@ -1427,7 +1690,11 @@ def cmd_lab(args: argparse.Namespace, config_path: str | None) -> int:
         return cmd_lab_benchmark(args)
     elif action == "benchmark-ai":
         return cmd_lab_benchmark_ai(args)
-    print("Uso: ailen lab [inspect|start|doctor|preflight|prepare-ai|prepare-speech|config|audio-devices|cameras|benchmark|benchmark-ai]")
+    elif action == "benchmark-vision":
+        return cmd_lab_benchmark_vision(args, config_path)
+    elif action == "benchmark-stt":
+        return cmd_lab_benchmark_stt(args, config_path)
+    print("Uso: ailen lab [inspect|start|doctor|preflight|prepare-ai|prepare-speech|config|audio-devices|cameras|benchmark|benchmark-ai|benchmark-vision|benchmark-stt]")
     return 1
 
 

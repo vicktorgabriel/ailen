@@ -88,7 +88,7 @@ sqlite_path = "{db_path}"
                 code_mig = main(["-c", str(cfg_path), "db", "migrate"])
                 self.assertEqual(code_mig, 0)
                 out_mig = sys.stdout.getvalue()
-                self.assertIn("Applied 2 migration(s)", out_mig)
+                self.assertIn("Applied 3 migration(s)", out_mig)
 
                 # Status
                 code_stat = main(["-c", str(cfg_path), "db", "status"])

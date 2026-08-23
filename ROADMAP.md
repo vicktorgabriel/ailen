@@ -74,30 +74,34 @@
 - [x] descarga segura con consentimiento explícito en Lab Mode, HTTPS + tamaño exacto + SHA-256 + rename atómico.
 - [x] ModelStore local por plataforma, separado de Git y con protección de path traversal.
 - [x] `LabComponentFactory` sin sustituciones fake silenciosas en modo real (`--simulate` para offline/UI tests).
-- [x] cableado conversacional de software en `LabRunner`: Face/Vision/Audio/STT/Router/LLM/TTS sin fakes silenciosos; falta validación física.
+- [x] cableado conversacional de software en `LabRunner`: Vision/Audio/STT/Router/LLM/TTS validados físicamente sin fakes; Face GUI Tkinter ya abre en Lab; queda repetir interacción completa tras mejorar STT/cámara.
 - [x] inventario de modelos en runtime `RuntimeModelInventory` y runtime gestionado `ManagedLlamaRuntime`.
 - [x] telemetría y métricas de sesión `LabSessionMetrics` exportadas a `runtime/lab/session_<timestamp>.json` con medición de Time To First Audible Response (TTFAR).
 - [x] asistente `ailen lab prepare-ai` y diagnóstico con remediaciones `ailen lab doctor [--json]`.
 - [x] R3B.3 catálogo declarativo de modelos de voz (`SpeechAssetCatalog`), store seguro y preflight físico exhaustivo (`LabPreflightChecker`).
 - [x] R3B.4 inferencia adaptativa (`InferenceProfile`), política de residencia de modelos (`ModelResidencyPolicy`), prohibición de model hopping y arnés `ailen lab benchmark-ai`.
-- [ ] validar primera sesión física interactiva en Linux Mint con cámara/micrófono/parlantes y assets STT/TTS reales.
+- [x] R3C boundary de herramientas controladas integrado; música queda sólo como contrato/routing hasta configurar backend físico real.
+- [x] arnés `ailen lab benchmark-vision` (latencia CPU por frame del detector real, detecciones, confianza y gaze por fase, reporte JSON) — YuNet ~49 ms avg / p95 ~91 ms a 5 FPS en Ryzen 5500.
+- [x] arnés `ailen lab benchmark-stt` (Vosk vs whisper.cpp sobre mismos WAVs, WER con normalización española, `NOT_INSTALLED` sin descargas).
+- [ ] decidir reemplazo/migración de STT según WER medido en utterances reales de G600 (whisper.cpp requiere instalación manual de binario + ggml).
+- [x] abrir Face GUI + cámara/audio/LLM/TTS en Linux Mint; queda mejorar STT y repetir prueba de experiencia completa con hardware de cámara mejor.
 - [ ] validar después el segundo laboratorio en Windows 11.
 - [ ] registrar benchmarks reales de los equipos laboratorio sin confundirlos con hardware objetivo comercial.
 
 ## R4 — Herramientas y comportamiento útil — OBJETIVO 0.3/0.4.x
 
-- [ ] Música local/stream mediante herramienta controlada.
-- [ ] Volumen/play/pause sin LLM.
-- [ ] Notas.
-- [ ] Recordatorios simples.
-- [ ] Información del negocio/FAQ.
-- [ ] Búsqueda web.
-- [ ] Fetch/extracción web controlada.
-- [ ] Hora/clima mediante backend apropiado.
+- [ ] Reproducción musical física real mediante `MusicService`; `MusicTool`/routing ya existen pero default es `UNAVAILABLE`.
+- [x] Volumen/play/pause/timer/hora/status sin LLM (`RULE_ONLY_TOOL` fast-path).
+- [x] Notas con persistencia SQLite parametrizada (`NotesTool`).
+- [ ] Recordatorios persistentes basados en cron/alarma del sistema.
+- [ ] Información del negocio/FAQ estructurada.
+- [x] Búsqueda web desacoplada de proveedor (`WebSearchProvider`, `WebSearchTool`).
+- [x] Fetch/extracción web controlada con defensas anti-SSRF y allowlist (`WebFetchPolicy`, `WebFetchTool`).
+- [x] Hora mediante backend local determinista (`ClockTool`).
 - [ ] Saludo automático con cooldown/debounce.
 - [ ] Comportamiento social configurable.
 - [ ] Derivación segura cuando no conoce una respuesta.
-- [ ] Tool permission model.
+- [x] Tool permission model y barrera de SocialMode/PrivacyLevel (`ToolExecutor`).
 
 ## R5 — Panel web responsive — OBJETIVO 0.4.x
 

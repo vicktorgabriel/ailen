@@ -43,6 +43,19 @@ class TestState(unittest.TestCase):
         self.assertFalse(sm.transition_to(AssistantState.SPEAKING, reason="invalid leap"))
         self.assertEqual(sm.current_state, AssistantState.BOOTING)
 
+    def test_processing_to_attention_allowed_after_conversation(self):
+        sm = StateManager(AssistantState.ATTENTION)
+        self.assertTrue(sm.transition_to(AssistantState.PROCESSING, reason="ai_processing"))
+        self.assertTrue(sm.transition_to(AssistantState.ATTENTION, reason="conversation_complete"))
+        self.assertEqual(sm.current_state, AssistantState.ATTENTION)
+
+    def test_processing_to_listening_race_is_rejected(self):
+        sm = StateManager(AssistantState.LISTENING)
+        self.assertTrue(sm.transition_to(AssistantState.PROCESSING, reason="ai_processing"))
+        # A new transcript arriving while still PROCESSING must never flip to LISTENING.
+        self.assertFalse(sm.transition_to(AssistantState.LISTENING, reason="race"))
+        self.assertEqual(sm.current_state, AssistantState.PROCESSING)
+
     def test_listener_callback(self):
         sm = StateManager(AssistantState.BOOTING)
         changes = []

@@ -10,6 +10,7 @@ from ailen.domain.models import (
     ConversationSession,
     MemoryItem,
     Message,
+    NoteItem,
     SystemEventRecord,
     ToolEvent,
     utc_now_iso,
@@ -102,10 +103,14 @@ class MemoryRepository:
             cursor.execute(
                 """
                 SELECT message_id, session_id, role, content, mode, created_at, token_count
-                FROM messages
-                WHERE session_id = ?
-                ORDER BY created_at ASC
-                LIMIT ?;
+                FROM (
+                    SELECT message_id, session_id, role, content, mode, created_at, token_count, rowid AS row_id
+                    FROM messages
+                    WHERE session_id = ?
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT ?
+                ) recent
+                ORDER BY created_at ASC, row_id ASC;
                 """,
                 (session_id, limit),
             )
@@ -397,3 +402,77 @@ class MemoryRepository:
             if row:
                 return int(row[0]), int(row[1]), float(row[2])
             return 0, 0, 0.0
+
+    # -------------------------------------------------------------------------
+    # Notes Persistence
+    # -------------------------------------------------------------------------
+
+    def create_note(self, content: str) -> NoteItem:
+        """Create and store a new user note."""
+        note_id = f"note-{uuid.uuid4().hex[:12]}"
+        now = utc_now_iso()
+        with self.db_manager.connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO notes (note_id, content, created_at, updated_at)
+                VALUES (?, ?, ?, ?);
+                """,
+                (note_id, content.strip(), now, now),
+            )
+        return NoteItem(
+            note_id=note_id,
+            content=content.strip(),
+            created_at=now,
+            updated_at=now,
+        )
+
+    def list_notes(self, limit: int = 50) -> list[NoteItem]:
+        """Fetch all stored notes sorted from newest to oldest."""
+        with self.db_manager.connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT note_id, content, created_at, updated_at
+                FROM notes
+                ORDER BY created_at DESC
+                LIMIT ?;
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+            return [
+                NoteItem(
+                    note_id=r["note_id"],
+                    content=r["content"],
+                    created_at=r["created_at"],
+                    updated_at=r["updated_at"],
+                )
+                for r in rows
+            ]
+
+    def search_notes(self, query: str, limit: int = 50) -> list[NoteItem]:
+        """Search notes matching a substring query."""
+        with self.db_manager.connection() as conn:
+            cursor = conn.cursor()
+            pattern = f"%{query}%"
+            cursor.execute(
+                """
+                SELECT note_id, content, created_at, updated_at
+                FROM notes
+                WHERE content LIKE ?
+                ORDER BY created_at DESC
+                LIMIT ?;
+                """,
+                (pattern, limit),
+            )
+            rows = cursor.fetchall()
+            return [
+                NoteItem(
+                    note_id=r["note_id"],
+                    content=r["content"],
+                    created_at=r["created_at"],
+                    updated_at=r["updated_at"],
+                )
+                for r in rows
+            ]

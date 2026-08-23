@@ -46,6 +46,18 @@ from ailen.runtime.factory import ComponentStatus, LabComponentFactory
 from ailen.runtime.managed import ManagedLlamaRuntime
 from ailen.runtime.manager import LocalRuntimeManager
 from ailen.runtime.metrics import LabSessionMetrics
+from ailen.tools.builtin import (
+    ClockTool,
+    MusicTool,
+    NotesTool,
+    SystemStatusTool,
+    TimerTool,
+    VolumeTool,
+    WebFetchTool,
+    WebSearchTool,
+)
+from ailen.tools.executor import ToolExecutor
+from ailen.tools.registry import ToolRegistry
 from ailen.vision.contracts import VisionBackend
 from ailen.vision.debouncer import VisionDebouncer
 
@@ -96,6 +108,7 @@ class LabRunner:
         self.state_manager = StateManager(initial_state=AssistantState.IDLE)
         self.db_mgr: SQLiteManager | None = None
         self.memory_repo: MemoryRepository | None = None
+        self._conversation_session_id: str | None = None
 
         # Hardware & Model Planning
         self.hardware_report: HardwareCapabilityReport | None = None
@@ -108,17 +121,24 @@ class LabRunner:
         # Components
         self.face_controller: FaceController = NullFaceController()
         self.vision_backend: VisionBackend | None = None
-        self.vision_debouncer = VisionDebouncer(debounce_seconds=config.vision.presence_debounce_seconds)
+        self.vision_debouncer = VisionDebouncer(
+            debounce_seconds=config.vision.presence_debounce_seconds,
+            presence_confirm_seconds=min(0.8, config.vision.presence_debounce_seconds),
+            absence_confirm_seconds=config.vision.presence_debounce_seconds,
+            dropout_grace_seconds=min(0.6, config.vision.presence_debounce_seconds),
+        )
         self.audio_in: AudioInputBackend | None = None
         self.audio_out: AudioOutputBackend | None = None
         self.stt_backend: SttBackend | None = None
         self.tts_backend: TtsBackend | None = None
         self.ai_backends: dict[str, AiBackend] = {}
 
-        # Coordinators
+        # Coordinators & Tools
         self.social_engine: SocialEngine | None = None
         self.interaction_coordinator: InteractionCoordinator | None = None
         self.audio_coordinator: AudioInteractionCoordinator | None = None
+        self.tool_registry: ToolRegistry | None = None
+        self.tool_executor: ToolExecutor | None = None
         self.conversation_coordinator: ConversationCoordinator | None = None
         self.managed_runtime = managed_runtime
 
@@ -249,6 +269,11 @@ class LabRunner:
             self.db_mgr = SQLiteManager(str(db_path))
             MigrationRunner(self.db_mgr).run_migrations()
             self.memory_repo = MemoryRepository(self.db_mgr)
+            conversation_session = self.memory_repo.create_session(
+                mode=self.config.social.default_mode,
+                source_node_id=self.config.node.node_id,
+            )
+            self._conversation_session_id = conversation_session.session_id
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not initialize SQLite memory: %s", exc)
 
@@ -281,7 +306,24 @@ class LabRunner:
                 auto_reset_after_stt=not bool(self.ai_backends),
             )
 
-        # 10. Wire Conversation Coordinator. Cloud/LAN policies are the same
+        # 10. Wire Tool Registry & Controlled Executor
+        self.tool_registry = ToolRegistry([
+            ClockTool(),
+            TimerTool(),
+            VolumeTool(),
+            MusicTool(),
+            NotesTool(repository=self.memory_repo),
+            SystemStatusTool(),
+            WebSearchTool(),
+            WebFetchTool(),
+        ])
+        self.tool_executor = ToolExecutor(
+            registry=self.tool_registry,
+            event_bus=self.event_bus,
+            repository=self.memory_repo,
+        )
+
+        # 11. Wire Conversation Coordinator. Cloud/LAN policies are the same
         # audited policies used by normal Core, including budget enforcement.
         if self.ai_backends:
             context_builder = AiContextBuilder(
@@ -306,18 +348,22 @@ class LabRunner:
                 router=router,
                 orchestrator=orchestrator,
                 audio_coordinator=self.audio_coordinator,
+                tool_executor=self.tool_executor,
                 profile=self.detected_profile,
                 mode=self.config.social.default_mode,
                 privacy_level=PrivacyLevel.PRIVATE,
                 identity_name=self.config.identity.display_name,
                 tts_voice_id=self.config.speech.tts_voice,
                 internet_available="cloud" in self.ai_backends,
+                tool_network_allowed=self.config.network.outbound_web_enabled,
                 cloud_allowed=self.config.ai.cloud.enabled and self.config.ai.allow_cloud,
                 lan_brain_trusted=self.config.ai.lan.trusted,
                 budget_policy=budget_policy,
+                runtime_context_provider=self._runtime_context_snapshot,
+                repository=self.memory_repo,
             )
 
-        # 11. Subscribe to lightweight events for single-flight conversation and
+        # 12. Subscribe to lightweight events for single-flight conversation and
         # measured lab telemetry. No PCM or camera frames enter the EventBus.
         self.event_bus.subscribe(EventType.TRANSCRIPT_READY, self._on_transcript_event)
         self.event_bus.subscribe(EventType.VOICE_ENDED, self._on_voice_ended_event)
@@ -327,6 +373,34 @@ class LabRunner:
         self.event_bus.subscribe(EventType.PRESENCE_LOST, self._on_presence_transition_event)
 
         return self.component_statuses
+
+
+    def _runtime_context_snapshot(self) -> dict[str, Any]:
+        """Return bounded physical state for trusted/local AI context."""
+        camera_active = False
+        if self.vision_backend is not None:
+            try:
+                camera_active = self.vision_backend.health().status == ServiceStatus.HEALTHY
+            except Exception:  # noqa: BLE001
+                camera_active = False
+
+        stable = self.vision_debouncer.latest_stable
+        face_detection_verified = bool(
+            camera_active
+            and self.vision_backend is not None
+            and getattr(self.vision_backend, "provides_face_confidence", False)
+        )
+        return {
+            "camera_active": camera_active,
+            "presence_detected": bool(camera_active and stable.present),
+            "faces_count": stable.faces_count if camera_active and stable.present else 0,
+            "face_detection_verified": face_detection_verified,
+            "visual_capability": (
+                "face_detection_with_confidence"
+                if face_detection_verified
+                else "experimental_presence_only"
+            ),
+        }
 
     def _on_voice_ended_event(self, event: Any) -> None:
         """Mark end-of-user-speech for measured TTFAR on the next audible response."""
@@ -435,7 +509,10 @@ class LabRunner:
             self.face_controller.set_state(AssistantState.PROCESSING)
 
             print(f"[router] Routing prompt for '{self.config.identity.display_name}'...")
-            resp, _plan = self.conversation_coordinator.handle_user_input(text, session_id=self._session_id)
+            resp, _plan = self.conversation_coordinator.handle_user_input(
+                text,
+                session_id=self._conversation_session_id,
+            )
 
             in_tok = resp.usage.input_tokens if resp.usage else None
             out_tok = resp.usage.output_tokens if resp.usage else None
@@ -645,6 +722,14 @@ class LabRunner:
                     self.face_controller.close()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Error closing face controller: %s", exc)
+
+        # Close persisted conversation session after all turn-producing components stop.
+        if self.memory_repo and self._conversation_session_id:
+            try:
+                self.memory_repo.end_session(self._conversation_session_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not close conversation session: %s", exc)
+            self._conversation_session_id = None
 
         # Stop AILEN-owned Managed Runtime (never touch external runtimes)
         if self.managed_runtime and self.managed_runtime.owned_by_ailen:

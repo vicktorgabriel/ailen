@@ -112,13 +112,76 @@ class LabPreflightChecker:
             hw_rep = detector.detect()
             has_camera = len(hw_rep.cameras) > 0
 
-            if not has_cv2:
+            vision_api_ready = False
+            vision_api_detail = "opencv-python not installed in .venv"
+            if has_cv2:
+                try:
+                    import cv2  # type: ignore[import-not-found]
+
+                    selected_detector = self.config.vision.detector
+                    if selected_detector == "yunet":
+                        model_path = Path(self.config.vision.detector_model_path).expanduser()
+                        has_api = hasattr(cv2, "FaceDetectorYN")
+                        has_model = model_path.is_file()
+                        score = float(self.config.vision.detector_score_threshold)
+                        score_valid = 0.0 < score <= 1.0
+                        # A real PASS requires actually constructing the detector
+                        # (validates ONNX integrity), not just the file existing.
+                        loaded = False
+                        if has_api and has_model and score_valid:
+                            probe = cv2.FaceDetectorYN.create(
+                                str(model_path),
+                                "",
+                                (320, 320),
+                                score,
+                                0.3,
+                                5000,
+                            )
+                            loaded = probe is not None
+                        vision_api_ready = loaded
+                        if vision_api_ready:
+                            vision_api_detail = (
+                                f"OpenCV {getattr(cv2, '__version__', 'unknown')} YuNet ready "
+                                f"with model '{model_path}' (score={score})"
+                            )
+                        else:
+                            vision_api_detail = (
+                                f"OpenCV {getattr(cv2, '__version__', 'unknown')} YuNet unavailable "
+                                f"(FaceDetectorYN={has_api}, model={has_model}, score_valid={score_valid}, loaded={loaded})"
+                            )
+                    else:
+                        cascade_dir = getattr(getattr(cv2, "data", None), "haarcascades", "")
+                        cascade_path = (
+                            Path(cascade_dir) / "haarcascade_frontalface_default.xml"
+                            if cascade_dir else None
+                        )
+                        has_classifier = hasattr(cv2, "CascadeClassifier")
+                        has_cascade_asset = bool(cascade_path and cascade_path.is_file())
+                        loadable = False
+                        if has_classifier and has_cascade_asset:
+                            cascade_obj = cv2.CascadeClassifier(str(cascade_path))
+                            loadable = not cascade_obj.empty()
+                        vision_api_ready = loadable
+                        if vision_api_ready:
+                            vision_api_detail = (
+                                f"OpenCV {getattr(cv2, '__version__', 'unknown')} Haar ready "
+                                "(experimental detector)"
+                            )
+                        else:
+                            vision_api_detail = (
+                                f"OpenCV {getattr(cv2, '__version__', 'unknown')} lacks required Haar support "
+                                f"(CascadeClassifier={has_classifier}, cascade_asset={has_cascade_asset}, loadable={loadable})"
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    vision_api_detail = f"OpenCV vision readiness failed: {exc}"
+
+            if not has_cv2 or not vision_api_ready:
                 checks.append(PreflightCheckItem(
                     name="Vision Library",
                     is_required=True,
                     status="FAIL",
-                    detail="opencv-python not installed in .venv",
-                    remediation="Run: ./.venv/bin/pip install -e '.[vision]'",
+                    detail=vision_api_detail,
+                    remediation="Install the configured detector/model or run with --no-camera",
                 ))
             elif not has_camera:
                 checks.append(PreflightCheckItem(
@@ -133,7 +196,7 @@ class LabPreflightChecker:
                     name="Vision & Camera",
                     is_required=True,
                     status="PASS",
-                    detail=f"OpenCV loaded, {len(hw_rep.cameras)} camera(s) detected",
+                    detail=f"{vision_api_detail}; {len(hw_rep.cameras)} camera(s) detected",
                 ))
 
         # 3. Audio Devices (Input & Output)

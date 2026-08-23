@@ -52,6 +52,34 @@ class TestMemoryRepository(unittest.TestCase):
 
         self.repo.end_session(session.session_id)
 
+    def test_session_message_limit_returns_most_recent_in_chronological_order(self):
+        session = self.repo.create_session(mode=SocialMode.WORKSHOP)
+        for idx in range(8):
+            self.repo.add_message(
+                session_id=session.session_id,
+                role="user" if idx % 2 == 0 else "assistant",
+                content=f"m{idx}",
+                mode=SocialMode.WORKSHOP,
+            )
+
+        messages = self.repo.get_session_messages(session.session_id, limit=3)
+        self.assertEqual([m.content for m in messages], ["m5", "m6", "m7"])
+
+    def test_session_message_limit_breaks_timestamp_ties_by_insertion_order(self):
+        session = self.repo.create_session(mode=SocialMode.WORKSHOP)
+        same_ts = "2026-08-23T12:00:00.000000+00:00"
+        with self.repo.db_manager.connection() as conn:
+            cursor = conn.cursor()
+            for idx in range(8):
+                cursor.execute(
+                    "INSERT INTO messages (message_id, session_id, role, content, mode, created_at, token_count)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?);",
+                    (f"msg-tie-{idx}", session.session_id, "user", f"m{idx}", "WORKSHOP", same_ts, None),
+                )
+
+        messages = self.repo.get_session_messages(session.session_id, limit=3)
+        self.assertEqual([m.content for m in messages], ["m5", "m6", "m7"])
+
     def test_memories_search_and_privacy_scope(self):
         self.repo.add_memory(
             content="Victor prefiere mate amargo mientras trabaja.",

@@ -69,6 +69,7 @@ def test_coordinator_full_presence_lifecycle() -> None:
     assert decision2.action == SocialAction.LOOK_AT
     assert decision2.reason_code in ("ALREADY_GREETED_PRESENCE", "COOLDOWN_ACTIVE")
     assert state_mgr.current_state == AssistantState.ATTENTION
+    assert [e.event_type for e in event_bus.history].count(EventType.PRESENCE_DETECTED) == 1
 
     # 7. Person leaves
     obs_leave = PresenceObservation(present=False, faces_count=0)
