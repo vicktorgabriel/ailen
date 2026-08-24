@@ -2,9 +2,11 @@
 
 import importlib.util
 import logging
+import os
 import shutil
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 from ailen.ai.cloud_backend import CloudAiBackend
 from ailen.ai.contracts import AiBackend
@@ -158,13 +160,10 @@ class LabComponentFactory:
         no_camera: bool = False,
         simulate: bool = False,
     ) -> tuple[VisionBackend | None, ComponentStatus]:
-        """Build camera presence vision backend."""
+        """Build local V4L2 or authenticated RTSP presence backend."""
         if no_camera or not self.config.vision.enabled:
             return None, ComponentStatus(
-                name="Vision",
-                backend="None",
-                state="DISABLED",
-                detail="Disabled by flag/config",
+                name="Vision", backend="None", state="DISABLED", detail="Disabled by flag/config"
             )
 
         if simulate:
@@ -186,30 +185,89 @@ class LabComponentFactory:
                 remediation="pip install -e '.[vision]'",
             )
 
-        cameras_count = len(self.hardware_report.cameras) if self.hardware_report else 0
-        if cameras_count == 0:
+        detected_devices = [
+            camera.device_path
+            for camera in (self.hardware_report.cameras if self.hardware_report else [])
+            if camera.is_available
+        ]
+        configured_device = self.config.vision.camera_device
+
+        network_uri: str | None = None
+        network_label = ""
+        network_problem = ""
+        if self.config.vision.network_camera_enabled:
+            host = self.config.vision.network_camera_host.strip()
+            port = self.config.vision.network_camera_port
+            path = self.config.vision.network_camera_path.strip()
+            if path and not path.startswith("/"):
+                path = "/" + path
+            username = self.config.vision.network_camera_username.strip()
+            password_env = self.config.vision.network_camera_password_env.strip()
+            password = os.environ.get(password_env, "") if password_env else ""
+            network_label = f"rtsp://{host}:{port}{path}" if host else "RTSP camera"
+            if not host:
+                network_problem = "Network camera host is not configured"
+            elif username and not password:
+                network_problem = f"Network camera credential missing from environment variable '{password_env}'"
+            else:
+                auth = ""
+                if username:
+                    auth = f"{quote(username, safe='')}:{quote(password, safe='')}@"
+                network_uri = f"rtsp://{auth}{host}:{port}{path}"
+
+        selected_device: str | int | None = None
+        selected_label = ""
+        selection_note = ""
+        if self.config.vision.network_camera_preferred:
+            if network_uri:
+                selected_device = network_uri
+                selected_label = network_label
+                selection_note = "network camera preferred"
+            else:
+                return None, ComponentStatus(
+                    name="Vision",
+                    backend="OpenCV/RTSP",
+                    state="UNAVAILABLE",
+                    detail=network_problem or "Preferred network camera is unavailable",
+                    remediation=(
+                        f"Set {self.config.vision.network_camera_password_env} and verify RTSP camera availability"
+                    ),
+                )
+        elif configured_device in detected_devices:
+            selected_device = configured_device
+            selected_label = configured_device
+        elif detected_devices:
+            selected_device = detected_devices[0]
+            selected_label = detected_devices[0]
+            selection_note = f"configured '{configured_device}' not detected; auto-selected physical camera"
+        elif network_uri:
+            selected_device = network_uri
+            selected_label = network_label
+            selection_note = "no local V4L2 camera detected; selected network camera"
+
+        if selected_device is None:
+            if self.config.vision.network_camera_enabled and network_problem:
+                return None, ComponentStatus(
+                    name="Vision",
+                    backend="OpenCV/RTSP",
+                    state="UNAVAILABLE",
+                    detail=network_problem,
+                    remediation=(
+                        f"Set {self.config.vision.network_camera_password_env} in the AILEN runtime environment"
+                        if self.config.vision.network_camera_username.strip()
+                        else "Complete network camera configuration"
+                    ),
+                )
             return None, ComponentStatus(
                 name="Vision",
                 backend="OpenCV",
                 state="DISABLED",
-                detail="No physical cameras detected on host",
-                remediation="Connect a USB camera or run with --no-camera",
+                detail="No local or configured network camera available",
+                remediation="Connect a camera, configure RTSP, or run with --no-camera",
             )
 
         try:
             from ailen.vision.opencv_backend import OpenCvVisionBackend
-
-            configured_device = self.config.vision.camera_device
-            detected_devices = [
-                camera.device_path
-                for camera in (self.hardware_report.cameras if self.hardware_report else [])
-                if camera.is_available
-            ]
-            selected_device = configured_device
-            auto_selected = False
-            if configured_device not in detected_devices and detected_devices:
-                selected_device = detected_devices[0]
-                auto_selected = True
 
             backend = OpenCvVisionBackend(
                 camera_device=selected_device,
@@ -219,16 +277,13 @@ class LabComponentFactory:
                 yunet_score_threshold=self.config.vision.detector_score_threshold,
             )
             detail = (
-                f"Camera device '{selected_device}' selected @ {self.config.vision.fps} FPS "
+                f"Camera source '{selected_label}' selected @ {self.config.vision.fps} FPS "
                 f"with detector={self.config.vision.detector}"
             )
-            if auto_selected:
-                detail += f" (configured '{configured_device}' not detected; auto-selected physical camera)"
+            if selection_note:
+                detail += f" ({selection_note})"
             return backend, ComponentStatus(
-                name="Vision",
-                backend="OpenCV",
-                state="READY",
-                detail=detail,
+                name="Vision", backend="OpenCV", state="READY", detail=detail
             )
         except Exception as exc:  # noqa: BLE001
             return None, ComponentStatus(

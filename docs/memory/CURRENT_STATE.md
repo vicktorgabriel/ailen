@@ -188,3 +188,25 @@ El repositorio Git local está inicializado en `main` y conectado a `git@github.
 - ClockTool usa hora local del sistema, no UTC.
 - Baseline de cierre: 487 tests; Ruff/mypy/diff-check verdes.
 - Siguiente validación física: repetir la conversación de voz y medir cuántos turnos terminan en reprompt, tool determinista, semantic-tool y chat real. STT Vosk sigue siendo una limitación independiente y debe compararse con Whisper.cpp usando WER real G600.
+
+## Comprensión natural + cámara NC250 — 2026-08-23
+
+- Auditoría del historial físico confirmó que Notes sí persistía `comprar estaño mañana`; los fallos estaban en resolución de intención/contexto y en respuestas inventadas por el LLM general.
+- IntentResolver acepta variantes naturales/ASR de hora y notas; follow-ups recientes de notas se resuelven localmente antes del LLM.
+- Fragmentos ambiguos de dominio piden aclaración específica en vez de ejecutar o inventar continuidad.
+- SemanticToolIntentResolver reduce la allowlist según dominio y usa timeout configurable.
+- Lab separa `qwen2.5-coder:3b` como `intent_model` opcional del conversacional `qwen3.5:9b`; nunca descarga el modelo y vuelve al backend principal si no está instalado.
+- Validación actual: 491 tests; Ruff limpio; mypy limpio en 129 archivos; diff-check limpio.
+- TP-Link NC250 descubierta por Bonjour como `NC250-162889.local` / `192.168.1.157`. Panel HTTP local en 80; RTSP autenticado en 554 `/h264_hd.sdp` verificado con H.264 1280×720 + audio mono 8 kHz. Credenciales no se persisten en configuración/docs.
+
+### Ajustes posteriores de inteligencia y NC250 — 2026-08-24
+
+- Se corrigió un falso positivo del parser semántico: los hints ahora se comparan como términos léxicos completos, evitando que `dia` coincida dentro de palabras como `inmediato` y dispare herramientas sin intención real.
+- Preguntas de capacidades (`qué podés hacer`, equivalentes) se responden desde el `ToolRegistry` y estado real de Core, sin permitir que el LLM invente funciones no instaladas.
+- El contexto de memoria aclara que historial/memorias entregados por Core sí son memoria disponible, pero instrucciones del sistema, metadatos y sensores no deben narrarse como conversación previa.
+- Se amplió el filtrado de cierres de voz genéricos para reducir repetición mecánica.
+- Reproducción end-to-end de los fallos físicos previos ahora resuelve `hora es`, `ahora es`, creación/listado/búsqueda de notas y follow-ups de compra por tool local en ~9-22 ms.
+- NC250 validada también como fuente de micrófono: RTSP expone audio PCMU mono 8 kHz y ffmpeg lo remuestreó a 16 kHz con señal física no nula. La integración como `AudioInputBackend` de AILEN sigue pendiente; por ahora el audio principal continúa por PipeWire/G600.
+- `runtime/lab/ailen-lab.toml` quedó preparado para preferir la NC250 por RTSP con contraseña obtenida sólo desde `AILEN_CAMERA_PASSWORD`; el preflight y `lab start --headless` quedan READY con `rtsp://192.168.1.157:554/h264_hd.sdp` sin exponer credenciales.
+- La NC250 continúa en `daynightmode=2` (Día). El firmware expone Auto=1, Día=2, Noche=3; la activación física de IR nocturno queda pendiente de pasar manualmente a Auto/Noche y repetir detección YuNet.
+- Validación posterior: 501 tests; Ruff limpio; mypy limpio en 129 archivos; `git diff --check` limpio.

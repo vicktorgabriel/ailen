@@ -26,10 +26,10 @@ class SemanticToolIntentResolver:
 
     _HINT_TERMS = (
         "hora", "fecha", "día", "dia",
-        "volumen", "silencio", "mute",
+        "volumen", "silencio", "mute", "sonido", "audio",
         "nota", "notas", "anota", "anotá", "apunta", "apuntá", "recorda", "recordá",
         "comprar", "mañana", "recordatorio",
-        "temporizador", "timer", "alarma",
+        "temporizador", "timer", "alarma", "cuenta regresiva", "cronómetro", "cronometro",
         "música", "musica", "canción", "cancion", "pausa", "siguiente",
         "sistema", "hardware", "cpu", "ram", "batería", "bateria",
     )
@@ -40,16 +40,18 @@ class SemanticToolIntentResolver:
         registry: ToolRegistry,
         repository: MemoryRepository | None = None,
         min_confidence: float = 0.78,
+        request_timeout_seconds: float = 5.0,
     ) -> None:
         self.backend = backend
         self.registry = registry
         self.repository = repository
         self.min_confidence = min_confidence
+        self.request_timeout_seconds = max(1.0, request_timeout_seconds)
 
     def should_attempt(self, text: str, session_id: str | None = None) -> bool:
         """Avoid a second inference call for ordinary conversational turns."""
         clean = " ".join((text or "").lower().split())
-        if any(term in clean for term in self._HINT_TERMS):
+        if self._has_any_hint(clean, self._HINT_TERMS):
             return True
         # Very short elliptical questions often come from imperfect STT. Only use
         # history as a hint when the recent conversation itself involved a tool domain.
@@ -59,7 +61,7 @@ class SemanticToolIntentResolver:
             except Exception:  # noqa: BLE001
                 recent = []
             recent_text = " ".join(m.content.lower() for m in recent)
-            return any(term in recent_text for term in self._HINT_TERMS)
+            return self._has_any_hint(recent_text, self._HINT_TERMS)
         return False
 
     def resolve(
@@ -81,6 +83,7 @@ class SemanticToolIntentResolver:
             return None
 
         allowed = self._allowed_tools(mode)
+        allowed = self._narrow_tools_for_text(text, allowed)
         if not allowed:
             return None
 
@@ -115,8 +118,8 @@ class SemanticToolIntentResolver:
             ),
             messages=[ChatMessage(role="user", content=prompt)],
             mode=mode,
-            max_output_tokens=64,
-            timeout_seconds=3.0,
+            max_output_tokens=80,
+            timeout_seconds=self.request_timeout_seconds,
             privacy_level=privacy_level,
             metadata={"purpose": "semantic_tool_intent"},
         )
@@ -158,6 +161,44 @@ class SemanticToolIntentResolver:
             raw_text=text,
             source="semantic_local",
             latency_ms=latency_ms,
+        )
+
+
+    @staticmethod
+    def _narrow_tools_for_text(text: str, allowed: dict[str, Any]) -> dict[str, Any]:
+        """Reduce semantic parser prompt to likely tool domains for lower latency.
+
+        This only narrows an already policy-approved allowlist; it never adds a tool.
+        """
+        clean = " ".join((text or "").lower().split())
+        domain_hints: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
+            (("hora", "fecha", "día", "dia"), ("clock",)),
+            (("volumen", "silencio", "mute", "sonido", "audio"), ("volume",)),
+            (("nota", "notas", "anota", "anotá", "anotame", "recorda", "recordá", "guardar", "guardame", "comprar"), ("notes",)),
+            (("temporizador", "timer", "alarma", "cuenta regresiva", "cronómetro", "cronometro"), ("timer",)),
+            (("música", "musica", "canción", "cancion", "pausa", "siguiente"), ("music",)),
+            (("sistema", "hardware", "cpu", "ram", "batería", "bateria"), ("system_status",)),
+        ]
+        selected: set[str] = set()
+        for hints, tools in domain_hints:
+            if SemanticToolIntentResolver._has_any_hint(clean, hints):
+                selected.update(tools)
+        if not selected:
+            return allowed
+        narrowed = {name: tool for name, tool in allowed.items() if name in selected}
+        return narrowed or allowed
+
+    @staticmethod
+    def _has_any_hint(text: str, hints: tuple[str, ...]) -> bool:
+        """Match intent hints as complete lexical terms, never substrings.
+
+        For example, the clock hint ``dia`` must not match ``inmediato``.
+        Multi-word hints still work because boundaries are checked only at the
+        beginning and end of the complete escaped hint.
+        """
+        return any(
+            re.search(rf"(?<!\w){re.escape(hint)}(?!\w)", text) is not None
+            for hint in hints
         )
 
     def _allowed_tools(self, mode: SocialMode) -> dict[str, Any]:

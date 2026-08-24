@@ -61,6 +61,8 @@ class TestConfig(unittest.TestCase):
         cfg.ai.local.enabled = True
         cfg.ai.local.endpoint = "http://127.0.0.1:11434/v1"
         cfg.ai.local.model = "test-local"
+        cfg.ai.local.intent_model = "test-intent"
+        cfg.ai.local.intent_timeout_seconds = 4.5
         cfg.ai.lan.enabled = True
         cfg.ai.lan.endpoint = "http://192.168.1.50:8080/v1"
         cfg.ai.lan.model = "test-lan"
@@ -80,9 +82,31 @@ class TestConfig(unittest.TestCase):
 
         self.assertTrue(loaded.ai.local.enabled)
         self.assertEqual(loaded.ai.local.model, "test-local")
+        self.assertEqual(loaded.ai.local.intent_model, "test-intent")
+        self.assertEqual(loaded.ai.local.intent_timeout_seconds, 4.5)
         self.assertEqual(loaded.ai.lan.endpoint, "http://192.168.1.50:8080/v1")
         self.assertEqual(loaded.ai.cloud.model, "test-cloud")
         self.assertEqual(loaded.ai.cloud.input_cost_per_million, 0.123)
+
+    def test_network_camera_config_round_trip(self):
+        cfg = AILENConfig()
+        cfg.vision.network_camera_enabled = True
+        cfg.vision.network_camera_preferred = True
+        cfg.vision.network_camera_host = "camera.local"
+        cfg.vision.network_camera_port = 554
+        cfg.vision.network_camera_path = "/h264_hd.sdp"
+        cfg.vision.network_camera_username = "admin"
+        cfg.vision.network_camera_password_env = "AILEN_CAMERA_PASSWORD"
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "ailen.toml"
+            save_config(cfg, target)
+            loaded = load_config(target)
+        self.assertTrue(loaded.vision.network_camera_enabled)
+        self.assertTrue(loaded.vision.network_camera_preferred)
+        self.assertEqual(loaded.vision.network_camera_host, "camera.local")
+        self.assertEqual(loaded.vision.network_camera_path, "/h264_hd.sdp")
+        self.assertEqual(loaded.vision.network_camera_password_env, "AILEN_CAMERA_PASSWORD")
+        self.assertEqual(validate_config(loaded), [])
 
     def test_enabled_ai_backend_requires_valid_endpoint_and_model(self):
         cfg = AILENConfig()

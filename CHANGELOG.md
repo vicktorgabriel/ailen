@@ -1,4 +1,10 @@
 # Changelog — AILEN
+- **Natural tool intent + NC250 lab discovery (2026-08-23)**:
+  - Variantes naturales/ASR de reloj y notas; recuperación contextual de notas recientes sin LLM general.
+  - Clarificación fail-safe para fragmentos ambiguos y parser semántico acotado por dominio.
+  - `ai.local.intent_model` opcional; laboratorio usa 3B para intención y 9B para conversación, sin descargas implícitas.
+  - NC250 descubierta vía Bonjour y RTSP H.264 720p + pista de audio verificados; credenciales permanecen fuera de configuración/documentación.
+  - Suite actual: 491 tests; Ruff, mypy (129 archivos) y diff-check verdes.
 
 Todos los cambios relevantes del proyecto se documentarán aquí.
 

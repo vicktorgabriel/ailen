@@ -58,6 +58,15 @@ class VisionConfig:
     """Camera and face/presence detection configuration."""
     enabled: bool = True
     camera_device: str = "/dev/video0"
+    # Optional authenticated RTSP source. Password is resolved at runtime from
+    # network_camera_password_env and is never persisted in TOML.
+    network_camera_enabled: bool = False
+    network_camera_preferred: bool = False
+    network_camera_host: str = ""
+    network_camera_port: int = 554
+    network_camera_path: str = "/h264_hd.sdp"
+    network_camera_username: str = ""
+    network_camera_password_env: str = "AILEN_CAMERA_PASSWORD"
     fps: int = 5
     detector: str = "haar"
     detector_model_path: str = ""
@@ -92,6 +101,10 @@ class AiLocalConfig:
     endpoint: str = "http://127.0.0.1:8080/v1"
     model: str = "local-model"
     timeout_seconds: float = 20.0
+    # Optional small local model dedicated to bounded tool-intent parsing.
+    # Empty means reuse the main local conversational backend.
+    intent_model: str = ""
+    intent_timeout_seconds: float = 5.0
 
 
 @dataclass
@@ -463,6 +476,15 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("speech.max_utterance_seconds must be positive")
     if config.vision.fps < 1:
         errors.append("vision.fps must be >= 1")
+    if config.vision.network_camera_enabled:
+        if not config.vision.network_camera_host.strip():
+            errors.append("vision.network_camera_host is required when network camera is enabled")
+        if not (1 <= config.vision.network_camera_port <= 65535):
+            errors.append("vision.network_camera_port must be between 1 and 65535")
+        if not config.vision.network_camera_path.strip():
+            errors.append("vision.network_camera_path is required when network camera is enabled")
+        if config.vision.network_camera_username.strip() and not config.vision.network_camera_password_env.strip():
+            errors.append("vision.network_camera_password_env is required for authenticated network camera")
     if config.vision.presence_debounce_seconds < 0:
         errors.append("vision.presence_debounce_seconds must be >= 0")
     if not (0.0 <= config.vision.min_confidence <= 1.0):

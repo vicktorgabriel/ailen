@@ -13,6 +13,7 @@ from typing import Any
 from ailen.ai.budget import BudgetPolicy
 from ailen.ai.context import AiContextBuilder
 from ailen.ai.contracts import AiBackend
+from ailen.ai.ollama_backend import OllamaNativeBackend
 from ailen.ai.orchestrator import AiOrchestrator
 from ailen.ai.router import RuleBasedRouter
 from ailen.audio.contracts import (
@@ -41,8 +42,9 @@ from ailen.models.catalog import ModelCatalog, ModelPurpose
 from ailen.models.inference_profile import InferenceRecommendation, recommend_inference_profile
 from ailen.models.planner import ModelPlan, ModelPlanner
 from ailen.models.store import ModelStore
-from ailen.runtime.contracts import ExternalRuntimeDescriptor
+from ailen.runtime.contracts import ExternalRuntimeDescriptor, RuntimeStatus, RuntimeType
 from ailen.runtime.factory import ComponentStatus, LabComponentFactory
+from ailen.runtime.inventory import RuntimeModelInventory
 from ailen.runtime.managed import ManagedLlamaRuntime
 from ailen.runtime.manager import LocalRuntimeManager
 from ailen.runtime.metrics import LabSessionMetrics
@@ -344,10 +346,12 @@ class LabRunner:
                 daily_budget_usd=self.config.ai.cloud.daily_budget_usd,
                 monthly_budget_usd=self.config.ai.cloud.monthly_budget_usd,
             )
+            semantic_intent_backend = self._build_semantic_intent_backend()
             semantic_intent_resolver = SemanticToolIntentResolver(
-                backend=self.ai_backends.get("local"),
+                backend=semantic_intent_backend,
                 registry=self.tool_registry,
                 repository=self.memory_repo,
+                request_timeout_seconds=self.config.ai.local.intent_timeout_seconds,
             )
             self.conversation_coordinator = ConversationCoordinator(
                 context_builder=context_builder,
@@ -381,6 +385,69 @@ class LabRunner:
 
         return self.component_statuses
 
+
+    def _build_semantic_intent_backend(self) -> AiBackend | None:
+        """Resolve an optional lightweight local backend for tool intent parsing.
+
+        No model is downloaded or started here. The configured intent model must
+        already exist in the healthy local Ollama inventory; otherwise the main
+        local conversational backend is reused.
+        """
+        fallback = self.ai_backends.get("local")
+        intent_model = self.config.ai.local.intent_model.strip()
+        if not intent_model:
+            return fallback
+
+        inventory = RuntimeModelInventory()
+        for runtime in self.runtime_descriptors:
+            if (
+                runtime.runtime_type != RuntimeType.OLLAMA
+                or runtime.health is None
+                or runtime.health.status != RuntimeStatus.HEALTHY
+            ):
+                continue
+            resolved = inventory.resolve_model(runtime.endpoint, intent_model, aliases=[])
+            if not resolved:
+                continue
+            logger.info(
+                "Using dedicated local intent model '%s' on Ollama; conversational model remains separate",
+                resolved,
+            )
+            return OllamaNativeBackend(
+                endpoint=runtime.endpoint,
+                model=resolved,
+                timeout_seconds=self.config.ai.local.intent_timeout_seconds,
+                think=False,
+                keep_alive="10m",
+            )
+
+        logger.warning(
+            "Configured intent model '%s' is not available; reusing main local backend",
+            intent_model,
+        )
+        return fallback
+
+    def _prewarm_ai_models(self) -> None:
+        """Load local conversational/intent models before live microphone capture."""
+        if self.simulate or self.no_ai:
+            return
+        candidates: list[Any] = list(self.ai_backends.values())
+        if self.conversation_coordinator and self.conversation_coordinator.semantic_intent_resolver:
+            semantic_backend = self.conversation_coordinator.semantic_intent_resolver.backend
+            if semantic_backend is not None:
+                candidates.append(semantic_backend)
+
+        seen: set[int] = set()
+        for backend in candidates:
+            if id(backend) in seen or not hasattr(backend, "warmup"):
+                continue
+            seen.add(id(backend))
+            model = str(getattr(backend, "model", backend.__class__.__name__))
+            try:
+                warmed = bool(backend.warmup())
+                logger.info("AI prewarm %s for %s", "completed" if warmed else "not available", model)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AI prewarm failed for %s: %s", model, exc)
 
     def _runtime_context_snapshot(self) -> dict[str, Any]:
         """Return bounded physical state for trusted/local AI context."""
@@ -640,7 +707,11 @@ class LabRunner:
                         status.state = "UNAVAILABLE"
                         status.detail = f"Vision startup failed: {exc}"
 
-        # 2. Prewarm optional TTS runtime before microphone capture starts. This
+        # 2. Prewarm local AI models and optional TTS before microphone capture.
+        # This moves cold model-load cost to startup instead of the first spoken turn.
+        self._prewarm_ai_models()
+
+        # 3. Prewarm optional TTS runtime before microphone capture starts. This
         # avoids charging Piper model-load time to the first user response while
         # preserving the blocking CLI fallback if the Python API is unavailable.
         if not self.simulate and self.tts_backend and hasattr(self.tts_backend, "warmup"):
@@ -650,7 +721,7 @@ class LabRunner:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("TTS prewarm failed; retaining normal fallback: %s", exc)
 
-        # 3. Start Audio Coordinator only when the complete speech chain was
+        # 4. Start Audio Coordinator only when the complete speech chain was
         # wired. Missing STT/TTS never silently activates fake defaults.
         if self.audio_coordinator:
             try:

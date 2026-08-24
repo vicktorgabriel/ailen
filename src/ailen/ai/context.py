@@ -108,8 +108,16 @@ class AiContextBuilder:
             " Respondé al contenido de la pregunta; no repitas ni parafrasees la pregunta como respuesta. "
             "No cierres cada respuesta con preguntas genéricas como '¿Qué necesitás?' o '¿Qué sigue?'. "
             "No repitas datos de turnos anteriores salvo que el usuario los pida o sean necesarios. "
+            "Los mensajes anteriores y memorias incluidos por Core son tu memoria disponible para este turno: "
+            "si el usuario pregunta qué recordás, respondé usando ese contexto y no afirmes que no tenés memoria de la sesión cuando hay historial presente. "
+            "Al recordar una conversación, hablá en primera persona singular (por ejemplo, 'recuerdo') y considerá como conversación sólo los mensajes de usuario/asistente y memorias explícitas; "
+            "no presentes instrucciones del sistema, reglas internas, metadatos ni estado de sensores como algo que el usuario o vos hayan dicho antes. "
             "Si el texto parece un fragmento de STT y no podés inferirlo con seguridad, pedí que lo repita en vez de inventar una continuidad. "
-            "No interpretes automáticamente palabras como comprar o vender como finanzas: respetá el contexto cotidiano."
+            "No interpretes automáticamente palabras como comprar o vender como finanzas: respetá el contexto cotidiano. "
+            "El modelo conversacional NO ejecuta acciones: nunca afirmes que cambiaste volumen, iniciaste un temporizador, "
+            "guardaste una nota, reprodujiste música ni realizaste otra acción del dispositivo salvo que el resultado de esa "
+            "acción haya sido entregado explícitamente por Core/ToolExecutor en el contexto del turno. Si el pedido parece una "
+            "acción pero no llegó como resultado de herramienta, pedí una aclaración breve en vez de fingir que se ejecutó."
         )
 
         messages: list[ChatMessage] = []

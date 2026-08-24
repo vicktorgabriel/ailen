@@ -226,3 +226,19 @@
 - El parser semántico nunca ejecuta: sólo propone una tool allowlisted y argumentos, que vuelven a pasar por schema + `ToolExecutor`.
 - Los fragmentos STT vagos no deben resolverse inventando continuidad; se solicita repetición.
 - Estado físico Vision es contexto silencioso y no una frase que el modelo deba repetir en cada respuesta.
+
+### Intención semántica y periféricos de red — 2026-08-23
+
+- Herramientas deterministas/contextuales tienen prioridad sobre el LLM conversacional; una frase ambigua de herramienta debe aclararse y no convertirse en una acción por inferencia agresiva.
+- Se permite un modelo local auxiliar de intención (`ai.local.intent_model`) distinto del modelo conversacional. Debe estar ya instalado; no hay descarga implícita.
+- En el laboratorio Asrock se usa `qwen2.5-coder:3b` para intención acotada y `qwen3.5:9b` para conversación.
+- Las cámaras IP/RTSP son candidatas válidas de Vision/Audio; secretos de cámaras no deben aparecer en TOML, logs, SQLite ni documentación.
+
+### Capacidades verificables y cámara de red — 2026-08-24
+
+- Las preguntas sobre qué puede hacer AILEN no deben responderse por generación libre: Core describe únicamente herramientas registradas y capacidades físicas activas.
+- El fallback semántico sólo se activa por pistas léxicas completas o contexto realmente relacionado; no por coincidencias de subcadenas accidentales.
+- Las memorias de conversación se distinguen explícitamente de system prompt, metadatos y sensores para evitar recuerdos inventados.
+- La NC250 se integra como fuente Vision RTSP preferida mediante host/ruta/usuario en config y contraseña sólo por variable de entorno. Nunca persistir credenciales de cámara en TOML, docs o logs.
+- El micrófono RTSP de la NC250 queda validado como fuente técnica, pero no sustituye al `AudioInputBackend` hasta implementar captura remota con buffering/reconexión y pruebas VAD/STT.
+- Para uso nocturno, preferir modo Auto de la cámara y validar por readback + prueba YuNet; no asumir IR activo sólo porque el hardware lo soporta.

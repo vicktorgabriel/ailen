@@ -20,6 +20,8 @@ def test_context_builder_builds_basic_request() -> None:
     )
 
     assert "Eres Aura" in req.system_context
+    assert "NO ejecuta acciones" in req.system_context
+    assert "nunca afirmes que cambiaste volumen" in req.system_context
     assert len(req.messages) == 1
     assert req.messages[0].content == "Hola Aura"
     assert req.mode == SocialMode.HOME

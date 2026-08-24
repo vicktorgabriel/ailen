@@ -315,3 +315,97 @@ def test_generic_repetitive_followup_is_removed() -> None:
     assert ConversationCoordinator._strip_generic_followup(
         "No entendí bien, ¿podés repetirlo?"
     ) == "No entendí bien, ¿podés repetirlo?"
+
+def test_context_local_note_followups_use_persisted_note_without_general_llm(tmp_path: Path) -> None:
+    db = SQLiteManager(tmp_path / "context_notes.db")
+    MigrationRunner(db).run_migrations()
+    repo = MemoryRepository(db)
+    session = repo.create_session(mode=SocialMode.WORKSHOP)
+
+    conversational_ai = FakeAiBackend()
+    conversational_ai.generate = MagicMock(side_effect=conversational_ai.generate)
+    router = RuleBasedRouter()
+    orchestrator = AiOrchestrator(backends={"local": conversational_ai}, router=router, repository=repo)
+    notes_tool = NotesTool(repository=repo)
+    registry = ToolRegistry([notes_tool])
+    executor = ToolExecutor(registry=registry, repository=repo)
+    coordinator = ConversationCoordinator(
+        context_builder=AiContextBuilder(repository=repo),
+        router=router,
+        orchestrator=orchestrator,
+        tool_executor=executor,
+        profile=DeviceProfile.LOCAL,
+        mode=SocialMode.WORKSHOP,
+        privacy_level=PrivacyLevel.PRIVATE,
+        repository=repo,
+    )
+
+    saved, _ = coordinator.handle_user_input(
+        "anota comprar estaño mañana", session_id=session.session_id
+    )
+    assert "Nota guardada" in saved.text
+
+    searched, search_plan = coordinator.handle_user_input(
+        "cosa tengo que comprar mañana", session_id=session.session_id
+    )
+    assert "comprar estaño mañana" in searched.text
+    assert search_plan.reason_code == "CONTEXT_LOCAL_TOOL"
+
+    listed, list_plan = coordinator.handle_user_input(
+        "el fue la nota que a notaste hace un rato", session_id=session.session_id
+    )
+    assert "comprar estaño mañana" in listed.text
+    assert list_plan.reason_code == "CONTEXT_LOCAL_TOOL"
+    assert not conversational_ai.generate.called
+
+
+def test_ambiguous_music_fragment_clarifies_instead_of_general_llm() -> None:
+    conversational_ai = FakeAiBackend()
+    conversational_ai.generate = MagicMock(side_effect=conversational_ai.generate)
+    semantic_ai = FakeAiBackend(canned_response='{"kind":"chat","tool":"","arguments":{},"confidence":0.4}')
+    router = RuleBasedRouter()
+    orchestrator = AiOrchestrator(backends={"local": conversational_ai}, router=router)
+    from ailen.tools.builtin.music import MusicTool
+
+    registry = ToolRegistry([MusicTool()])
+    executor = ToolExecutor(registry=registry)
+    semantic = SemanticToolIntentResolver(semantic_ai, registry)
+    coordinator = ConversationCoordinator(
+        context_builder=AiContextBuilder(),
+        router=router,
+        orchestrator=orchestrator,
+        tool_executor=executor,
+        semantic_intent_resolver=semantic,
+        profile=DeviceProfile.LOCAL,
+        mode=SocialMode.WORKSHOP,
+        privacy_level=PrivacyLevel.PRIVATE,
+    )
+
+    response, plan = coordinator.handle_user_input("la música")
+    assert "Querés que ponga música" in response.text
+    assert plan.reason_code == "AMBIGUOUS_TOOL_FRAGMENT"
+    assert not conversational_ai.generate.called
+
+
+def test_capability_question_uses_registry_and_never_calls_llm() -> None:
+    coordinator, _executor, fake_ai, _audio = build_test_coordinator()
+    fake_ai.generate = MagicMock(side_effect=fake_ai.generate)
+
+    response, plan = coordinator.handle_user_input("qué podés hacer")
+
+    assert not fake_ai.generate.called
+    assert response.provider == "rule"
+    assert response.model == "capability_registry"
+    assert plan.reason_code == "LOCAL_CAPABILITIES"
+    assert "hora y la fecha" in response.text
+    assert "temporizadores" in response.text
+    assert "controlar el volumen" in response.text
+    assert "notas" in response.text
+    assert "luces" not in response.text
+    assert "correos" not in response.text
+
+
+def test_more_generic_voice_followups_are_removed() -> None:
+    assert ConversationCoordinator._strip_generic_followup(
+        "Estoy bien. ¿En qué puedo asistirte ahora?"
+    ) == "Estoy bien."

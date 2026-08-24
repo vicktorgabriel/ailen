@@ -73,6 +73,35 @@ class OllamaNativeBackend(AiBackend):
             requires_internet=False,
         )
 
+    def warmup(self) -> bool:
+        """Ask Ollama to load/retain this model without generating user-facing text."""
+        if not self.model:
+            return False
+        payload = {
+            "model": self.model,
+            "prompt": "",
+            "stream": False,
+            "keep_alive": self.keep_alive,
+        }
+        req = urllib.request.Request(
+            f"{self.endpoint}/api/generate",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
+                if resp.status != 200:
+                    return False
+                raw = resp.read(1_000_001)
+                if len(raw) > 1_000_000:
+                    return False
+                data = json.loads(raw.decode("utf-8"))
+                return bool(data.get("done", False))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Ollama warmup failed for %s: %s", self.model, exc)
+            return False
+
     def generate(self, request: AiRequest) -> AiResponse:
         start_t = time.monotonic()
         messages: list[dict[str, str]] = []

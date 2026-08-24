@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from ailen.domain.enums import ServiceStatus
 from ailen.vision.contracts import PresenceObservation, VisionBackend, VisionHealth
@@ -28,6 +29,7 @@ class OpenCvVisionBackend(VisionBackend):
         if detector_name not in {"haar", "yunet"}:
             raise ValueError("detector must be 'haar' or 'yunet'")
         self.camera_device = camera_device
+        self.source_label = self._safe_source_label(camera_device)
         self.fps = max(1, fps)
         self.detector_name = detector_name
         self.yunet_model_path = yunet_model_path
@@ -44,6 +46,20 @@ class OpenCvVisionBackend(VisionBackend):
         self._cv2: Any = None
         self.frames_processed: int = 0
         self.last_inference_ms: float = 0.0
+
+
+    @staticmethod
+    def _safe_source_label(source: str | int) -> str:
+        """Return a log-safe camera label with RTSP userinfo stripped."""
+        if not isinstance(source, str) or not source.lower().startswith(("rtsp://", "rtsps://")):
+            return str(source)
+        try:
+            parsed = urlsplit(source)
+            host = parsed.hostname or "network-camera"
+            port = f":{parsed.port}" if parsed.port else ""
+            return f"{parsed.scheme}://{host}{port}{parsed.path}"
+        except ValueError:
+            return "rtsp://network-camera"
 
     @property
     def provides_face_confidence(self) -> bool:
@@ -105,12 +121,12 @@ class OpenCvVisionBackend(VisionBackend):
             self._cap = self._cv2.VideoCapture(device_index)
             if not self._cap.isOpened():
                 self._health_status = ServiceStatus.DEGRADED
-                self._health_detail = f"Cannot open video capture device: {self.camera_device}"
+                self._health_detail = f"Cannot open video capture source: {self.source_label}"
                 return
             self._running = True
             self._health_status = ServiceStatus.HEALTHY
             self._health_detail = (
-                f"Running {self.detector_name} on {self.camera_device} @ {self.fps} FPS"
+                f"Running {self.detector_name} on {self.source_label} @ {self.fps} FPS"
             )
             self._thread = threading.Thread(target=self._capture_loop, daemon=True)
             self._thread.start()

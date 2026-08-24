@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import pytest
 
@@ -50,7 +51,11 @@ def test_lab_preflight_skipped_flags() -> None:
 
 
 def _vision_library_item(checker: LabPreflightChecker):
-    report = checker.run_all(no_camera=False, no_audio=True, no_ai=True)
+    # Detector-readiness tests must not depend on whether a webcam happens to
+    # be connected to the host running the unit suite.
+    with patch("ailen.runtime.preflight.HardwareDetector.detect") as detect:
+        detect.return_value.cameras = [object()]
+        report = checker.run_all(no_camera=False, no_audio=True, no_ai=True)
     items = [c for c in report.checks if c.name in {"Vision Library", "Vision & Camera"}]
     assert len(items) == 1
     return items[0]

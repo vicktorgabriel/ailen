@@ -64,3 +64,25 @@ def test_ollama_native_generate_disables_thinking(monkeypatch) -> None:
 def test_ollama_native_rejects_non_loopback_endpoint() -> None:
     with pytest.raises(ValueError, match="loopback"):
         OllamaNativeBackend(endpoint="http://example.com:11434/v1", model="qwen")
+
+
+def test_ollama_native_warmup_loads_without_prompt(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return _FakeResponse({"model": "qwen3.5:9b", "done": True})
+
+    monkeypatch.setattr("ailen.ai.ollama_backend.urllib.request.urlopen", fake_urlopen)
+    backend = OllamaNativeBackend(model="qwen3.5:9b", timeout_seconds=12.0, keep_alive="15m")
+    assert backend.warmup() is True
+    assert captured["url"] == "http://127.0.0.1:11434/api/generate"
+    assert captured["timeout"] == 12.0
+    assert captured["payload"] == {
+        "model": "qwen3.5:9b",
+        "prompt": "",
+        "stream": False,
+        "keep_alive": "15m",
+    }

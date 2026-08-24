@@ -2,7 +2,9 @@
 
 import importlib.util
 import logging
+import os
 import shutil
+import socket
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -111,6 +113,30 @@ class LabPreflightChecker:
             detector = HardwareDetector()
             hw_rep = detector.detect()
             has_camera = len(hw_rep.cameras) > 0
+            network_camera_ready = False
+            network_camera_detail = ""
+            if self.config.vision.network_camera_enabled:
+                host = self.config.vision.network_camera_host.strip()
+                port = self.config.vision.network_camera_port
+                username = self.config.vision.network_camera_username.strip()
+                password_env = self.config.vision.network_camera_password_env.strip()
+                secret_ready = not username or bool(password_env and os.environ.get(password_env))
+                reachable = False
+                if host and 1 <= port <= 65535:
+                    try:
+                        with socket.create_connection((host, port), timeout=0.75):
+                            reachable = True
+                    except OSError:
+                        reachable = False
+                network_camera_ready = bool(host and reachable and secret_ready)
+                if network_camera_ready:
+                    network_camera_detail = f"RTSP camera {host}:{port} reachable; credentials available"
+                elif not host:
+                    network_camera_detail = "RTSP camera host not configured"
+                elif not secret_ready:
+                    network_camera_detail = f"RTSP credential env '{password_env}' is not set"
+                else:
+                    network_camera_detail = f"RTSP camera {host}:{port} is not reachable"
 
             vision_api_ready = False
             vision_api_detail = "opencv-python not installed in .venv"
@@ -183,21 +209,37 @@ class LabPreflightChecker:
                     detail=vision_api_detail,
                     remediation="Install the configured detector/model or run with --no-camera",
                 ))
-            elif not has_camera:
-                checks.append(PreflightCheckItem(
-                    name="Camera Hardware",
-                    is_required=True,
-                    status="FAIL",
-                    detail="No physical V4L2 cameras detected",
-                    remediation="Connect USB webcam or pass --no-camera",
-                ))
             else:
-                checks.append(PreflightCheckItem(
-                    name="Vision & Camera",
-                    is_required=True,
-                    status="PASS",
-                    detail=f"{vision_api_detail}; {len(hw_rep.cameras)} camera(s) detected",
-                ))
+                network_required = (
+                    self.config.vision.network_camera_enabled
+                    and self.config.vision.network_camera_preferred
+                )
+                source_ready = network_camera_ready if network_required else (has_camera or network_camera_ready)
+                if not source_ready:
+                    detail = network_camera_detail or "No physical V4L2 cameras detected"
+                    checks.append(PreflightCheckItem(
+                        name="Camera Hardware",
+                        is_required=True,
+                        status="FAIL",
+                        detail=detail,
+                        remediation=(
+                            f"Set {self.config.vision.network_camera_password_env} and verify RTSP reachability"
+                            if self.config.vision.network_camera_enabled
+                            else "Connect USB webcam or pass --no-camera"
+                        ),
+                    ))
+                else:
+                    sources = []
+                    if has_camera:
+                        sources.append(f"{len(hw_rep.cameras)} V4L2 camera(s)")
+                    if network_camera_ready:
+                        sources.append(network_camera_detail)
+                    checks.append(PreflightCheckItem(
+                        name="Vision & Camera",
+                        is_required=True,
+                        status="PASS",
+                        detail=f"{vision_api_detail}; " + "; ".join(sources),
+                    ))
 
         # 3. Audio Devices (Input & Output)
         if no_audio:

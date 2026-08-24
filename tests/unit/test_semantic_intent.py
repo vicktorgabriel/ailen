@@ -94,3 +94,38 @@ def test_semantic_resolver_ignores_ordinary_chat_without_calling_backend(tmp_pat
     assert resolver.resolve(
         "hola como estas", session_id=None, mode=SocialMode.WORKSHOP, privacy_level=PrivacyLevel.PRIVATE
     ) is None
+
+
+def test_semantic_resolver_attempts_natural_sound_and_countdown_phrases(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    registry = ToolRegistry([VolumeTool(), ClockTool()])
+    resolver = SemanticToolIntentResolver(FakeAiBackend(), registry, repo)
+    assert resolver.should_attempt("me podés bajar un poco el sonido")
+    assert resolver.should_attempt("bajame el audio")
+    assert resolver.should_attempt("poné una cuenta regresiva de cinco minutos")
+
+
+def test_semantic_history_hints_do_not_match_inside_unrelated_words(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    session = repo.create_session(mode=SocialMode.WORKSHOP)
+    repo.add_message(
+        session_id=session.session_id,
+        role="assistant",
+        content="Puedo ayudarte con tareas prácticas en tu entorno inmediato.",
+        mode=SocialMode.WORKSHOP,
+    )
+    resolver = SemanticToolIntentResolver(
+        FakeAiBackend(canned_response=(
+            '{"kind":"tool","tool":"notes","arguments":{"action":"list"},"confidence":0.99}'
+        )),
+        ToolRegistry([ClockTool(), NotesTool(repository=repo)]),
+        repo,
+    )
+
+    assert resolver.should_attempt("qué podés hacer", session.session_id) is False
+    assert resolver.resolve(
+        "qué podés hacer",
+        session_id=session.session_id,
+        mode=SocialMode.WORKSHOP,
+        privacy_level=PrivacyLevel.PRIVATE,
+    ) is None

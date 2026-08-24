@@ -186,3 +186,56 @@ def test_intent_resolver_asr_tolerant_phrases() -> None:
     vol = resolver.resolve("ajá un poquito más el volumen")
     assert vol.tool_name == "volume"
     assert vol.tool_args == {"action": "step_up", "step": 10}
+
+def test_intent_resolver_natural_clock_variants() -> None:
+    resolver = IntentResolver()
+    positives = [
+        "me podés decir qué hora es",
+        "decime qué hora es por favor",
+        "qué hora tenemos ahora",
+        "me decis la hora",
+    ]
+    for phrase in positives:
+        result = resolver.resolve(phrase)
+        assert result.tool_name == "clock", phrase
+        assert result.tool_args == {"format": "time"}
+
+    for phrase in ["qué hora tardaría en llegar", "a qué hora abre la farmacia", "qué hora es en Tokio"]:
+        result = resolver.resolve(phrase)
+        assert result.tool_name is None, phrase
+
+
+def test_intent_resolver_natural_note_variants() -> None:
+    resolver = IntentResolver()
+    expected = {
+        "recordá que tengo que comprar leche": "tengo que comprar leche",
+        "guardame que tengo que comprar pan": "tengo que comprar pan",
+        "anotame la compra": "la compra",
+        "apuntá comprar estaño mañana": "comprar estaño mañana",
+    }
+    for phrase, text in expected.items():
+        result = resolver.resolve(phrase)
+        assert result.tool_name == "notes", phrase
+        assert result.tool_args == {"action": "create", "text": text}
+
+    for phrase in ["qué anotaste recién", "qué fue lo que anotaste", "qué nota guardaste"]:
+        result = resolver.resolve(phrase)
+        assert result.tool_name == "notes", phrase
+        assert result.tool_args["action"] == "list"
+
+
+def test_intent_resolver_natural_sound_and_status_variants() -> None:
+    resolver = IntentResolver()
+    down = resolver.resolve("me podés bajar un poco el sonido")
+    assert down.tool_name == "volume"
+    assert down.tool_args == {"action": "step_down", "step": 10}
+    up = resolver.resolve("subime un poco el audio")
+    assert up.tool_name == "volume"
+    assert up.tool_args == {"action": "step_up", "step": 10}
+    ram = resolver.resolve("cómo viene la ram")
+    assert ram.tool_name == "system_status"
+    assert ram.requires_llm is False
+    cpu = resolver.resolve("cuánto uso de cpu tengo")
+    assert cpu.tool_name == "system_status"
+    # Conceptual audio wording must not become a volume command.
+    assert resolver.resolve("explicame cómo funciona el audio digital").tool_name is None

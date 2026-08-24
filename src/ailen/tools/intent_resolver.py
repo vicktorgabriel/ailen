@@ -144,7 +144,23 @@ class IntentResolver:
             "qué día es hoy", "que dia es hoy", "fecha de hoy", "cuál es la fecha", "cual es la fecha",
             "la hora", "hora", "hora es", "la hora es", "ahora es",
         }
-        if clean in clock_exact:
+        clock_query = clean in clock_exact
+        if not clock_query and "hora" in clean:
+            natural_markers = (
+                "qué hora", "que hora", "decime la hora", "dime la hora",
+                "me decis la hora", "me decís la hora", "me dices la hora",
+                "podés decirme la hora", "podes decirme la hora", "puedes decirme la hora",
+                "hora tenemos", "hora es",
+            )
+            contextual_exclusions = (
+                "abre", "cierra", "llega", "llegar", "tarda", "tardar", "tardaría",
+                "tardaria", "demora", "demorar", "hora es en", "hora en ",
+            )
+            clock_query = any(marker in clean for marker in natural_markers) and not any(
+                term in clean for term in contextual_exclusions
+            )
+
+        if clock_query:
             return IntentResolution(
                 intent="clock",
                 tool_name="clock",
@@ -189,19 +205,26 @@ class IntentResolver:
                 raw_text=raw_text,
             )
 
-        # ASR-tolerant phrasing: keep it conservative by requiring the word volumen.
-        if "volumen" in clean:
-            if any(term in clean for term in ("más", "mas", "subí", "subi", "sube", "subir", "aumenta", "aumentar")):
+        # ASR-tolerant phrasing. "sonido"/"audio" are safe volume aliases only
+        # when an explicit direction is present; conceptual audio questions stay chat.
+        if any(noun in clean for noun in ("volumen", "sonido", "audio")):
+            if any(term in clean for term in (
+                "más", "mas", "subí", "subi", "sube", "subir", "aumenta", "aumentar",
+                "subime", "subeme", "levantá", "levanta"
+            )):
                 return IntentResolution(
                     intent="volume", tool_name="volume",
                     tool_args={"action": "step_up", "step": 10},
-                    requires_llm=False, confidence=0.95, raw_text=raw_text,
+                    requires_llm=False, confidence=0.98, raw_text=raw_text,
                 )
-            if any(term in clean for term in ("menos", "bajá", "baja", "bajar", "disminuí", "disminui", "disminuir")):
+            if any(term in clean for term in (
+                "menos", "bajá", "baja", "bajar", "disminuí", "disminui", "disminuir",
+                "bajame", "bájame", "bajeme"
+            )):
                 return IntentResolution(
                     intent="volume", tool_name="volume",
                     tool_args={"action": "step_down", "step": 10},
-                    requires_llm=False, confidence=0.95, raw_text=raw_text,
+                    requires_llm=False, confidence=0.98, raw_text=raw_text,
                 )
 
         # Set specific level: e.g. "volumen al 70%", "poné el volumen en 50", "volumen 80"
@@ -372,6 +395,9 @@ class IntentResolver:
             "leeme las notas", "léeme las notas", "qué notas tengo", "que notas tengo",
             "listar notas", "ver notas", "cuáles son mis notas", "cuales son mis notas", "mis notas",
             "notas tengo", "notas", "qué notas", "que notas",
+            "qué anotaste", "que anotaste", "qué anotaste recién", "que anotaste recien",
+            "qué fue lo que anotaste", "que fue lo que anotaste",
+            "qué nota guardaste", "que nota guardaste", "qué guardaste en notas", "que guardaste en notas",
         }:
             return IntentResolution(
                 intent="notes_list",
@@ -385,6 +411,10 @@ class IntentResolver:
         # Create note: prefixes
         prefixes = (
             "anotá que ", "anota que ", "anotá: ", "anota: ", "anotá ", "anota ", "anotar ",
+            "anotame que ", "anotáme que ", "anotame ", "anotáme ",
+            "apuntá que ", "apunta que ", "apuntame que ", "apuntáme que ", "apuntá ", "apunta ",
+            "recordá que ", "recorda que ", "recuérdame que ", "recuerdame que ",
+            "guardame que ", "guardáme que ", "guardame ", "guardáme ", "guardá que ", "guarda que ",
             "tomá nota que ", "toma nota que ", "tomá nota: ", "toma nota: ", "tomá nota ", "toma nota ",
             "guardá una nota que dice ", "guarda una nota que dice ", "guardá una nota ", "guarda una nota ",
             "creá una nota que dice ", "crea una nota que dice ", "creá una nota ", "crea una nota ",
@@ -413,7 +443,14 @@ class IntentResolver:
             "cuánta batería queda", "cuanta bateria queda", "batería restante", "bateria restante",
             "memoria ram usada", "uso de cpu", "estado del hardware", "diagnóstico", "diagnostico",
         }
-        if clean in status_exact:
+        status_query = clean in status_exact
+        if not status_query and any(term in clean for term in ("ram", "cpu", "memoria", "batería", "bateria", "hardware")):
+            status_markers = (
+                "cómo está", "como esta", "cómo viene", "como viene", "estado",
+                "uso", "cuánto", "cuanto", "disponible", "libre", "queda", "restante"
+            )
+            status_query = any(marker in clean for marker in status_markers)
+        if status_query:
             return IntentResolution(
                 intent="system_status",
                 tool_name="system_status",
