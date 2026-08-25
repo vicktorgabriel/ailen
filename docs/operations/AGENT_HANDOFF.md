@@ -4,7 +4,7 @@
 
 ## 1. Estado
 
-AILEN está en `0.1.0-dev.0`. No existe implementación funcional todavía. El objetivo inmediato es crear el foundation del proyecto sin adelantar subsistemas pesados ni fijar decisiones técnicas no validadas.
+AILEN está en `0.1.0-dev.0` y ya tiene un runtime funcional de laboratorio: Foundation/Core/Web, persistencia SQLite, Face/Vision, Audio/VAD/STT/TTS, AI Router adaptativo y R3C Controlled Tools. El baseline actual supera 500 tests. Los agentes deben partir de `docs/memory/CURRENT_STATE.md` y `TASKS.md`; no deben reconstruir Foundation ni asumir que los bloques R1-R3 siguen pendientes.
 
 ## 2. Lectura obligatoria
 
@@ -44,21 +44,17 @@ Si una decisión estructural no está resuelta, crear/proponer ADR y dejar imple
 
 ## 4. Prioridad actual
 
-Crear el primer slice integrable de Foundation:
+Trabajar sobre R4 y deudas verificables sin reabrir bloques cerrados:
 
 ```text
-ailen --help
-ailen diagnose hardware
-ailen serve
-config validada
-runtime state
-SQLite migrable
-web dashboard mínimo
-mocks de backends
-suite de tests inicial
+1. terminar backend musical local/MPRIS y validarlo físicamente cuando exista un reproductor disponible;
+2. mantener WebSearch desacoplado y elegir/implementar proveedor real sólo con credenciales/costos explícitos;
+3. mejorar robustez de instalación limpia y provisioning Debian;
+4. dejar STT G600 vs Whisper.cpp y benchmarks de hardware para sesiones físicas autorizadas;
+5. mantener documentación, tests y boundaries de seguridad sincronizados.
 ```
 
-No requiere todavía cámara/audio/LLM reales.
+En Debian de desarrollo se permite implementar y probar software, pero no declarar hardware físico validado sin evidencia real. Gemini/OpenCode/Codex actúan como agentes subordinados: no hacen commit/push y no cambian arquitectura sin ADR o coordinación explícita.
 
 ## 5. Carril A — Foundation/Core
 

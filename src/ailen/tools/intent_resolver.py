@@ -9,12 +9,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from ailen.tools.reminder_time import extract_reminder_request
+
 
 @dataclass
 class IntentResolution:
     """Result of intent resolution."""
 
-    intent: str  # "clock", "timer", "volume", "music_play", "notes_create", "web_search", "chat"
+    intent: str  # clock, timer, reminders, volume, music, notes, web_search, chat
     tool_name: str | None = None
     tool_args: dict[str, Any] = field(default_factory=dict)
     requires_llm: bool = False
@@ -59,22 +61,28 @@ class IntentResolver:
         if volume_res:
             return volume_res
 
-        # 4. Timer Intent
+        # 4. Persistent Reminder Intent. This must run before notes so an
+        # explicit temporal anchor is never flattened into an atemporal note.
+        reminder_res = self._match_reminders(cleaned, text)
+        if reminder_res:
+            return reminder_res
+
+        # 5. Timer Intent
         timer_res = self._match_timer(cleaned, text)
         if timer_res:
             return timer_res
 
-        # 5. Music Intent
+        # 6. Music Intent
         music_res = self._match_music(cleaned, text)
         if music_res:
             return music_res
 
-        # 6. Notes Intent
+        # 7. Notes Intent
         notes_res = self._match_notes(cleaned, text)
         if notes_res:
             return notes_res
 
-        # 7. System Status Intent
+        # 8. System Status Intent
         status_res = self._match_system_status(cleaned, text)
         if status_res:
             return status_res
@@ -255,6 +263,49 @@ class IntentResolver:
                 raw_text=raw_text,
             )
 
+        return None
+
+    def _match_reminders(self, clean: str, raw_text: str) -> IntentResolution | None:
+        if clean in {
+            "recordatorios", "mis recordatorios", "listar recordatorios",
+            "ver recordatorios", "qué recordatorios tengo", "que recordatorios tengo",
+        }:
+            return IntentResolution(
+                intent="reminders_list",
+                tool_name="reminders",
+                tool_args={"action": "list"},
+                requires_llm=False,
+                confidence=1.0,
+                raw_text=raw_text,
+            )
+
+        if clean in {
+            "cancelar recordatorio", "cancela el recordatorio", "cancelá el recordatorio",
+            "borrar recordatorio", "eliminar recordatorio",
+        }:
+            return IntentResolution(
+                intent="reminders_cancel",
+                tool_name="reminders",
+                tool_args={"action": "cancel"},
+                requires_llm=False,
+                confidence=1.0,
+                raw_text=raw_text,
+            )
+
+        request = extract_reminder_request(raw_text)
+        if request is not None:
+            return IntentResolution(
+                intent="reminders_create",
+                tool_name="reminders",
+                tool_args={
+                    "action": "create",
+                    "text": request.content,
+                    "when": request.when_text,
+                },
+                requires_llm=False,
+                confidence=1.0,
+                raw_text=raw_text,
+            )
         return None
 
     def _match_timer(self, clean: str, raw_text: str) -> IntentResolution | None:

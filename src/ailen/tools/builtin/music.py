@@ -5,10 +5,15 @@ No Spotify credentials or arbitrary filesystem scanning.
 See ADR-010.
 """
 
+import logging
+import shutil
+import subprocess
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from ailen.domain.enums import ErrorCode, PrivacyLevel, SocialMode
 from ailen.tools.contracts import ToolContext, ToolResult
+
+logger = logging.getLogger("ailen.tools.music")
 
 
 @runtime_checkable
@@ -60,6 +65,108 @@ class UnavailableMusicService:
 
     def get_status(self) -> dict[str, Any]:
         return {"state": "UNAVAILABLE", "current_track": None}
+
+
+class MprisMusicService:
+    """Real local MPRIS transport using the lightweight ``playerctl`` CLI.
+
+    AILEN only controls an already configured desktop/appliance media player. It
+    does not scan the filesystem, launch arbitrary commands, or interpret a text
+    query as a file/URL. Text search remains a separate provider/catalog concern.
+    """
+
+    def __init__(self, player: str | None = None, binary: str | None = None) -> None:
+        self._binary = binary or shutil.which("playerctl")
+        self._player = player.strip() if player else None
+
+    @property
+    def is_available(self) -> bool:
+        return bool(self._binary)
+
+    def _argv(self, *args: str) -> list[str]:
+        if not self._binary:
+            return []
+        argv = [self._binary]
+        if self._player:
+            argv.extend(["--player", self._player])
+        argv.extend(args)
+        return argv
+
+    def _run(self, *args: str) -> subprocess.CompletedProcess[str] | None:
+        argv = self._argv(*args)
+        if not argv:
+            return None
+        try:
+            return subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                shell=False,
+                timeout=2.0,
+                check=True,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.debug("MPRIS command failed: %s", exc)
+            return None
+
+    def play(self, track_or_query: str = "") -> bool:
+        # Generic MPRIS transport cannot safely map free text to a local track.
+        if track_or_query.strip():
+            return False
+        return self._run("play") is not None
+
+    def pause(self) -> bool:
+        return self._run("pause") is not None
+
+    def resume(self) -> bool:
+        return self._run("play") is not None
+
+    def next_track(self) -> bool:
+        return self._run("next") is not None
+
+    def stop(self) -> bool:
+        return self._run("stop") is not None
+
+    def get_status(self) -> dict[str, Any]:
+        if not self._binary:
+            return {
+                "state": "UNAVAILABLE",
+                "current_track": None,
+                "backend": "mpris-playerctl",
+                "query_supported": False,
+            }
+
+        status_result = self._run("status")
+        if status_result is None:
+            return {
+                "state": "UNAVAILABLE",
+                "current_track": None,
+                "backend": "mpris-playerctl",
+                "query_supported": False,
+            }
+
+        raw_state = status_result.stdout.strip().upper()
+        state = raw_state if raw_state in {"PLAYING", "PAUSED", "STOPPED"} else "UNKNOWN"
+        current_track: str | None = None
+
+        metadata_result = self._run("metadata", "--format", "{{artist}}\t{{title}}")
+        if metadata_result is not None:
+            raw = metadata_result.stdout.strip()
+            if raw:
+                artist, _, title = raw.partition("\t")
+                artist = artist.strip()
+                title = title.strip()
+                if artist and title:
+                    current_track = f"{artist} - {title}"
+                else:
+                    current_track = title or artist or None
+
+        return {
+            "state": state,
+            "current_track": current_track,
+            "backend": "mpris-playerctl",
+            "query_supported": False,
+        }
 
 
 class LocalMusicService:
@@ -155,13 +262,25 @@ class MusicTool:
         if action == "play":
             query = validated_args.get("query", "")
             if not self.service.play(query):
-                msg = "La reproducción de música no está disponible."
+                status = self.service.get_status()
+                unsupported_query = bool(
+                    query.strip()
+                    and status.get("state") != "UNAVAILABLE"
+                    and status.get("query_supported") is False
+                )
+                msg = (
+                    "El reproductor actual permite controlar música, pero la búsqueda por nombre "
+                    "todavía no está configurada."
+                    if unsupported_query
+                    else "La reproducción de música no está disponible."
+                )
                 return ToolResult(
                     success=False,
                     tool_name=self.name,
-                    status_code="UNAVAILABLE",
+                    status_code="UNSUPPORTED_QUERY" if unsupported_query else "UNAVAILABLE",
                     message=msg,
                     summary=msg,
+                    data=status,
                     error_code=ErrorCode.TOOL_UNAVAILABLE,
                 )
             status = self.service.get_status()

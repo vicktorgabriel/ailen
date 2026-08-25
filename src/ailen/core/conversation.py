@@ -340,6 +340,7 @@ class ConversationCoordinator:
         labels = (
             ("clock", "decirte la hora y la fecha"),
             ("timer", "crear y consultar temporizadores"),
+            ("reminders", "crear, consultar y cancelar recordatorios persistentes"),
             ("volume", "controlar el volumen"),
             ("notes", "guardar, listar y buscar notas"),
             ("system_status", "consultar el estado básico del sistema"),

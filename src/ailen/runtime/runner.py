@@ -2,6 +2,7 @@
 
 import json
 import logging
+import queue
 import signal
 import threading
 import time
@@ -50,8 +51,11 @@ from ailen.runtime.manager import LocalRuntimeManager
 from ailen.runtime.metrics import LabSessionMetrics
 from ailen.tools.builtin import (
     ClockTool,
+    MprisMusicService,
     MusicTool,
     NotesTool,
+    ReminderService,
+    RemindersTool,
     SystemStatusTool,
     TimerTool,
     VolumeTool,
@@ -143,6 +147,8 @@ class LabRunner:
         self.tool_registry: ToolRegistry | None = None
         self.tool_executor: ToolExecutor | None = None
         self.conversation_coordinator: ConversationCoordinator | None = None
+        self.reminder_service: ReminderService | None = None
+        self._pending_reminder_announcements: queue.Queue[dict[str, str]] = queue.Queue()
         self.managed_runtime = managed_runtime
 
         self._vision_thread: threading.Thread | None = None
@@ -309,12 +315,20 @@ class LabRunner:
                 auto_reset_after_stt=not bool(self.ai_backends),
             )
 
-        # 10. Wire Tool Registry & Controlled Executor
+        # 10. Wire Tool Registry & Controlled Executor. Reminders persist in
+        # SQLite; when memory is unavailable the tool fails closed rather than
+        # degrading into a volatile timer.
+        if self.memory_repo is not None:
+            self.reminder_service = ReminderService(
+                repository=self.memory_repo,
+                event_bus=self.event_bus,
+            )
         self.tool_registry = ToolRegistry([
             ClockTool(),
             TimerTool(),
+            RemindersTool(repository=self.memory_repo),
             VolumeTool(),
-            MusicTool(),
+            MusicTool(service=MprisMusicService()),
             NotesTool(repository=self.memory_repo),
             SystemStatusTool(),
             WebSearchTool(),
@@ -382,6 +396,7 @@ class LabRunner:
         self.event_bus.subscribe(EventType.SPEECH_FINISHED, self._on_speech_finished_event)
         self.event_bus.subscribe(EventType.PRESENCE_DETECTED, self._on_presence_transition_event)
         self.event_bus.subscribe(EventType.PRESENCE_LOST, self._on_presence_transition_event)
+        self.event_bus.subscribe(EventType.REMINDER_DUE, self._on_reminder_due_event)
 
         return self.component_statuses
 
@@ -569,6 +584,61 @@ class LabRunner:
         del event
         self.metrics.record_presence_transition()
 
+    def _on_reminder_due_event(self, event: Any) -> None:
+        """Queue a due reminder; never perform TTS inside the scheduler thread."""
+        payload = getattr(event, "payload", {}) if hasattr(event, "payload") else {}
+        reminder_id = str(payload.get("reminder_id", "")).strip()
+        content = str(payload.get("content", "")).strip()
+        due_at = str(payload.get("due_at", "")).strip()
+        if not content:
+            return
+        print(f"\n[reminder] {content}")
+        if self.audio_coordinator is not None:
+            self._pending_reminder_announcements.put(
+                {"reminder_id": reminder_id, "content": content, "due_at": due_at}
+            )
+
+    def _try_start_pending_reminder_announcement(self) -> None:
+        """Start one queued reminder only when the interaction channel is idle."""
+        if self.audio_coordinator is None or self._pending_reminder_announcements.empty():
+            return
+        if self.state_manager.current_state not in {AssistantState.IDLE, AssistantState.ATTENTION}:
+            return
+        with self._interaction_lock:
+            if self._is_processing_interaction:
+                return
+            try:
+                payload = self._pending_reminder_announcements.get_nowait()
+            except queue.Empty:
+                return
+            self._is_processing_interaction = True
+
+        self.audio_coordinator.turn_gate.start_processing()
+        self.audio_coordinator.collector.reset()
+        threading.Thread(
+            target=self._announce_reminder,
+            args=(payload,),
+            name="ailen-reminder-tts",
+            daemon=True,
+        ).start()
+
+    def _announce_reminder(self, payload: dict[str, str]) -> None:
+        """Speak one reminder with half-duplex protection, then release the turn."""
+        content = payload.get("content", "").strip()
+        try:
+            if self.audio_coordinator is not None and content:
+                self.audio_coordinator.speak(
+                    f"Recordatorio: {content}",
+                    voice_id=self.config.speech.tts_voice,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not announce reminder: %s", exc)
+        finally:
+            if self.audio_coordinator is not None:
+                self.audio_coordinator.turn_gate.stop_processing()
+            with self._interaction_lock:
+                self._is_processing_interaction = False
+
     def _process_conversation(self, text: str) -> None:
         """Process conversational turn from transcript to AI response and vocal speech."""
         try:
@@ -740,6 +810,14 @@ class LabRunner:
                         status.state = "UNAVAILABLE"
                         status.detail = f"Audio startup failed: {exc}"
 
+        # 5. Start the persistent reminder scheduler only after event handlers
+        # and audio coordination are ready. Dry-run never starts background work.
+        if self.reminder_service is not None:
+            try:
+                self.reminder_service.start()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not start reminder scheduler: %s", exc)
+
         self.print_status_table()
         print("\nAILEN Lab Mode running. Speak or interact. Press Ctrl+C to terminate cleanly.\n")
 
@@ -749,6 +827,8 @@ class LabRunner:
                 if self.duration and (time.time() - start_time) >= self.duration:
                     logger.info("Duration limit reached (%s s). Stopping...", self.duration)
                     break
+
+                self._try_start_pending_reminder_announcement()
 
                 if self.face_controller and hasattr(self.face_controller, "update"):
                     try:
@@ -772,6 +852,15 @@ class LabRunner:
             return
         self._is_running = False
         self.metrics.finalize()
+
+        # Stop scheduler before audio/database teardown so no new due events are
+        # emitted while the runtime is shutting down.
+        if self.reminder_service is not None:
+            try:
+                self.reminder_service.stop()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error stopping reminder scheduler: %s", exc)
+            self.reminder_service = None
 
         # Stop Vision
         if self.vision_backend:

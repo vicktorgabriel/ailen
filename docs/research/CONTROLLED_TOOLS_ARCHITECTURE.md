@@ -78,7 +78,7 @@ son filtradas explícitamente y canalizadas hacia el flujo conversacional del LL
 | `clock` | Todos | PUBLIC | No | 2.0s | Hora y fecha actual formateada. |
 | `timer` | HOME, WORKSHOP, PRIVATE | PRIVATE | No | 2.0s | Temporizadores en memoria (`create`, `list`, `cancel`). |
 | `volume` | Todos | PUBLIC | No | 2.0s | Control seguro de audio (`wpctl`/`pactl`/`amixer`). |
-| `music` | HOME, WORKSHOP, PRIVATE | PUBLIC | No | 2.0s | Máquina de estados de reproducción local simulada. |
+| `music` | HOME, WORKSHOP, PRIVATE | PUBLIC | No | 2.0s | Transporte MPRIS local vía `playerctl`; fail-closed si no hay backend/player. |
 | `notes` | HOME, WORKSHOP, PRIVATE | PRIVATE | No | 2.0s | Persistencia de notas en SQLite con queries parametrizadas. |
 | `system_status` | HOME, WORKSHOP, PRIVATE | RESTRICTED | No | 3.0s | Diagnóstico sanitizado de CPU, RAM, GPU y audio. |
 | `web_search` | Todos | PUBLIC | Sí | 6.0s | Búsqueda web estructurada desacoplada de proveedor. |
@@ -100,4 +100,4 @@ La autorización de red para tools se controla mediante `[network].outbound_web_
 
 ### Música
 
-`MusicTool` define el contrato y routing, pero el backend por defecto es fail-closed (`UNAVAILABLE`). `LocalMusicService` es un backend in-memory de pruebas/estado y no debe confundirse con reproducción audible.
+`MusicTool` mantiene el backend por defecto fail-closed (`UNAVAILABLE`) para no fabricar reproducción. En Lab, `MprisMusicService` usa `playerctl` con `shell=False` para controlar un reproductor MPRIS ya configurado (`play`, `pause`, `resume`, `next`, `stop`, `status`). No escanea archivos ni convierte texto libre en rutas/URLs; las búsquedas de canciones por nombre siguen sin soporte hasta existir un catálogo/proveedor explícito. `LocalMusicService` permanece sólo como backend in-memory de tests. La implementación está validada en software; falta prueba audible con un reproductor real antes de declarar el ítem físico cerrado.

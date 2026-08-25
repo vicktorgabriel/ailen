@@ -57,10 +57,15 @@ class AudioConfig:
 class VisionConfig:
     """Camera and face/presence detection configuration."""
     enabled: bool = True
+    # Source selection is explicit so the same image can run on recycled USB
+    # webcams, authenticated RTSP cameras, or automatically choose what exists.
+    # Supported values: "auto", "usb", "rtsp".
+    camera_source: str = "auto"
     camera_device: str = "/dev/video0"
     # Optional authenticated RTSP source. Password is resolved at runtime from
     # network_camera_password_env and is never persisted in TOML.
     network_camera_enabled: bool = False
+    # Legacy compatibility only. New configurations should use camera_source.
     network_camera_preferred: bool = False
     network_camera_host: str = ""
     network_camera_port: int = 554
@@ -317,9 +322,14 @@ def load_config_from_dict(raw: dict[str, Any]) -> AILENConfig:
                 setattr(cfg.audio, k, v)
 
     if "vision" in raw and isinstance(raw["vision"], dict):
-        for k, v in raw["vision"].items():
+        vision_raw = raw["vision"]
+        for k, v in vision_raw.items():
             if hasattr(cfg.vision, k):
                 setattr(cfg.vision, k, v)
+        # Preserve old configs that expressed source choice via the boolean
+        # network_camera_preferred flag. Explicit camera_source always wins.
+        if "camera_source" not in vision_raw and cfg.vision.network_camera_preferred:
+            cfg.vision.camera_source = "rtsp"
 
     if "speech" in raw and isinstance(raw["speech"], dict):
         for k, v in raw["speech"].items():
@@ -476,6 +486,11 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("speech.max_utterance_seconds must be positive")
     if config.vision.fps < 1:
         errors.append("vision.fps must be >= 1")
+    source_mode = config.vision.camera_source.strip().lower()
+    if source_mode not in {"auto", "usb", "rtsp"}:
+        errors.append("vision.camera_source must be one of: auto, usb, rtsp")
+    if source_mode == "rtsp" and not config.vision.network_camera_enabled:
+        errors.append("vision.network_camera_enabled must be true when vision.camera_source=rtsp")
     if config.vision.network_camera_enabled:
         if not config.vision.network_camera_host.strip():
             errors.append("vision.network_camera_host is required when network camera is enabled")

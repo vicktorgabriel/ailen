@@ -239,3 +239,29 @@ def test_intent_resolver_natural_sound_and_status_variants() -> None:
     assert cpu.tool_name == "system_status"
     # Conceptual audio wording must not become a volume command.
     assert resolver.resolve("explicame cómo funciona el audio digital").tool_name is None
+
+def test_intent_resolver_persistent_reminders_require_explicit_time() -> None:
+    resolver = IntentResolver()
+
+    relative = resolver.resolve("Recordame apagar el horno en 20 minutos")
+    assert relative.intent == "reminders_create"
+    assert relative.tool_name == "reminders"
+    assert relative.tool_args == {
+        "action": "create",
+        "text": "apagar el horno",
+        "when": "en 20 minutos",
+    }
+    assert relative.requires_llm is False
+
+    absolute = resolver.resolve("Recordáme comprar estaño mañana a las 10:30")
+    assert absolute.tool_name == "reminders"
+    assert absolute.tool_args["text"] == "comprar estaño"
+    assert absolute.tool_args["when"] == "mañana a las 10:30"
+
+    # No explicit due time: preserve the established atemporal note behavior.
+    note = resolver.resolve("recordá que tengo que comprar leche")
+    assert note.tool_name == "notes"
+    assert note.tool_args == {"action": "create", "text": "tengo que comprar leche"}
+
+    assert resolver.resolve("mis recordatorios").tool_args == {"action": "list"}
+    assert resolver.resolve("cancelar recordatorio").tool_args == {"action": "cancel"}

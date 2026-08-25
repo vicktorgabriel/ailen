@@ -1,8 +1,19 @@
 # Estado actual — AILEN
 
-**Fecha:** 2026-08-23
+**Fecha:** 2026-08-24
 **Versión:** `0.1.0-dev.0`  
-**Fase:** R3C auditado y endurecido sobre `1a94116`: tools allowlisted y routing determinista integrados; historial conversacional real persistido en SQLite; red de tools gobernada por `[network].outbound_web_enabled` independiente de cloud; WebSearch aún sin proveedor real y WebFetch HTTPS-only; música tiene contrato/routing pero sin backend físico real (`UNAVAILABLE`); tools destructivas fail-closed hasta executor cancelable. Vision usa YuNet verificado para rostro/posición y Haar queda experimental. STT Vosk small-es sigue siendo el principal problema de calidad y Whisper.cpp permanece `NOT_INSTALLED`. Suite actual: 478 tests, Ruff/mypy/diff-check verdes.
+**Fase:** R4 activo sobre baseline R3C auditado. Tools allowlisted/routing determinista, memoria conversacional SQLite y Web boundary permanecen estables. R4 ya incorpora selección explícita de fuente de cámara (`auto|usb|rtsp`), recordatorios persistentes separados de notas/timers (migración 0004 + `REMINDER_DUE`) y transporte MPRIS cableado en software. WebSearch real, Web Admin pendiente y reproducción musical audible siguen abiertos. En Debian están instalados Vosk + Whisper.cpp tiny/base para comparación; Vosk continúa baseline hasta prueba física suficiente. Suite actual: 521 tests; Ruff, mypy (131 archivos) y diff-check verdes.
+
+## Actualización Debian / R4 software — 2026-08-24
+
+- Vision deja de depender de un periférico concreto: `[vision].camera_source` admite `auto`, `usb` o `rtsp`. `usb` nunca cae silenciosamente a red, `rtsp` falla cerrado si falta configuración/secret y `auto` prioriza V4L2 antes de RTSP. Configs antiguas con `network_camera_preferred=true` se migran al cargar; la opción nueva explícita siempre prevalece. El Lab Debian queda en `camera_source="usb"`; la NC250 continúa como fuente RTSP opcional de red y no bloquea este host. La webcam reciclada USB aún no fue conectada/validada físicamente en Debian.
+- Recordatorios persistentes R4: migración `0004_reminders`, `RemindersTool`, `ReminderService` y evento `REMINDER_DUE`. Frases con tiempo explícito (`en 20 minutos`, `mañana a las 10`, fecha/hora) se separan de notas atemporales y timers volátiles. El scheduler sólo publica eventos; el runner encola TTS hasta quedar en IDLE/ATTENTION para respetar half-duplex. La base Lab Debian ya está en schema 4; anuncio acústico real queda pendiente de prueba física.
+- Debian Lab tiene Ollama 0.32.15 en el HDD de 4 TB y `qwen3.5:2b-q4_K_M` medido sobre RX 580 vía Vulkan (100% GPU, ~15.45 tok/s en benchmark corto). Vosk sigue STT activo; Whisper.cpp tiny/base están instalados y verificados para comparación física posterior.
+- `MprisMusicService` implementa transporte local real sobre MPRIS mediante `playerctl`, con argv explícito, `shell=False`, timeout acotado y fail-closed cuando no existe backend/player. Lab lo registra detrás de `MusicTool`; las queries de texto libre no se reinterpretan como archivos o URLs.
+- La reproducción musical audible todavía NO está validada físicamente en este host; el ítem R4 permanece abierto hasta probar un reproductor MPRIS real.
+- Una instalación limpia en Debian reveló que `ailen diagnose ai` y `ailen demo ai` podían consultar `ai_usage` antes de ejecutar migraciones. Ambos caminos ahora migran SQLite antes de construir `BudgetPolicy`.
+- Entorno Debian de desarrollo preparado con `.venv`, OpenCV/Piper y tooling. Suite: 503 tests pasan y 1 se omite por asset/hardware no presente; Ruff limpio ignorando únicamente `EXE002` causado por semántica de permisos del montaje NTFS, mypy limpio en 129 archivos y `git diff --check` limpio.
+- `AGENTS.md` y `docs/operations/AGENT_HANDOFF.md` fueron actualizados para evitar que Gemini/OpenCode trabajen con el estado obsoleto de Foundation.
 
 ## Qué existe
 

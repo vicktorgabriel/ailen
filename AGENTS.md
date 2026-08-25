@@ -21,7 +21,7 @@ Antes de modificar código o arquitectura:
 
 ## Estado actual
 
-AILEN está en `0.1.0-dev.0`, fase de definición/prototipo. Aún no existe implementación funcional. La prioridad siguiente es elegir stack técnico y levantar el primer prototipo en Banghó Zero G05 sin optimización prematura.
+AILEN está en `0.1.0-dev.0` con Foundation/Core/Web, Face/Vision, Audio/STT/TTS, AI Router adaptativo y R3C Controlled Tools integrados. El baseline actual supera 500 tests. La prioridad de software pasa a R4 sin fingir validaciones físicas: backend musical local/MPRIS, proveedor WebSearch real y robustez de instalación limpia; STT G600/Whisper y hardware objetivo se validan sólo en los equipos físicos correspondientes.
 
 ## Reglas esenciales
 

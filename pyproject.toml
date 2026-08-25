@@ -63,6 +63,13 @@ ailen = [
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.lint.per-file-ignores]
+# The Debian Lab project lives on fuseblk, which presents repository .py files
+# as executable. Limit the mount-permission exception to Python code paths.
+"src/**/*.py" = ["EXE002"]
+"tests/**/*.py" = ["EXE002"]
+"tools/**/*.py" = ["EXE002"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

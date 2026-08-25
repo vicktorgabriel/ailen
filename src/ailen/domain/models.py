@@ -120,6 +120,18 @@ class NoteItem:
 
 
 @dataclass
+class ReminderItem:
+    """A persisted time-anchored reminder stored in UTC."""
+    reminder_id: str
+    content: str
+    due_at: str
+    status: str = "PENDING"
+    created_at: str = field(default_factory=utc_now_iso)
+    recurrence: str | None = None
+    notified_at: str | None = None
+
+
+@dataclass
 class BusinessFact:
     """Business knowledge administered by the owner."""
     fact_id: str

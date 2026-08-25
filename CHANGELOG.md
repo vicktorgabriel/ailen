@@ -1,4 +1,18 @@
 # Changelog — AILEN
+- **R4 camera portability + persistent reminders (2026-08-24)**:
+  - `[vision].camera_source` incorpora `auto|usb|rtsp`: USB/RTSP estrictos, auto V4L2-first con fallback RTSP; compatibilidad legacy sin permitir que el flag viejo sobreescriba selección explícita.
+  - Debian Lab queda preparado para webcam USB reciclada; NC250 permanece como cámara RTSP opcional de LAN y sus credenciales no se persisten.
+  - Nueva migración SQLite `0004_reminders`, `ReminderItem`, `RemindersTool`, `ReminderService` y `REMINDER_DUE`; recordatorios temporales ya no son secuestrados por `NotesTool`.
+  - Scheduler publica eventos y el runner difiere TTS hasta un estado acústicamente seguro; prueba audible física pendiente.
+  - Base Lab Debian migrada a schema 4. Cierre software actual: 521 tests, Ruff limpio, mypy limpio en 131 archivos y diff-check limpio.
+
+- **Debian clean-install hardening + MPRIS music transport (2026-08-24)**:
+  - `MprisMusicService` controla un reproductor MPRIS local mediante `playerctl` con `shell=False`, timeout y fail-closed; Lab lo cablea detrás de `MusicTool`.
+  - Las búsquedas de canciones por texto libre se rechazan explícitamente hasta disponer de catálogo/proveedor; no se reinterpretan como archivo/URL.
+  - `diagnose ai` y `demo ai` ejecutan migraciones SQLite antes de consultar presupuesto/`ai_usage`, corrigiendo un fallo visible sólo en instalaciones limpias.
+  - Handoff de agentes actualizado a R3C/R4 para Gemini/OpenCode; el texto de Foundation quedó obsoleto.
+  - Validación Debian: 503 tests pasan, 1 omitido; Ruff limpio con excepción local `EXE002` por montaje NTFS y mypy limpio en 129 archivos. Reproducción audible MPRIS sigue pendiente de prueba física.
+
 - **Natural tool intent + NC250 lab discovery (2026-08-23)**:
   - Variantes naturales/ASR de reloj y notas; recuperación contextual de notas recientes sin LLM general.
   - Clarificación fail-safe para fragmentos ambiguos y parser semántico acotado por dominio.

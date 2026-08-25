@@ -87,7 +87,7 @@ def test_factory_vision_auto_selects_detected_camera_when_configured_missing() -
 def test_factory_vision_uses_preferred_rtsp_without_v4l2(monkeypatch) -> None:
     cfg = AILENConfig()
     cfg.vision.network_camera_enabled = True
-    cfg.vision.network_camera_preferred = True
+    cfg.vision.camera_source = "rtsp"
     cfg.vision.network_camera_host = "camera.local"
     cfg.vision.network_camera_username = "admin"
     cfg.vision.network_camera_password_env = "AILEN_TEST_CAMERA_PASSWORD"
@@ -113,7 +113,7 @@ def test_factory_vision_uses_preferred_rtsp_without_v4l2(monkeypatch) -> None:
 def test_factory_vision_rtsp_missing_secret_fails_closed() -> None:
     cfg = AILENConfig()
     cfg.vision.network_camera_enabled = True
-    cfg.vision.network_camera_preferred = True
+    cfg.vision.camera_source = "rtsp"
     cfg.vision.network_camera_host = "camera.local"
     cfg.vision.network_camera_username = "admin"
     cfg.vision.network_camera_password_env = "AILEN_MISSING_CAMERA_PASSWORD"
@@ -134,10 +134,10 @@ def test_factory_vision_rtsp_missing_secret_fails_closed() -> None:
 
 
 
-def test_factory_preferred_rtsp_does_not_silently_fallback_to_usb() -> None:
+def test_factory_rtsp_source_does_not_silently_fallback_to_usb() -> None:
     cfg = AILENConfig()
+    cfg.vision.camera_source = "rtsp"
     cfg.vision.network_camera_enabled = True
-    cfg.vision.network_camera_preferred = True
     cfg.vision.network_camera_host = "camera.local"
     cfg.vision.network_camera_username = "admin"
     cfg.vision.network_camera_password_env = "AILEN_MISSING_PREFERRED_CAMERA_PASSWORD"
@@ -155,6 +155,76 @@ def test_factory_preferred_rtsp_does_not_silently_fallback_to_usb() -> None:
     assert vision is None
     assert status.state == "UNAVAILABLE"
     assert "AILEN_MISSING_PREFERRED_CAMERA_PASSWORD" in status.detail
+
+
+
+def test_factory_usb_source_never_falls_back_to_rtsp(monkeypatch) -> None:
+    cfg = AILENConfig()
+    cfg.vision.camera_source = "usb"
+    cfg.vision.network_camera_enabled = True
+    cfg.vision.network_camera_host = "camera.local"
+    cfg.vision.network_camera_username = "admin"
+    cfg.vision.network_camera_password_env = "AILEN_TEST_CAMERA_PASSWORD"
+    monkeypatch.setenv("AILEN_TEST_CAMERA_PASSWORD", "unit-test-camera-secret")
+    report = HardwareCapabilityReport(
+        timestamp_utc="2026-08-24T00:00:00Z",
+        os_name="linux",
+        os_version="6.8.0",
+        os_distribution="Debian",
+        os_family=OsFamily.LINUX,
+        cpu=CpuInfo(model="x86", architecture="x86_64", physical_cores=4, logical_cores=8),
+        ram=RamInfo(total_bytes=16_000_000_000, available_bytes=12_000_000_000),
+        cameras=[],
+    )
+    vision, status = LabComponentFactory(cfg, report).build_vision()
+    assert vision is None
+    assert status.state == "UNAVAILABLE"
+    assert "USB/V4L2" in status.detail
+    assert "unit-test-camera-secret" not in status.detail
+
+
+def test_factory_auto_source_can_fallback_to_rtsp(monkeypatch) -> None:
+    cfg = AILENConfig()
+    cfg.vision.camera_source = "auto"
+    cfg.vision.network_camera_enabled = True
+    cfg.vision.network_camera_host = "camera.local"
+    cfg.vision.network_camera_username = "admin"
+    cfg.vision.network_camera_password_env = "AILEN_TEST_CAMERA_PASSWORD"
+    monkeypatch.setenv("AILEN_TEST_CAMERA_PASSWORD", "unit-test-camera-secret")
+    report = HardwareCapabilityReport(
+        timestamp_utc="2026-08-24T00:00:00Z",
+        os_name="linux",
+        os_version="6.8.0",
+        os_distribution="Debian",
+        os_family=OsFamily.LINUX,
+        cpu=CpuInfo(model="x86", architecture="x86_64", physical_cores=4, logical_cores=8),
+        ram=RamInfo(total_bytes=16_000_000_000, available_bytes=12_000_000_000),
+        cameras=[],
+    )
+    vision, status = LabComponentFactory(cfg, report).build_vision()
+    assert vision is not None
+    assert str(getattr(vision, "camera_device", "")).startswith("rtsp://admin:")
+    assert "auto-selected network camera" in status.detail
+
+
+
+def test_factory_invalid_camera_source_fails_closed() -> None:
+    cfg = AILENConfig()
+    cfg.vision.camera_source = "firewire"
+    vision, status = LabComponentFactory(cfg).build_vision()
+    assert vision is None
+    assert status.state == "UNAVAILABLE"
+    assert "Unsupported camera source" in status.detail
+
+
+def test_factory_rtsp_source_requires_network_camera_enabled() -> None:
+    cfg = AILENConfig()
+    cfg.vision.camera_source = "rtsp"
+    cfg.vision.network_camera_enabled = False
+    vision, status = LabComponentFactory(cfg).build_vision()
+    assert vision is None
+    assert status.state == "UNAVAILABLE"
+    assert "network camera is disabled" in status.detail
 
 
 def test_factory_vision_simulated() -> None:

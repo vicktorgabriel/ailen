@@ -218,44 +218,81 @@ class LabComponentFactory:
         selected_device: str | int | None = None
         selected_label = ""
         selection_note = ""
-        if self.config.vision.network_camera_preferred:
+        source_mode = self.config.vision.camera_source.strip().lower()
+        if source_mode not in {"auto", "usb", "rtsp"}:
+            return None, ComponentStatus(
+                name="Vision",
+                backend="OpenCV",
+                state="UNAVAILABLE",
+                detail=f"Unsupported camera source '{self.config.vision.camera_source}'",
+                remediation="Set vision.camera_source to auto, usb, or rtsp",
+            )
+
+        if source_mode == "rtsp":
+            if not self.config.vision.network_camera_enabled:
+                return None, ComponentStatus(
+                    name="Vision",
+                    backend="OpenCV/RTSP",
+                    state="UNAVAILABLE",
+                    detail="RTSP camera source selected but network camera is disabled",
+                    remediation="Enable vision.network_camera_enabled or select camera_source=usb/auto",
+                )
             if network_uri:
                 selected_device = network_uri
                 selected_label = network_label
-                selection_note = "network camera preferred"
+                selection_note = "explicit RTSP source"
             else:
                 return None, ComponentStatus(
                     name="Vision",
                     backend="OpenCV/RTSP",
                     state="UNAVAILABLE",
-                    detail=network_problem or "Preferred network camera is unavailable",
+                    detail=network_problem or "Selected RTSP camera is unavailable",
                     remediation=(
                         f"Set {self.config.vision.network_camera_password_env} and verify RTSP camera availability"
                     ),
                 )
-        elif configured_device in detected_devices:
-            selected_device = configured_device
-            selected_label = configured_device
-        elif detected_devices:
-            selected_device = detected_devices[0]
-            selected_label = detected_devices[0]
-            selection_note = f"configured '{configured_device}' not detected; auto-selected physical camera"
-        elif network_uri:
-            selected_device = network_uri
-            selected_label = network_label
-            selection_note = "no local V4L2 camera detected; selected network camera"
+        elif source_mode == "usb":
+            if configured_device in detected_devices:
+                selected_device = configured_device
+                selected_label = configured_device
+                selection_note = "explicit USB/V4L2 source"
+            elif detected_devices:
+                selected_device = detected_devices[0]
+                selected_label = detected_devices[0]
+                selection_note = f"configured '{configured_device}' not detected; auto-selected USB/V4L2 camera"
+            else:
+                return None, ComponentStatus(
+                    name="Vision",
+                    backend="OpenCV/V4L2",
+                    state="UNAVAILABLE",
+                    detail="USB/V4L2 camera source selected but no physical camera was detected",
+                    remediation="Connect a USB/V4L2 camera or select camera_source=auto/rtsp",
+                )
+        else:  # auto
+            if configured_device in detected_devices:
+                selected_device = configured_device
+                selected_label = configured_device
+                selection_note = "auto source selected configured USB/V4L2 camera"
+            elif detected_devices:
+                selected_device = detected_devices[0]
+                selected_label = detected_devices[0]
+                selection_note = f"configured '{configured_device}' not detected; auto-selected physical camera"
+            elif network_uri:
+                selected_device = network_uri
+                selected_label = network_label
+                selection_note = "no local V4L2 camera detected; auto-selected network camera"
 
         if selected_device is None:
-            if self.config.vision.network_camera_enabled and network_problem:
+            if source_mode == "auto" and self.config.vision.network_camera_enabled and network_problem:
                 return None, ComponentStatus(
                     name="Vision",
                     backend="OpenCV/RTSP",
                     state="UNAVAILABLE",
-                    detail=network_problem,
+                    detail=f"No USB/V4L2 camera detected; RTSP fallback unavailable: {network_problem}",
                     remediation=(
-                        f"Set {self.config.vision.network_camera_password_env} in the AILEN runtime environment"
+                        f"Connect a USB camera or set {self.config.vision.network_camera_password_env}"
                         if self.config.vision.network_camera_username.strip()
-                        else "Complete network camera configuration"
+                        else "Connect a USB camera or complete RTSP configuration"
                     ),
                 )
             return None, ComponentStatus(

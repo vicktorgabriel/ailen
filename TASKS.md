@@ -6,7 +6,7 @@
 
 Versión: `0.1.0-dev.0`
 
-Milestone activo: `R3B — Lab Mode + detección de hardware + Model Manager local`.
+Milestone activo: `R4 — capacidades cotidianas, periféricos intercambiables y operación persistente`.
 
 Los slices R1, R2A, R2B y R3A quedaron integrados y auditados. R3A cerró con 254 tests tras la revisión final y queda como baseline para el runtime de laboratorio.
 
@@ -284,8 +284,9 @@ Debe quedar funcionando:
 
 - [x] persistencia conversacional real: `LabRunner` crea/cierra sesión `sess-*` y `ConversationCoordinator` persiste turnos sin duplicar input actual.
 - [x] WebSearch hardening: resultados acotados/no confiables; WebFetch HTTPS-only; política `[network].outbound_web_enabled` separada de cloud.
-- [ ] backend de reproducción musical real (PipeWire/MPRIS/local player) detrás de `MusicService`; hasta entonces `MusicTool()` devuelve `UNAVAILABLE`.
-- [ ] instalar/evaluar Whisper.cpp sólo con autorización del operador y decidir baseline STT por WER real G600.
+- [ ] backend de reproducción musical real (PipeWire/MPRIS/local player) detrás de `MusicService`; `MprisMusicService` vía `playerctl` ya está cableado y testeado en software, pero falta validar reproducción audible con un player MPRIS real antes de cerrar este ítem.
+- [x] instalación limpia: `diagnose ai` y `demo ai` ejecutan migraciones SQLite antes de consultar `ai_usage`, evitando depender de una base ya inicializada en otro host.
+- [x] instalar Whisper.cpp tiny/base y verificar assets en Debian; [ ] decidir baseline STT sólo tras WER real sobre 10-20 utterances físicas.
 
 ## Bloque 16 — Voice Understanding + Semantic Tool Fallback
 
@@ -300,6 +301,20 @@ Debe quedar funcionando:
 - [x] 487 tests + Ruff + mypy 129 source files + diff-check.
 - [ ] repetir sesión física G600 y registrar tasa de tool hit / semantic fallback / reprompt / chat.
 - [ ] comparar Vosk vs Whisper.cpp con 10-20 utterances reales antes de cambiar baseline STT.
+
+## Bloque 17 — R4 capacidades cotidianas y portabilidad de hardware
+
+- [x] selección de cámara explícita `auto|usb|rtsp`, con modos estrictos, fallback sólo en `auto`, compatibilidad legacy y secretos RTSP fuera de TOML.
+- [ ] validar físicamente webcam USB reciclada en Debian con YuNet; no marcar PASS hasta conectar y medir.
+- [x] migración `0004_reminders` + CRUD SQLite + `RemindersTool` + scheduler/evento `REMINDER_DUE`.
+- [x] separar intención temporal de `NotesTool`: recordatorio con tiempo explícito -> `reminders`; nota sin tiempo -> `notes`; timer sigue volátil.
+- [x] diferir anuncios de recordatorio hasta canal de voz IDLE/ATTENTION, sin TTS desde hilo scheduler.
+- [ ] validar físicamente un recordatorio audible y comprobar que `AudioTurnGate` evita auto-transcripción.
+- [ ] cerrar reproducción MPRIS audible y luego catálogo/playlists local seguro.
+- [ ] proveedor WebSearch real con rate limit, boundary no confiable y fail-closed.
+- [ ] Web Admin: sesiones persistentes + visores de conversaciones/memorias/notas/auditoría.
+- [ ] RTSP audio como `AudioInputBackend` opcional; NC250 no debe ser requisito de hardware.
+- [ ] provisionador Debian appliance idempotente y systemd endurecido, sin ejecutarlo destructivamente sobre Lab.
 
 ## Reglas del board
 

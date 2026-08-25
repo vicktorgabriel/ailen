@@ -1,10 +1,12 @@
 """Unit tests for builtin tools: Clock, Timer, Volume, Music, SystemStatus."""
 
+import subprocess
 from datetime import UTC, datetime
 
+import ailen.tools.builtin.music as music_module
 from ailen.domain.enums import ErrorCode
 from ailen.tools.builtin.clock import ClockTool
-from ailen.tools.builtin.music import LocalMusicService, MusicTool
+from ailen.tools.builtin.music import LocalMusicService, MprisMusicService, MusicTool
 from ailen.tools.builtin.system_status import SystemStatusTool
 from ailen.tools.builtin.timer import TimerService, TimerTool
 from ailen.tools.builtin.volume import (
@@ -130,6 +132,63 @@ def test_music_service_state_machine() -> None:
     assert res_stop.success is True
     assert service.state == "STOPPED"
     assert service.current_track is None
+
+
+def test_mpris_music_service_unavailable_without_playerctl(monkeypatch) -> None:
+    monkeypatch.setattr(music_module.shutil, "which", lambda _name: None)
+    service = MprisMusicService()
+
+    assert service.is_available is False
+    assert service.play() is False
+    assert service.get_status()["state"] == "UNAVAILABLE"
+
+
+def test_mpris_music_service_controls_existing_player(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        if argv[-1] == "status":
+            return subprocess.CompletedProcess(argv, 0, stdout="Playing\n", stderr="")
+        if "metadata" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="Banda\tTema\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(music_module.subprocess, "run", fake_run)
+    service = MprisMusicService(player="spotify", binary="/usr/bin/playerctl")
+
+    assert service.play() is True
+    assert service.pause() is True
+    assert service.resume() is True
+    assert service.next_track() is True
+    assert service.stop() is True
+    status = service.get_status()
+
+    assert status["state"] == "PLAYING"
+    assert status["current_track"] == "Banda - Tema"
+    assert status["backend"] == "mpris-playerctl"
+    assert status["query_supported"] is False
+    assert all(call[:3] == ["/usr/bin/playerctl", "--player", "spotify"] for call in calls)
+
+
+def test_mpris_music_service_rejects_free_text_query(monkeypatch) -> None:
+    def fake_run(argv, **_kwargs):
+        if argv[-1] == "status":
+            return subprocess.CompletedProcess(argv, 0, stdout="Paused\n", stderr="")
+        if "metadata" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="Artista\tActual\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(music_module.subprocess, "run", fake_run)
+    service = MprisMusicService(binary="/usr/bin/playerctl")
+    tool = MusicTool(service=service)
+
+    result = tool.execute({"action": "play", "query": "Jazz Nocturno"}, ToolContext())
+
+    assert result.success is False
+    assert result.status_code == "UNSUPPORTED_QUERY"
+    assert "búsqueda por nombre" in result.message
+    assert result.data["state"] == "PAUSED"
 
 
 def test_system_status_tool_sanitization() -> None:

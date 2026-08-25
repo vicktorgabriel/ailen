@@ -63,6 +63,7 @@ vad_sensitivity = 2
 
 [vision]
 enabled = true
+camera_source = "auto"
 camera_device = "/dev/video0"
 fps = 5
 detector = "haar"

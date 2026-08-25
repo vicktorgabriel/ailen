@@ -90,8 +90,8 @@ class TestConfig(unittest.TestCase):
 
     def test_network_camera_config_round_trip(self):
         cfg = AILENConfig()
+        cfg.vision.camera_source = "rtsp"
         cfg.vision.network_camera_enabled = True
-        cfg.vision.network_camera_preferred = True
         cfg.vision.network_camera_host = "camera.local"
         cfg.vision.network_camera_port = 554
         cfg.vision.network_camera_path = "/h264_hd.sdp"
@@ -101,12 +101,44 @@ class TestConfig(unittest.TestCase):
             target = Path(tmp_dir) / "ailen.toml"
             save_config(cfg, target)
             loaded = load_config(target)
+        self.assertEqual(loaded.vision.camera_source, "rtsp")
         self.assertTrue(loaded.vision.network_camera_enabled)
-        self.assertTrue(loaded.vision.network_camera_preferred)
         self.assertEqual(loaded.vision.network_camera_host, "camera.local")
         self.assertEqual(loaded.vision.network_camera_path, "/h264_hd.sdp")
         self.assertEqual(loaded.vision.network_camera_password_env, "AILEN_CAMERA_PASSWORD")
         self.assertEqual(validate_config(loaded), [])
+
+    def test_camera_source_validation(self):
+        cfg = AILENConfig()
+        cfg.vision.camera_source = "firewire"
+        errors = validate_config(cfg)
+        self.assertTrue(any("vision.camera_source" in e for e in errors))
+
+        cfg.vision.camera_source = "rtsp"
+        errors = validate_config(cfg)
+        self.assertTrue(any("network_camera_enabled" in e for e in errors))
+
+    def test_legacy_network_camera_preferred_maps_to_rtsp(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "legacy.toml"
+            target.write_text(
+                '[vision]\nnetwork_camera_enabled = true\nnetwork_camera_preferred = true\n'
+                'network_camera_host = "camera.local"\n',
+                encoding="utf-8",
+            )
+            loaded = load_config(target)
+        self.assertEqual(loaded.vision.camera_source, "rtsp")
+
+    def test_explicit_camera_source_wins_over_legacy_preferred_flag(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "mixed.toml"
+            target.write_text(
+                '[vision]\ncamera_source = "usb"\nnetwork_camera_enabled = true\n'
+                'network_camera_preferred = true\nnetwork_camera_host = "camera.local"\n',
+                encoding="utf-8",
+            )
+            loaded = load_config(target)
+        self.assertEqual(loaded.vision.camera_source, "usb")
 
     def test_enabled_ai_backend_requires_valid_endpoint_and_model(self):
         cfg = AILENConfig()

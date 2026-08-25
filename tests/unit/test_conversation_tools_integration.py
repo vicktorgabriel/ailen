@@ -19,6 +19,7 @@ from ailen.infrastructure.sqlite.migrations import MigrationRunner
 from ailen.memory.repository import MemoryRepository
 from ailen.tools.builtin.clock import ClockTool
 from ailen.tools.builtin.notes import NotesTool
+from ailen.tools.builtin.reminders import RemindersTool
 from ailen.tools.builtin.timer import TimerService, TimerTool
 from ailen.tools.builtin.volume import FakeAudioVolumeService, VolumeTool
 from ailen.tools.builtin.web_search import (
@@ -303,6 +304,44 @@ def test_semantic_tool_fallback_can_answer_contextual_note_query(tmp_path: Path)
     assert response.provider == "tool"
     assert "comprar estaño mañana" in response.text
     assert plan.reason_code == "SEMANTIC_LOCAL_TOOL"
+
+
+
+def test_persistent_reminder_bypasses_llm_and_writes_sqlite(tmp_path: Path) -> None:
+    db = SQLiteManager(tmp_path / "conversation_reminders.db")
+    MigrationRunner(db).run_migrations()
+    repo = MemoryRepository(db)
+    session = repo.create_session(mode=SocialMode.WORKSHOP)
+
+    fake_ai = FakeAiBackend()
+    fake_ai.generate = MagicMock(side_effect=fake_ai.generate)
+    router = RuleBasedRouter()
+    orchestrator = AiOrchestrator(backends={"local": fake_ai}, router=router, repository=repo)
+    registry = ToolRegistry([RemindersTool(repository=repo), NotesTool(repository=repo)])
+    executor = ToolExecutor(registry=registry, repository=repo)
+    coordinator = ConversationCoordinator(
+        context_builder=AiContextBuilder(repository=repo),
+        router=router,
+        orchestrator=orchestrator,
+        tool_executor=executor,
+        profile=DeviceProfile.LOCAL,
+        mode=SocialMode.WORKSHOP,
+        privacy_level=PrivacyLevel.PRIVATE,
+        repository=repo,
+    )
+
+    response, plan = coordinator.handle_user_input(
+        "Recordame revisar el horno en 20 minutos",
+        session_id=session.session_id,
+    )
+
+    assert not fake_ai.generate.called
+    assert response.provider == "tool"
+    assert response.model == "reminders"
+    assert plan.reason_code == "RULE_ONLY_TOOL"
+    pending = repo.list_reminders(status="PENDING")
+    assert len(pending) == 1
+    assert pending[0].content == "revisar el horno"
 
 
 def test_generic_repetitive_followup_is_removed() -> None:

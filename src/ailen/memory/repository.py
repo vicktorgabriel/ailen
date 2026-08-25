@@ -11,6 +11,7 @@ from ailen.domain.models import (
     MemoryItem,
     Message,
     NoteItem,
+    ReminderItem,
     SystemEventRecord,
     ToolEvent,
     utc_now_iso,
@@ -509,3 +510,120 @@ class MemoryRepository:
                 )
                 for r in rows
             ]
+
+    # -------------------------------------------------------------------------
+    # Persistent Reminders
+    # -------------------------------------------------------------------------
+
+    def create_reminder(
+        self,
+        content: str,
+        due_at: str,
+        recurrence: str | None = None,
+    ) -> ReminderItem:
+        """Create a pending reminder. ``due_at`` must be an ISO UTC timestamp."""
+        reminder_id = f"rem-{uuid.uuid4().hex[:12]}"
+        now = utc_now_iso()
+        clean_content = content.strip()
+        with self.db_manager.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO reminders
+                    (reminder_id, content, due_at, recurrence, status, created_at, notified_at)
+                VALUES (?, ?, ?, ?, 'PENDING', ?, NULL);
+                """,
+                (reminder_id, clean_content, due_at, recurrence, now),
+            )
+        return ReminderItem(
+            reminder_id=reminder_id,
+            content=clean_content,
+            due_at=due_at,
+            recurrence=recurrence,
+            status="PENDING",
+            created_at=now,
+        )
+
+    def list_reminders(self, status: str | None = None, limit: int = 50) -> list[ReminderItem]:
+        """List reminders ordered by due time, optionally filtered by status."""
+        with self.db_manager.connection() as conn:
+            if status is None:
+                rows = conn.execute(
+                    """
+                    SELECT reminder_id, content, due_at, recurrence, status, created_at, notified_at
+                    FROM reminders ORDER BY due_at ASC LIMIT ?;
+                    """,
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT reminder_id, content, due_at, recurrence, status, created_at, notified_at
+                    FROM reminders WHERE status = ? ORDER BY due_at ASC LIMIT ?;
+                    """,
+                    (status, limit),
+                ).fetchall()
+        return [self._reminder_from_row(row) for row in rows]
+
+    def list_due_reminders(self, now_iso: str, limit: int = 50) -> list[ReminderItem]:
+        """Return pending reminders due at or before the supplied UTC boundary."""
+        with self.db_manager.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT reminder_id, content, due_at, recurrence, status, created_at, notified_at
+                FROM reminders
+                WHERE status = 'PENDING' AND due_at <= ?
+                ORDER BY due_at ASC
+                LIMIT ?;
+                """,
+                (now_iso, limit),
+            ).fetchall()
+        return [self._reminder_from_row(row) for row in rows]
+
+    def cancel_reminder(self, reminder_id: str | None = None) -> bool:
+        """Cancel a pending reminder, or the most recently created pending one."""
+        with self.db_manager.connection() as conn:
+            target_id = reminder_id
+            if target_id is None:
+                row = conn.execute(
+                    """
+                    SELECT reminder_id FROM reminders
+                    WHERE status = 'PENDING'
+                    ORDER BY created_at DESC, rowid DESC LIMIT 1;
+                    """
+                ).fetchone()
+                if row is None:
+                    return False
+                target_id = str(row["reminder_id"])
+            cursor = conn.execute(
+                "UPDATE reminders SET status = 'CANCELLED' WHERE reminder_id = ? AND status = 'PENDING';",
+                (target_id,),
+            )
+            return cursor.rowcount > 0
+
+    def mark_reminder_notified(self, reminder_id: str, notified_at: str | None = None) -> bool:
+        """Mark one pending reminder as notified."""
+        notified = notified_at or utc_now_iso()
+        with self.db_manager.connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE reminders
+                SET status = 'NOTIFIED', notified_at = ?
+                WHERE reminder_id = ? AND status = 'PENDING';
+                """,
+                (notified, reminder_id),
+            )
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def _reminder_from_row(row: object) -> ReminderItem:
+        # sqlite3.Row is mapping-like but intentionally kept out of the domain API.
+        r = row  # type: ignore[assignment]
+        return ReminderItem(
+            reminder_id=r["reminder_id"],  # type: ignore[index]
+            content=r["content"],  # type: ignore[index]
+            due_at=r["due_at"],  # type: ignore[index]
+            recurrence=r["recurrence"],  # type: ignore[index]
+            status=r["status"],  # type: ignore[index]
+            created_at=r["created_at"],  # type: ignore[index]
+            notified_at=r["notified_at"],  # type: ignore[index]
+        )

@@ -146,3 +146,44 @@ def test_preflight_yunet_with_real_lab_model_passes_when_available() -> None:
 
     assert item.status == "PASS"
     assert "YuNet ready" in item.detail
+
+def test_preflight_usb_source_ignores_unselected_rtsp_credentials() -> None:
+    cfg = AILENConfig()
+    cfg.speech.stt_engine = "mock"
+    cfg.speech.tts_engine = "mock"
+    cfg.vision.camera_source = "usb"
+    cfg.vision.detector = "haar"
+    cfg.vision.network_camera_enabled = True
+    cfg.vision.network_camera_host = "camera.local"
+    cfg.vision.network_camera_username = "admin"
+    cfg.vision.network_camera_password_env = "AILEN_INTENTIONALLY_MISSING_CAMERA_PASSWORD"
+
+    with TemporaryDirectory() as tmpdir:
+        store = SpeechAssetStore(base_dir=tmpdir)
+        checker = LabPreflightChecker(config=cfg, speech_store=store)
+        with patch("ailen.runtime.preflight.HardwareDetector.detect") as detect:
+            detect.return_value.cameras = [object()]
+            report = checker.run_all(no_audio=True, no_ai=True)
+
+    item = next(c for c in report.checks if c.name == "Vision & Camera")
+    assert item.status == "PASS"
+    assert "source=usb" in item.detail
+    assert "credential" not in item.detail.lower()
+
+def test_preflight_usb_source_without_camera_reports_usb_failure() -> None:
+    cfg = AILENConfig()
+    cfg.speech.stt_engine = "mock"
+    cfg.speech.tts_engine = "mock"
+    cfg.vision.camera_source = "usb"
+    cfg.vision.detector = "haar"
+
+    with TemporaryDirectory() as tmpdir:
+        store = SpeechAssetStore(base_dir=tmpdir)
+        checker = LabPreflightChecker(config=cfg, speech_store=store)
+        with patch("ailen.runtime.preflight.HardwareDetector.detect") as detect:
+            detect.return_value.cameras = []
+            report = checker.run_all(no_audio=True, no_ai=True)
+
+    item = next(c for c in report.checks if c.name == "Camera Hardware")
+    assert item.status == "FAIL"
+    assert "USB/V4L2" in item.detail

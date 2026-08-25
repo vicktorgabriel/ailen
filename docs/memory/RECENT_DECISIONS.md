@@ -51,6 +51,23 @@
 
 # Decisiones recientes — AILEN
 
+## 2026-08-24
+
+### R4: cámaras intercambiables + recordatorios persistentes
+
+- **Fuente de cámara explícita y portable:** `[vision].camera_source = "auto"|"usb"|"rtsp"`. USB y RTSP son modos estrictos; `auto` prioriza V4L2 y sólo usa RTSP como fallback configurado. La compatibilidad `network_camera_preferred` se resuelve al cargar configs legacy; nunca debe sobreescribir una selección nueva explícita. Credenciales RTSP siguen exclusivamente en ENV.
+- **NC250 no define el hardware del producto:** es una cámara RTSP opcional disponible por LAN. Debian puede usar una webcam USB reciclada sin modificar código; esto mantiene AILEN armable con periféricos heterogéneos. Ninguna cámara se marca físicamente validada en Debian hasta conectarla/probarla.
+- **Notas, timers y recordatorios son conceptos distintos:** notas = persistencia sin vencimiento; timers = duración efímera en memoria; recordatorios = persistencia SQLite con tiempo explícito UTC. Un `recordá que...` sin anclaje temporal conserva compatibilidad como nota; un `recordame ... en 20 minutos`/`mañana a las HH:MM` usa `RemindersTool`.
+- **Scheduler sin audio directo:** `ReminderService` publica `REMINDER_DUE`; `LabRunner` encola el anuncio y sólo inicia Piper cuando el estado es IDLE/ATTENTION y no hay interacción activa. La validación audible sigue siendo requisito físico.
+- **Ruff EXE002 sobre fuseblk:** la excepción se limita mediante `per-file-ignores` a `src/**/*.py`, `tests/**/*.py` y `tools/**/*.py`; no se desactiva globalmente.
+
+### R4 software en Debian: MPRIS + instalación limpia
+
+- El backend musical real se implementa como transporte MPRIS mediante `playerctl`, sin dependencia Python/DBus pesada, sin `shell=True` y sin permitir que una query de usuario se convierta en ruta, URL o comando.
+- `MusicTool()` conserva fail-closed por defecto; `LabRunner` inyecta `MprisMusicService`. Si `playerctl` o un player MPRIS no están disponibles, el resultado sigue siendo `UNAVAILABLE`. La validación audible física sigue pendiente.
+- Los entrypoints de AI que dependen de `BudgetPolicy` deben ejecutar migraciones SQLite antes de consultar `ai_usage`; una base ya existente en el host no puede ser una precondición oculta.
+- Gemini/OpenCode deben leer el estado R3C/R4 actual y no reconstruir Foundation; se corrigieron los handoffs obsoletos.
+
 ## 2026-08-21
 
 ### R3B.3 First Physical Lab Validation & Speech Asset Subsystem

@@ -701,10 +701,12 @@ def cmd_diagnose_ai(args: argparse.Namespace, config_path: str | None) -> int:
     from ailen.core.config import load_config
     from ailen.domain.enums import ServiceStatus
     from ailen.infrastructure.sqlite.connection import SQLiteManager
+    from ailen.infrastructure.sqlite.migrations import MigrationRunner
     from ailen.memory.repository import MemoryRepository
 
     cfg = load_config(config_path)
     db_mgr = SQLiteManager(cfg.memory.sqlite_path)
+    MigrationRunner(db_mgr).run_migrations()
     repo = MemoryRepository(db_mgr)
     budget_policy = BudgetPolicy(
         repository=repo,
@@ -1030,6 +1032,7 @@ def cmd_demo_ai(args: argparse.Namespace, config_path: str | None) -> int:
     from ailen.core.config import load_config
     from ailen.domain.enums import DeviceProfile, PrivacyLevel, SocialMode
     from ailen.infrastructure.sqlite.connection import SQLiteManager
+    from ailen.infrastructure.sqlite.migrations import MigrationRunner
     from ailen.memory.repository import MemoryRepository
 
     cfg = load_config(config_path)
@@ -1058,6 +1061,7 @@ def cmd_demo_ai(args: argparse.Namespace, config_path: str | None) -> int:
             pass
 
     db_mgr = SQLiteManager(cfg.memory.sqlite_path)
+    MigrationRunner(db_mgr).run_migrations()
     repo = MemoryRepository(db_mgr)
     budget_policy = BudgetPolicy(
         repository=repo,

@@ -113,9 +113,14 @@ class LabPreflightChecker:
             detector = HardwareDetector()
             hw_rep = detector.detect()
             has_camera = len(hw_rep.cameras) > 0
+            source_mode = self.config.vision.camera_source.strip().lower()
             network_camera_ready = False
             network_camera_detail = ""
-            if self.config.vision.network_camera_enabled:
+            check_network_camera = (
+                self.config.vision.network_camera_enabled
+                and source_mode in {"auto", "rtsp"}
+            )
+            if check_network_camera:
                 host = self.config.vision.network_camera_host.strip()
                 port = self.config.vision.network_camera_port
                 username = self.config.vision.network_camera_username.strip()
@@ -210,35 +215,42 @@ class LabPreflightChecker:
                     remediation="Install the configured detector/model or run with --no-camera",
                 ))
             else:
-                network_required = (
-                    self.config.vision.network_camera_enabled
-                    and self.config.vision.network_camera_preferred
-                )
-                source_ready = network_camera_ready if network_required else (has_camera or network_camera_ready)
+                if source_mode == "usb":
+                    source_ready = has_camera
+                    failure_detail = "USB/V4L2 camera selected but no physical camera was detected"
+                    remediation = "Connect USB webcam or select vision.camera_source=auto/rtsp"
+                elif source_mode == "rtsp":
+                    source_ready = network_camera_ready
+                    failure_detail = network_camera_detail or "RTSP camera selected but unavailable"
+                    remediation = (
+                        f"Set {self.config.vision.network_camera_password_env} and verify RTSP reachability"
+                        if self.config.vision.network_camera_enabled
+                        else "Enable network camera configuration or select vision.camera_source=usb/auto"
+                    )
+                else:
+                    source_ready = has_camera or network_camera_ready
+                    failure_detail = network_camera_detail or "No physical V4L2 or ready RTSP camera detected"
+                    remediation = "Connect USB webcam, configure RTSP, or pass --no-camera"
+
                 if not source_ready:
-                    detail = network_camera_detail or "No physical V4L2 cameras detected"
                     checks.append(PreflightCheckItem(
                         name="Camera Hardware",
                         is_required=True,
                         status="FAIL",
-                        detail=detail,
-                        remediation=(
-                            f"Set {self.config.vision.network_camera_password_env} and verify RTSP reachability"
-                            if self.config.vision.network_camera_enabled
-                            else "Connect USB webcam or pass --no-camera"
-                        ),
+                        detail=failure_detail,
+                        remediation=remediation,
                     ))
                 else:
                     sources = []
-                    if has_camera:
+                    if source_mode in {"auto", "usb"} and has_camera:
                         sources.append(f"{len(hw_rep.cameras)} V4L2 camera(s)")
-                    if network_camera_ready:
+                    if source_mode in {"auto", "rtsp"} and network_camera_ready:
                         sources.append(network_camera_detail)
                     checks.append(PreflightCheckItem(
                         name="Vision & Camera",
                         is_required=True,
                         status="PASS",
-                        detail=f"{vision_api_detail}; " + "; ".join(sources),
+                        detail=f"{vision_api_detail}; source={source_mode}; " + "; ".join(sources),
                     ))
 
         # 3. Audio Devices (Input & Output)
