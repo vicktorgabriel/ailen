@@ -17,6 +17,20 @@ class ClockTool:
 
     name: str = "clock"
     description: str = "Obtiene la hora o fecha actual del sistema de manera determinista."
+    intent_hints = (
+        "qué hora",
+        "que hora",
+        "decime la hora",
+        "dime la hora",
+        "hora actual",
+        "qué fecha",
+        "que fecha",
+        "fecha de hoy",
+        "cuál es la fecha",
+        "cual es la fecha",
+        "qué día es",
+        "que dia es",
+    )
     schema: ClassVar[dict[str, Any]] = {
         "properties": {
             "format": {

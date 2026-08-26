@@ -20,6 +20,7 @@ display_name = "Asistente"
 [display]
 enabled = true
 backend = "auto"               # auto, sdl2, drm, x11, headless
+face_style = "vector"           # vector, pixel
 width = 1280
 height = 720
 fullscreen = true
@@ -43,7 +44,9 @@ fps = 5
 detector = "haar"              # haar (experimental) or yunet
 detector_model_path = ""        # required for yunet; provisioned asset path
 detector_score_threshold = 0.8
-presence_debounce_seconds = 2.0
+presence_confirm_seconds = 0.8
+absence_confirm_seconds = 2.0
+dropout_grace_seconds = 0.6
 min_confidence = 0.5
 
 [speech]
@@ -59,8 +62,11 @@ vad_threshold = 0.02           # normalized RMS [0.0..1.0]
 silence_timeout_ms = 700       # silence duration to conclude utterance
 min_speech_ms = 250            # minimum voice duration to trigger utterance
 max_utterance_seconds = 15.0   # maximum utterance duration limit
-half_duplex = true             # block mic listening during TTS playback
-vad_sensitivity = 2
+interruption_enabled = true       # allow user barge-in during TTS
+interruption_threshold_rms = 0.08
+interruption_min_ms = 120
+interruption_calibration_ms = 160
+interruption_leak_multiplier = 1.25
 
 [ai]
 provider = "mock"              # mock, local, lan_brain, cloud
@@ -110,6 +116,9 @@ base_curiosity = 0.7
 base_sociability = 0.6
 base_formality = 0.5
 base_humor = 0.5
+base_verbosity = 0.4
+base_patience = 0.7
+base_expressiveness = 0.6
 
 [social]
 default_mode = "WORKSHOP"      # HOME, WORKSHOP, SHOP, PUBLIC, PRIVATE, SLEEP
@@ -128,6 +137,8 @@ rate_limit_rpm = 60
 # Outbound network permission for controlled WebSearch/WebFetch tools.
 # Independent from ai.cloud.enabled/allow_cloud.
 outbound_web_enabled = false
+web_search_provider = "none"
+web_search_region = "ar-es"
 
 [updates]
 channel = "beta"               # nightly, beta, stable

@@ -52,6 +52,30 @@ class TestMemoryRepository(unittest.TestCase):
 
         self.repo.end_session(session.session_id)
 
+    def test_close_open_sessions_is_scoped_to_node(self):
+        first = self.repo.create_session(mode=SocialMode.WORKSHOP, source_node_id="asrock")
+        second = self.repo.create_session(mode=SocialMode.WORKSHOP, source_node_id="asrock")
+        other = self.repo.create_session(mode=SocialMode.WORKSHOP, source_node_id="debian")
+        self.repo.end_session(second.session_id)
+
+        closed = self.repo.close_open_sessions(source_node_id="asrock")
+        self.assertEqual(closed, 1)
+
+        with self.repo.db_manager.connection() as conn:
+            first_row = conn.execute(
+                "SELECT ended_at FROM sessions WHERE session_id = ?", (first.session_id,)
+            ).fetchone()
+            second_row = conn.execute(
+                "SELECT ended_at FROM sessions WHERE session_id = ?", (second.session_id,)
+            ).fetchone()
+            other_row = conn.execute(
+                "SELECT ended_at FROM sessions WHERE session_id = ?", (other.session_id,)
+            ).fetchone()
+        assert first_row is not None and second_row is not None and other_row is not None
+        self.assertIsNotNone(first_row["ended_at"])
+        self.assertIsNotNone(second_row["ended_at"])
+        self.assertIsNone(other_row["ended_at"])
+
     def test_session_message_limit_returns_most_recent_in_chronological_order(self):
         session = self.repo.create_session(mode=SocialMode.WORKSHOP)
         for idx in range(8):
@@ -131,6 +155,27 @@ class TestMemoryRepository(unittest.TestCase):
         updated_facts = self.repo.get_business_facts(only_public=True)
         self.assertEqual(len(updated_facts), 1)
         self.assertEqual(updated_facts[0].value, "Lunes a Sábado 09:00 a 13:00")
+
+    def test_personality_traits_persist_and_audit(self):
+        self.assertEqual(self.repo.get_personality_traits("ailen-seed-01"), {})
+        self.repo.set_personality_trait(
+            identity_id="ailen-seed-01",
+            trait_name="formality",
+            trait_value=0.35,
+            reason="quiero que seas más informal",
+        )
+        traits = self.repo.get_personality_traits("ailen-seed-01")
+        self.assertEqual(traits, {"formality": 0.35})
+        with self.repo.db_manager.connection() as conn:
+            row = conn.execute(
+                "SELECT event_type, delta, reason FROM personality_events "
+                "WHERE identity_id = ? ORDER BY created_at DESC LIMIT 1;",
+                ("ailen-seed-01",),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row["event_type"], "EXPLICIT_STYLE_FEEDBACK")
+        self.assertEqual(row["reason"], "quiero que seas más informal")
 
     def test_tool_events_and_ai_usage_logging(self):
         tool_evt = self.repo.log_tool_event(

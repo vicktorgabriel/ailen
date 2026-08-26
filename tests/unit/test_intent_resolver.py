@@ -5,10 +5,19 @@ from ailen.tools.intent_resolver import IntentResolver
 
 def test_intent_resolver_clock() -> None:
     resolver = IntentResolver()
-    for phrase in ["¿Qué hora es?", "qué hora es", "decime la hora", "hora actual", "qué día es hoy"]:
+    for phrase in ["¿Qué hora es?", "qué hora es", "decime la hora", "hora actual"]:
         res = resolver.resolve(phrase)
         assert res.intent == "clock"
         assert res.tool_name == "clock"
+        assert res.tool_args == {"format": "time"}
+        assert res.requires_llm is False
+        assert res.confidence == 1.0
+
+    for phrase in ["qué día es hoy", "fecha de hoy", "cuál es la fecha"]:
+        res = resolver.resolve(phrase)
+        assert res.intent == "clock"
+        assert res.tool_name == "clock"
+        assert res.tool_args == {"format": "date"}
         assert res.requires_llm is False
         assert res.confidence == 1.0
 
@@ -86,6 +95,9 @@ def test_intent_resolver_web_search() -> None:
     assert res.tool_name == "web_search"
     assert res.tool_args == {"query": "el clima en Buenos Aires"}
     assert res.requires_llm is True  # Web search requires LLM to synthesize the results
+
+    news = resolver.resolve("Buscá en internet noticias de Python")
+    assert news.tool_args == {"query": "noticias de Python", "category": "news"}
 
 
 def test_intent_resolver_strict_negative_phrases() -> None:
@@ -265,3 +277,15 @@ def test_intent_resolver_persistent_reminders_require_explicit_time() -> None:
 
     assert resolver.resolve("mis recordatorios").tool_args == {"action": "list"}
     assert resolver.resolve("cancelar recordatorio").tool_args == {"action": "cancel"}
+
+def test_weather_queries_route_to_web_search() -> None:
+    resolver = IntentResolver()
+    for text in (
+        "Cuál es la temperatura actual en Las Lajas",
+        "Cómo va a estar el clima hoy en Las Lajas",
+        "Va a llover mañana en Neuquén",
+    ):
+        result = resolver.resolve(text)
+        assert result.tool_name == "web_search"
+        assert result.intent == "web_search"
+        assert result.tool_args["query"] == text

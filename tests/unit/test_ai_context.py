@@ -19,9 +19,12 @@ def test_context_builder_builds_basic_request() -> None:
         privacy_level=PrivacyLevel.PRIVATE,
     )
 
-    assert "Eres Aura" in req.system_context
+    assert "Sos Aura" in req.system_context
     assert "NO ejecuta acciones" in req.system_context
     assert "nunca afirmes que cambiaste volumen" in req.system_context
+    assert "Usá voseo" in req.system_context
+    assert "castellano peninsular" in req.system_context
+    assert "datos externos que pueden haber cambiado" in req.system_context
     assert len(req.messages) == 1
     assert req.messages[0].content == "Hola Aura"
     assert req.mode == SocialMode.HOME
@@ -85,9 +88,9 @@ def test_context_builder_includes_bounded_local_vision_state() -> None:
         },
     )
     assert "detector facial verificado está activo" in req.system_context
-    assert "detecta una persona" in req.system_context
+    assert "detecta un rostro" in req.system_context
     assert "no reconoce identidad" in req.system_context
-    assert "no repitas ni parafrasees" in req.system_context
+    assert "no repitas ni parafrasees" in req.system_context.lower()
 
 
 def test_context_builder_does_not_send_runtime_vision_state_to_cloud() -> None:
@@ -125,3 +128,39 @@ def test_context_builder_marks_experimental_vision_as_unverified() -> None:
     )
     assert "modo experimental" in req.system_context
     assert "No digas que ves o detectás" in req.system_context
+
+def test_ai_context_includes_bounded_personality_style() -> None:
+    builder = AiContextBuilder()
+    req = builder.build_request(
+        "hola",
+        metadata={"personality_style": "Usá un tono informal y respuestas breves."},
+    )
+    assert "tono informal" in req.system_context
+    assert "respuestas breves" in req.system_context
+
+
+def test_voice_context_allows_natural_reaction_without_support_closings() -> None:
+    req = AiContextBuilder().build_request(
+        "che, está fresco",
+        metadata={"voice_output": True, "capabilities": []},
+    )
+
+    assert "reaccioná con naturalidad" in req.system_context
+    assert "Evitá interrogatorios" in req.system_context
+    assert "Capacidades activas de Core" not in req.system_context
+
+def test_ai_context_includes_declarative_runtime_capabilities() -> None:
+    builder = AiContextBuilder()
+    req = builder.build_request(
+        "hola",
+        metadata={
+            "capabilities": [
+                {"key": "tool.clock", "description": "decir la hora"},
+                {"key": "face.expression", "description": "cambiar la expresión de la cara"},
+            ]
+        },
+    )
+    assert "tool.clock" in req.system_context
+    assert "face.expression" in req.system_context
+    assert "Sólo afirmes que podés ejecutar acciones incluidas en esa lista" in req.system_context
+    assert "web en vivo=no" not in req.system_context

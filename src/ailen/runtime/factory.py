@@ -33,7 +33,7 @@ from ailen.audio.fake import (
     FakeSttBackend,
     FakeTtsBackend,
 )
-from ailen.audio.piper_backend import PiperTtsBackend, resolve_piper_executable
+from ailen.audio.piper_backend import PiperTtsBackend, piper_runtime_available
 from ailen.audio.vosk_backend import VoskSttBackend
 from ailen.audio.whisper_backend import WhisperCppSttBackend
 from ailen.core.config import AILENConfig
@@ -126,12 +126,17 @@ class LabComponentFactory:
                     width=self.config.display.width,
                     height=self.config.display.height,
                     fullscreen=fullscreen or self.config.display.fullscreen,
+                    fps_limit=self.config.display.fps_limit,
+                    style=self.config.display.face_style,
                 )
                 return controller, ComponentStatus(
                     name="Face",
                     backend="Tkinter",
                     state="READY",
-                    detail=f"GUI window enabled ({self.config.display.width}x{self.config.display.height})",
+                    detail=(
+                        f"GUI window enabled ({self.config.display.width}x{self.config.display.height}, "
+                        f"style={self.config.display.face_style})"
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001
                 animator = FaceAnimator()
@@ -312,6 +317,10 @@ class LabComponentFactory:
                 detector=self.config.vision.detector,
                 yunet_model_path=self.config.vision.detector_model_path,
                 yunet_score_threshold=self.config.vision.detector_score_threshold,
+                rtsp_transport=self.config.vision.rtsp_transport,
+                rtsp_open_timeout_ms=self.config.vision.rtsp_open_timeout_ms,
+                rtsp_read_timeout_ms=self.config.vision.rtsp_read_timeout_ms,
+                rtsp_reconnect_after_failures=self.config.vision.rtsp_reconnect_after_failures,
             )
             detail = (
                 f"Camera source '{selected_label}' selected @ {self.config.vision.fps} FPS "
@@ -539,14 +548,13 @@ class LabComponentFactory:
 
         engine = self.config.speech.tts_engine.lower()
         if engine == "piper":
-            piper_exe = resolve_piper_executable("piper")
-            if not piper_exe:
+            if not piper_runtime_available():
                 return None, ComponentStatus(
                     name="TTS",
                     backend="Piper",
                     state="UNAVAILABLE",
-                    detail="piper binary not found in PATH",
-                    remediation="Install piper binary in PATH",
+                    detail="piper-tts Python package is not installed",
+                    remediation="Install the project speech dependency that provides piper-tts",
                 )
 
             model_path_str = self.config.speech.tts_model_path.strip()
@@ -560,7 +568,6 @@ class LabComponentFactory:
                 )
 
             piper_backend = PiperTtsBackend(
-                binary_path=piper_exe,
                 model_path=model_path_str,
                 config_path=self.config.speech.tts_config_path,
             )

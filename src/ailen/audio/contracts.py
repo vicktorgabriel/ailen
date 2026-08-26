@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from threading import Event
 from typing import Protocol, runtime_checkable
 
 from ailen.domain.enums import ServiceStatus
@@ -76,6 +77,7 @@ class VadResult:
     is_speech: bool
     rms: float = 0.0
     energy: float = 0.0
+    is_trigger: bool | None = None
 
 
 @runtime_checkable
@@ -117,8 +119,9 @@ class AudioOutputBackend(Protocol):
         audio_data: bytes,
         sample_rate: int = 16000,
         channels: int = 1,
+        cancel_event: Event | None = None,
     ) -> None:
-        """Play PCM audio data."""
+        """Play PCM audio data unless the owning speech turn was cancelled."""
         ...
 
     def stop(self) -> None:

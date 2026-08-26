@@ -1,6 +1,7 @@
 """Fake STT/TTS backends. Sin audio real; deterministas para tests."""
 
 import time
+from threading import Event
 
 from ailen.audio.contracts import (
     AudioBackendHealth,
@@ -105,18 +106,21 @@ class FakeAudioOutputBackend:
 
     def __init__(self) -> None:
         self.played_chunks: list[bytes] = []
+        self.stopped = False
 
     def play(
         self,
         audio_data: bytes,
         sample_rate: int = 16000,
         channels: int = 1,
+        cancel_event: Event | None = None,
     ) -> None:
-        if audio_data:
+        if audio_data and not (cancel_event and cancel_event.is_set()):
             self.played_chunks.append(audio_data)
+            self.stopped = False
 
     def stop(self) -> None:
-        pass
+        self.stopped = True
 
     def health(self) -> AudioBackendHealth:
         return AudioBackendHealth(status=ServiceStatus.HEALTHY, detail="fake audio output")

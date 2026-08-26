@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ailen.audio.alsa_backend import AlsaDeviceEnumerator
-from ailen.audio.piper_backend import resolve_piper_executable
+from ailen.audio.piper_backend import piper_runtime_available
 from ailen.core.config import AILENConfig
 from ailen.hardware.detector import HardwareDetector
 from ailen.models.catalog import ModelCatalog
@@ -387,16 +387,16 @@ class LabPreflightChecker:
                     remediation="Run: ailen lab prepare-speech --yes and set speech.tts_engine = 'piper'",
                 ))
             elif tts_engine == "piper":
-                has_piper = bool(resolve_piper_executable("piper"))
+                has_piper = piper_runtime_available()
                 model_path_str = self.config.speech.tts_model_path.strip()
                 has_model = bool(model_path_str and Path(model_path_str).is_file())
                 if not has_piper:
                     checks.append(PreflightCheckItem(
-                        name="TTS Binary (Piper)",
+                        name="TTS Runtime (Piper)",
                         is_required=True,
                         status="FAIL",
-                        detail="piper executable not found in PATH",
-                        remediation="Install Piper binary in PATH (e.g. ~/.local/bin/piper)",
+                        detail="piper-tts Python package is not installed",
+                        remediation="Install the project speech dependency that provides piper-tts",
                     ))
                 elif not has_model:
                     checks.append(PreflightCheckItem(

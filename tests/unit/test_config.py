@@ -108,6 +108,20 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(loaded.vision.network_camera_password_env, "AILEN_CAMERA_PASSWORD")
         self.assertEqual(validate_config(loaded), [])
 
+    def test_display_face_style_and_personality_ranges(self):
+        cfg = AILENConfig()
+        cfg.display.face_style = "pixel"
+        self.assertEqual(validate_config(cfg), [])
+
+        cfg.display.face_style = "hologram"
+        errors = validate_config(cfg)
+        self.assertTrue(any("display.face_style" in e for e in errors))
+
+        cfg.display.face_style = "vector"
+        cfg.personality.base_verbosity = 1.5
+        errors = validate_config(cfg)
+        self.assertTrue(any("personality.base_verbosity" in e for e in errors))
+
     def test_camera_source_validation(self):
         cfg = AILENConfig()
         cfg.vision.camera_source = "firewire"
@@ -118,27 +132,43 @@ class TestConfig(unittest.TestCase):
         errors = validate_config(cfg)
         self.assertTrue(any("network_camera_enabled" in e for e in errors))
 
-    def test_legacy_network_camera_preferred_maps_to_rtsp(self):
+    def test_canonical_rtsp_and_interruption_config_loads(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            target = Path(tmp_dir) / "legacy.toml"
+            target = Path(tmp_dir) / "canonical.toml"
             target.write_text(
-                '[vision]\nnetwork_camera_enabled = true\nnetwork_camera_preferred = true\n'
-                'network_camera_host = "camera.local"\n',
+                '[vision]\ncamera_source = "rtsp"\nnetwork_camera_enabled = true\n'
+                'network_camera_host = "camera.local"\nrtsp_transport = "tcp"\n'
+                'rtsp_reconnect_after_failures = 7\n'
+                '[speech]\ninterruption_enabled = true\n'
+                'interruption_threshold_rms = 0.09\ninterruption_min_ms = 200\n',
                 encoding="utf-8",
             )
             loaded = load_config(target)
         self.assertEqual(loaded.vision.camera_source, "rtsp")
+        self.assertEqual(loaded.vision.rtsp_transport, "tcp")
+        self.assertEqual(loaded.vision.rtsp_reconnect_after_failures, 7)
+        self.assertTrue(loaded.speech.interruption_enabled)
+        self.assertEqual(loaded.speech.interruption_min_ms, 200)
 
-    def test_explicit_camera_source_wins_over_legacy_preferred_flag(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            target = Path(tmp_dir) / "mixed.toml"
-            target.write_text(
-                '[vision]\ncamera_source = "usb"\nnetwork_camera_enabled = true\n'
-                'network_camera_preferred = true\nnetwork_camera_host = "camera.local"\n',
-                encoding="utf-8",
-            )
-            loaded = load_config(target)
-        self.assertEqual(loaded.vision.camera_source, "usb")
+    def test_web_search_provider_validation(self):
+        cfg = AILENConfig()
+        cfg.network.web_search_provider = "unknown"
+        cfg.network.web_search_region = ""
+        errors = validate_config(cfg)
+        self.assertTrue(any("network.web_search_provider" in e for e in errors))
+        self.assertTrue(any("network.web_search_region" in e for e in errors))
+
+    def test_rtsp_and_interruption_validation(self):
+        cfg = AILENConfig()
+        cfg.vision.rtsp_transport = "magic"
+        cfg.vision.rtsp_reconnect_after_failures = 0
+        cfg.speech.interruption_threshold_rms = 0.0
+        cfg.speech.interruption_min_ms = 20
+        errors = validate_config(cfg)
+        self.assertTrue(any("vision.rtsp_transport" in e for e in errors))
+        self.assertTrue(any("vision.rtsp_reconnect_after_failures" in e for e in errors))
+        self.assertTrue(any("speech.interruption_threshold_rms" in e for e in errors))
+        self.assertTrue(any("speech.interruption_min_ms" in e for e in errors))
 
     def test_enabled_ai_backend_requires_valid_endpoint_and_model(self):
         cfg = AILENConfig()
@@ -160,7 +190,7 @@ class TestConfig(unittest.TestCase):
         cfg.speech.vad_threshold = -0.5
         cfg.speech.silence_timeout_ms = -10
         cfg.vision.fps = 0
-        cfg.vision.presence_debounce_seconds = -1.0
+        cfg.vision.presence_confirm_seconds = -1.0
         cfg.vision.min_confidence = 2.0
         cfg.logging.level = "INVALID_LEVEL"
 
@@ -174,7 +204,7 @@ class TestConfig(unittest.TestCase):
         self.assertTrue(any("speech.vad_threshold" in e for e in errors))
         self.assertTrue(any("speech.silence_timeout_ms" in e for e in errors))
         self.assertTrue(any("vision.fps" in e for e in errors))
-        self.assertTrue(any("presence_debounce" in e for e in errors))
+        self.assertTrue(any("vision.presence_confirm_seconds" in e for e in errors))
         self.assertTrue(any("min_confidence" in e for e in errors))
         self.assertTrue(any("Invalid logging level" in e for e in errors))
 

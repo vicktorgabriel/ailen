@@ -17,6 +17,17 @@ class NotesTool:
 
     name: str = "notes"
     description: str = "Guarda, lista o busca notas del usuario de forma persistente."
+    intent_hints = (
+        "nota", "notas", "anota", "anotá", "anotame", "apunta", "apuntá",
+        "guardar", "guardame", "apuntado", "comprar",
+    )
+    intent_guidance = (
+        "Nunca inventes texto faltante para crear una nota. 'nota comprar X' puede significar "
+        "guardar una nota, no una compra financiera. Si preguntan cuál/qué nota fue guardada o "
+        "anotada y no nombran un tema concreto, usá notes list; no busques la palabra 'nota'. "
+        "Si preguntan por contenido concreto de una nota, como 'qué tengo que comprar mañana', "
+        "usá notes search con sólo palabras de contenido útiles, por ejemplo 'comprar mañana'."
+    )
     schema: ClassVar[dict[str, Any]] = {
         "properties": {
             "action": {
@@ -56,9 +67,23 @@ class NotesTool:
 
     def __init__(self, repository: MemoryRepository | None = None) -> None:
         self.repository = repository
-        self._fallback_notes: list[str] = []
+
+    @property
+    def is_available(self) -> bool:
+        return self.repository is not None
 
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
+        del context
+        repository = self.repository
+        if repository is None:
+            return ToolResult(
+                success=False,
+                tool_name=self.name,
+                status_code="UNAVAILABLE",
+                message="Las notas persistentes requieren la base de datos local.",
+                error_code=ErrorCode.TOOL_UNAVAILABLE,
+            )
+
         action = validated_args["action"]
 
         if action in {"create", "add"}:
@@ -72,12 +97,8 @@ class NotesTool:
                     error_code=ErrorCode.TOOL_ARGS_INVALID,
                 )
 
-            if self.repository is not None:
-                note = self.repository.create_note(content=text)
-                note_id = note.note_id
-            else:
-                self._fallback_notes.append(text)
-                note_id = f"mem-{len(self._fallback_notes)}"
+            note = repository.create_note(content=text)
+            note_id = note.note_id
 
             msg = f"Nota guardada: {text}"
             return ToolResult(
@@ -92,11 +113,11 @@ class NotesTool:
 
         if action == "list":
             limit = validated_args.get("limit", 10)
-            if self.repository is not None:
-                notes = self.repository.list_notes(limit=limit)
-                note_items = [{"note_id": n.note_id, "content": n.content, "created_at": n.created_at} for n in notes]
-            else:
-                note_items = [{"note_id": f"mem-{i+1}", "content": c, "created_at": ""} for i, c in enumerate(self._fallback_notes[:limit])]
+            notes = repository.list_notes(limit=limit)
+            note_items = [
+                {"note_id": n.note_id, "content": n.content, "created_at": n.created_at}
+                for n in notes
+            ]
 
             if not note_items:
                 msg = "No tenés ninguna nota guardada."
@@ -128,15 +149,11 @@ class NotesTool:
                     error_code=ErrorCode.TOOL_ARGS_INVALID,
                 )
 
-            if self.repository is not None:
-                matches = self.repository.search_notes(query=query, limit=limit)
-                results = [{"note_id": n.note_id, "content": n.content, "created_at": n.created_at} for n in matches]
-            else:
-                results = [
-                    {"note_id": f"mem-{i+1}", "content": c, "created_at": ""}
-                    for i, c in enumerate(self._fallback_notes)
-                    if query.lower() in c.lower()
-                ][:limit]
+            matches = repository.search_notes(query=query, limit=limit)
+            results = [
+                {"note_id": n.note_id, "content": n.content, "created_at": n.created_at}
+                for n in matches
+            ]
 
             if not results:
                 msg = f"No se encontraron notas con '{query}'."

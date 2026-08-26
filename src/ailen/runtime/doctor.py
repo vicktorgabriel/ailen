@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ailen.ai.secrets import SecretResolver
-from ailen.audio.piper_backend import resolve_piper_executable
+from ailen.audio.piper_backend import piper_runtime_available
 from ailen.core.config import AILENConfig
 from ailen.hardware.detector import HardwareDetector
 from ailen.models.catalog import ModelCatalog
@@ -134,16 +134,16 @@ class LabDoctor:
             tts_engine = self.config.speech.tts_engine.lower()
             if tts_engine == "piper":
                 tts_path = self.config.speech.tts_model_path.strip()
-                piper_bin = resolve_piper_executable("piper")
-                if piper_bin and tts_path and Path(tts_path).is_file():
+                piper_ok = piper_runtime_available()
+                if piper_ok and tts_path and Path(tts_path).is_file():
                     checks.append(DiagnosticCheck(name="TTS Voice Model", result="PASS", detail=f"Piper ONNX model at {tts_path}"))
                 else:
-                    detail = f"Piper binary={'OK' if piper_bin else 'MISSING'}, model={tts_path or 'unconfigured'}"
+                    detail = f"Piper Python runtime={'OK' if piper_ok else 'MISSING'}, model={tts_path or 'unconfigured'}"
                     checks.append(DiagnosticCheck(
                         name="TTS Voice Model",
                         result="WARN",
                         detail=detail,
-                        remediation="Install piper binary and set speech.tts_model_path in ailen.toml",
+                        remediation="Install piper-tts and set speech.tts_model_path in ailen.toml",
                     ))
             elif tts_engine == "mock":
                 checks.append(DiagnosticCheck(name="TTS Voice Model", result="SKIP", detail="TTS set to mock"))

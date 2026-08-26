@@ -2,7 +2,9 @@
 
 from ailen.tools.builtin import (
     AudioVolumeService,
+    CameraTool,
     ClockTool,
+    FaceExpressionTool,
     FakeAudioVolumeService,
     FakeWebSearchProvider,
     LocalMusicService,
@@ -42,7 +44,9 @@ from ailen.tools.registry import ToolRegistry
 __all__ = [
     "ALL_SOCIAL_MODES",
     "AudioVolumeService",
+    "CameraTool",
     "ClockTool",
+    "FaceExpressionTool",
     "FakeAudioVolumeService",
     "FakeNotesTool",
     "FakeVolumeTool",

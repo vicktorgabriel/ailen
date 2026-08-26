@@ -29,7 +29,7 @@
 - **TTFAR operacional**: mide desde `VOICE_ENDED` hasta el primer PCM que AILEN entrega al backend de playback. Es proxy de primer audio audible, no una medición física del DAC/auricular.
 - **Perfiles VAD y Calidad STT Heurística**: Perfiles `conservative` (700ms), `normal` (500ms) y `fast` (350ms) en `UtteranceCollector`. Heurística `SttQualityEvaluator` para reprompt ante transcripciones vacías o ruido sin inventar falsos niveles de confianza.
 - **Fast-Path conservador preparado para R3C**: sólo clasifica órdenes inequívocas; no ejecuta tools todavía. Frases ambiguas/técnicas se mantienen en chat para evitar acciones incorrectas.
-- **Piper Python cacheado/chunked**: la API instalada sí expone `AudioChunk`; AILEN cachea la voz, precalienta al iniciar Lab y reproduce chunks por oración, con CLI bloqueante como fallback.
+- **Piper Python cacheado/chunked**: la API instalada sí expone `AudioChunk`; AILEN cachea la voz, precalienta al iniciar Lab y reproduce chunks por oración mediante esa única ruta canónica.
 - **No razonamiento interno como respuesta**: `reasoning_content` nunca se promueve a texto visible/TTS en el backend genérico.
 - **Preferencia de recursos conservadora**: la preferencia del usuario puede bajar el perfil, nunca superar lo permitido por hardware medido; ModelPlanner elige el menor footprint que satisface el nivel solicitado.
 
@@ -50,6 +50,70 @@
 - El género de una voz no se deduce del nombre del dataset/voice. Si la fuente oficial no lo declara inequívocamente, se registra `unknown`.
 
 # Decisiones recientes — AILEN
+
+## 2026-08-26
+
+### Latencia conversacional y actualidad Web
+
+- Las palabras aisladas `día`, `hora` y `fecha` ya no abren el parser de Clock;
+  sus hints son frases de intención. `qué día es hoy` usa además formato `date`,
+  no `time`.
+- `AiContextBuilder` no emite un bloque de capacidades cuando la lista está vacía
+  y consolidó reglas equivalentes de voz/seguridad. Una traza casual bajó de 444
+  a 398 tokens de entrada y de 2.095 s a 1.777 s, con semantic `attempted=false`;
+  el ahorro total incluye variación de longitud de salida y no se atribuye entero
+  al prompt.
+- La guía de interpretación vive en la tool y sólo se inyecta para candidatas. La
+  guía de Notes dejó de viajar en consultas Web; el parser medido bajó 416 -> 318
+  tokens antes de sumar el schema explícito de noticias.
+- WebSearch usa tres resultados por defecto porque el resumen sólo conserva tres.
+  DDGS midió mediana 2.766 s con cinco y 1.515 s con tres (tres muestras por grupo),
+  con variabilidad externa.
+- La prueba posterior corrigió una conclusión previa: snippets Web sin fecha sí
+  permitían una inferencia temporal falsa. `news` transporta `published_at`, acepta
+  frescura day/week/month y trata ausencia de resultados como vacío normal. No se
+  permite que el resumen sustituya timestamps ausentes con conocimiento del modelo.
+- El routing Web implícito aún agrega una inferencia qwen de ~1.4–1.7 s. Eliminarla
+  requiere evaluar el router estructurado pendiente; no se ocultó con timeouts ni
+  una lista central creciente de keywords.
+
+## 2026-08-25
+
+### Auditoría de regresiones físicas ASRock
+
+- El parser semántico sólo usa `intent_hints` declarados por cada tool. Se quitaron
+  disparadores temporales genéricos de WebSearch porque `hoy`, `ahora` o `último`
+  agregaban una inferencia qwen completa a comentarios cotidianos.
+- El historial puede desambiguar una tool sólo después de que el texto actual
+  coincide con hints declarados; ya no activa el parser por ser un reply corto.
+  `muy bien` después de Clock midió semantic 0.3 ms (`attempted=false`) y turno
+  textual completo 1.354 s con qwen3.5:9b bajo la carga observada.
+- Una consulta externa implícita usó DDGS real y luego síntesis local: semantic
+  1.564 s, tool 4.669 s, main LLM 2.386 s y total texto 8.644 s. Una validación
+  posterior detectó que snippets sin fecha aún podían inducir cronología falsa;
+  la decisión fechada de 2026-08-26 reemplaza esa conclusión de calidad.
+- La telemetría de conversación registra timestamps monotónicos de resolver
+  determinista/semántico, tool, construcción de contexto, prompt-eval, generación,
+  primer PCM, chunks, `aplay` y total del turno. Las métricas AI separan evaluación
+  de prompt, generación y carga cuando Ollama las reporta.
+- La captura PipeWire fija período/buffer derivados de `frame_ms`; el VAD no usa
+  hangover como evidencia inicial; barge-in propaga un token de cancelación hasta
+  `AudioOutputBackend` y conserva frames durante blockers/cooldown.
+- CameraControl, RTSP con frames, detector y presencia estable ya no comparten un
+  READY optimista. La NC250 fue verificada en NIGHT; RTSP HD entregó frames y YuNet
+  ejecutó, mientras que presencia depende de que haya un rostro en cuadro.
+- Las expresiones permitidas son overlays transitorios sobre el estado. El modelo
+  conversacional todavía no produce metadata expresiva; ese contrato requiere una
+  decisión estructural separada y no se reemplaza con keywords de contenido.
+- El renderer pixel aceptado físicamente usa 4 px a 800x480, contornos escalonados,
+  iris/pupila y tres tonos. Once gestos conservan articulación durante `SPEAKING`;
+  la demo aislada a 30 FPS midió 2.1% CPU de proceso y 25.9 MB RSS en ASRock.
+- El prompt de voz se compactó manteniendo límites de memoria, tools y actualidad.
+  Qwen sigue mostrando variabilidad de estilo; la validación conversacional física
+  y el prefetch cancelable de Piper permanecen pendientes.
+- Notas y recordatorios persistentes se anuncian sólo cuando SQLite está disponible;
+  se eliminó el guardado volátil de notas que podía confirmar éxito y perder datos al
+  reiniciar.
 
 ## 2026-08-24
 

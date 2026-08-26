@@ -32,7 +32,7 @@ def test_full_vision_debouncer_coordinator_face_pipeline() -> None:
     event_bus = EventBus()
     animator = FaceAnimator(clock=clock)
     face_ctrl = NullFaceController(animator=animator)
-    debouncer = VisionDebouncer(debounce_seconds=2.0, clock=clock)
+    debouncer = VisionDebouncer(presence_confirm_seconds=2.0, absence_confirm_seconds=2.0, dropout_grace_seconds=0.0, clock=clock)
 
     coordinator = InteractionCoordinator(
         state_manager=state_mgr,
@@ -72,7 +72,7 @@ def test_full_vision_debouncer_coordinator_face_pipeline() -> None:
 
     # Face pose has attentive eyes oriented towards (0.4, 0.2)
     pose = face_ctrl.get_current_pose()
-    assert pose.expression in ("attentive", "ready")
+    assert pose.expression in ("attentive", "focused")
     assert pose.gaze_x > 0.0
     assert pose.gaze_y > 0.0
 

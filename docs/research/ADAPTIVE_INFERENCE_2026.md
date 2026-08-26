@@ -94,7 +94,7 @@ The live Lab now wires TTFAR from `VOICE_ENDED` to `SPEECH_STARTED`. `SPEECH_STA
 
 ## 6. Piper chunked synthesis and prewarm
 
-The installed `piper-tts` Python API exposes `PiperVoice.synthesize() -> Iterable[AudioChunk]` (one chunk per sentence). AILEN therefore uses a cached Python voice for incremental sentence playback when available and keeps the CLI path as a blocking fallback. Lab prewarms the voice before opening microphone capture so the first user turn does not normally pay the ~2 s model-load cost observed on Asrock. After caching, the first chunk of a short sample was observed at ~65 ms.
+The installed `piper-tts` Python API exposes `PiperVoice.synthesize() -> Iterable[AudioChunk]` (one chunk per sentence). AILEN therefore uses a cached Python voice for incremental sentence playback as its sole canonical synthesis route. Lab prewarms the voice before opening microphone capture so the first user turn does not normally pay the ~2 s model-load cost observed on Asrock. After caching, the first chunk of a short sample was observed at ~65 ms.
 
 ## 7. Safety/truthfulness constraints
 

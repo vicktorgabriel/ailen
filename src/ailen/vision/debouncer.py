@@ -7,36 +7,25 @@ from ailen.vision.contracts import PresenceObservation
 
 
 class VisionDebouncer:
-    """Convert noisy frame-level detections into stable presence state.
-
-    Legacy callers can keep using ``debounce_seconds`` symmetrically. Physical
-    runtimes may opt into faster presence acquisition plus a short dropout grace
-    while retaining a longer absence confirmation window.
-    """
+    """Convert noisy detections into stable presence using explicit hysteresis windows."""
 
     def __init__(
         self,
-        debounce_seconds: float = 2.0,
-        clock: Callable[[], float] | None = None,
         *,
-        presence_confirm_seconds: float | None = None,
-        absence_confirm_seconds: float | None = None,
-        dropout_grace_seconds: float = 0.0,
+        presence_confirm_seconds: float = 0.8,
+        absence_confirm_seconds: float = 2.0,
+        dropout_grace_seconds: float = 0.6,
+        clock: Callable[[], float] | None = None,
     ) -> None:
-        if debounce_seconds < 0:
-            raise ValueError("debounce_seconds must be >= 0")
-        self.presence_confirm_seconds = (
-            debounce_seconds if presence_confirm_seconds is None else presence_confirm_seconds
-        )
-        self.absence_confirm_seconds = (
-            debounce_seconds if absence_confirm_seconds is None else absence_confirm_seconds
-        )
-        if self.presence_confirm_seconds < 0 or self.absence_confirm_seconds < 0:
-            raise ValueError("presence/absence confirmation windows must be >= 0")
+        if presence_confirm_seconds < 0:
+            raise ValueError("presence_confirm_seconds must be >= 0")
+        if absence_confirm_seconds < 0:
+            raise ValueError("absence_confirm_seconds must be >= 0")
         if dropout_grace_seconds < 0:
             raise ValueError("dropout_grace_seconds must be >= 0")
 
-        self.debounce_seconds = debounce_seconds
+        self.presence_confirm_seconds = presence_confirm_seconds
+        self.absence_confirm_seconds = absence_confirm_seconds
         self.dropout_grace_seconds = dropout_grace_seconds
         self._clock = clock or time.monotonic
         self._stable_observation = PresenceObservation(present=False)

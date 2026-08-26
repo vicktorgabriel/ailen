@@ -5,9 +5,12 @@ TTS synthesis, audio output playback, half-duplex turn gating, and face mouth sy
 """
 
 import logging
+import queue
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from ailen.audio.contracts import (
     AudioInputBackend,
@@ -29,12 +32,19 @@ from ailen.audio.fake import (
 from ailen.audio.pcm import compute_pcm_rms
 from ailen.audio.turn_gate import AudioTurnGate
 from ailen.audio.vad import EnergyVad, UtteranceCollector
+from ailen.core.capabilities import CapabilityDescriptor
 from ailen.core.events import EventBus
 from ailen.core.state import StateManager
 from ailen.domain.enums import AssistantState, EventType
 from ailen.face.contracts import FaceController
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _ReadySpeechChunk:
+    output: SpeechOutput
+    ready_monotonic: float
 
 
 class AudioInteractionCoordinator:
@@ -53,6 +63,12 @@ class AudioInteractionCoordinator:
         event_bus: EventBus | None = None,
         clock: Callable[[], float] | None = None,
         auto_reset_after_stt: bool = True,
+        interruption_enabled: bool = False,
+        interruption_threshold_rms: float = 0.02,
+        interruption_min_ms: int = 120,
+        interruption_calibration_ms: int = 160,
+        interruption_leak_multiplier: float = 1.25,
+        frame_ms: float = 20.0,
     ) -> None:
         self.audio_input = audio_input or FakeAudioInputBackend()
         self.audio_output = audio_output or FakeAudioOutputBackend()
@@ -65,11 +81,48 @@ class AudioInteractionCoordinator:
         self.event_bus = event_bus
         self._clock = clock or time.monotonic
         self.auto_reset_after_stt = auto_reset_after_stt
+        self.interruption_enabled = interruption_enabled
+        self.interruption_threshold_rms = max(0.001, min(1.0, interruption_threshold_rms))
+        self.interruption_leak_multiplier = max(1.0, interruption_leak_multiplier)
+        self._interruption_frames_required = max(1, round(interruption_min_ms / frame_ms))
+        self._interruption_calibration_frames = max(0, round(interruption_calibration_ms / frame_ms))
+        self._interruption_calibration_seen = 0
+        self._speaker_leak_peak_rms = 0.0
+        self._playback_started = False
+        self._interruption_voice_frames = 0
+        self._interruption_buffer: deque[bytes] = deque(
+            maxlen=max(self._interruption_frames_required * 3, self._interruption_frames_required)
+        )
+        self._pending_interruption_frames: deque[bytes] = deque()
+        self._interruption_triggered = False
+        self._speech_cancel = threading.Event()
 
         self._running = False
         self._loop_thread: threading.Thread | None = None
         self._last_transcript: Transcript | None = None
         self._lock = threading.Lock()
+        self._last_vad_speech = False
+        self._utterance_started_monotonic: float | None = None
+        self._utterance_id: str | None = None
+        self._utterance_sequence = 0
+        self._rms_samples: dict[str, deque[float]] = {}
+        self._last_rms_report_monotonic = self._clock()
+
+    def capabilities(self) -> list[CapabilityDescriptor]:
+        return [
+            CapabilityDescriptor(
+                key="speech.conversation",
+                description="escuchar voz, transcribirla y responder hablando",
+                available=self._running,
+                source="audio",
+            ),
+            CapabilityDescriptor(
+                key="speech.interrupt",
+                description="ser interrumpida por la voz del usuario mientras habla",
+                available=self._running and self.interruption_enabled,
+                source="audio",
+            ),
+        ]
 
     @property
     def last_transcript(self) -> Transcript | None:
@@ -127,26 +180,155 @@ class AudioInteractionCoordinator:
 
         Returns tuple of (completed_segment, transcript) if speech completed, or (None, None).
         """
-        # 1. Half-duplex filtering
-        frame = self.turn_gate.filter_frame(raw_frame)
-        if frame is None:
+        if raw_frame is None:
             return None, None
 
+        # Normal STT remains isolated from speaker output, but raw microphone
+        # energy can still request a barge-in while TTS is playing.
+        if self.turn_gate.is_speaking:
+            if self.interruption_enabled:
+                self._inspect_barge_in(raw_frame)
+            return None, None
+
+        if self._interruption_triggered:
+            # Once barge-in fires, every subsequent microphone frame belongs to
+            # that user turn. Keep buffering through the previous processing
+            # blocker and its settling cooldown instead of opening a 150 ms hole.
+            if self.turn_gate.is_processing or not self.turn_gate.is_listening_allowed():
+                self._observe_rms("barge_buffered", compute_pcm_rms(raw_frame))
+                self._pending_interruption_frames.append(raw_frame)
+                return None, None
+
+            # Drain incrementally. Clearing the deque up front discarded all
+            # frames after the first completed segment, including the tail of a
+            # real interruption or a second utterance already captured.
+            self._pending_interruption_frames.append(raw_frame)
+            while self._pending_interruption_frames:
+                buffered_frame = self._pending_interruption_frames.popleft()
+                result = self._process_listening_frame(buffered_frame)
+                if result[0] is not None:
+                    return result
+            return None, None
+
+        frame = self.turn_gate.filter_frame(raw_frame)
+        if frame is None:
+            phase = "processing_blocked" if self.turn_gate.is_processing else "cooldown_blocked"
+            self._observe_rms(phase, compute_pcm_rms(raw_frame))
+            return None, None
+
+        return self._process_listening_frame(frame)
+
+    def _process_listening_frame(
+        self, frame: bytes
+    ) -> tuple[AudioSegment | None, Transcript | None]:
         was_in_utterance = self.collector.is_in_utterance
-
-        # 2. Utterance collector step
         segment, _ = self.collector.process_frame(frame)
-
-        # 3. State transitions for Voice onset
+        vad_result = self.collector.last_vad_result
+        rms = vad_result.rms if vad_result is not None else compute_pcm_rms(frame)
+        vad_speech = bool(vad_result and vad_result.is_speech)
+        self._observe_rms("user_voice" if vad_speech else "idle", rms)
+        if vad_speech != self._last_vad_speech:
+            logger.info(
+                "audio_timing stage=vad_%s timestamp_monotonic=%.6f rms=%.5f trigger=%s",
+                "speech_on" if vad_speech else "speech_off",
+                self._clock(),
+                rms,
+                vad_result.is_trigger if vad_result is not None else None,
+            )
+            self._last_vad_speech = vad_speech
         if not was_in_utterance and self.collector.is_in_utterance:
+            self._utterance_sequence += 1
+            self._utterance_id = f"utterance-{self._utterance_sequence}"
+            self._utterance_started_monotonic = self._clock()
+            logger.info(
+                "audio_timing utterance_id=%s stage=utterance_start "
+                "timestamp_monotonic=%.6f rms=%.5f",
+                self._utterance_id,
+                self._utterance_started_monotonic,
+                rms,
+            )
             self._handle_voice_started()
-
-        # 4. Utterance completed
         if segment is not None:
-            transcript = self._handle_utterance_completed(segment)
-            return segment, transcript
-
+            ended = self._clock()
+            wall_ms = (
+                (ended - self._utterance_started_monotonic) * 1000.0
+                if self._utterance_started_monotonic is not None
+                else None
+            )
+            frame_count = round(segment.duration_ms / self.collector.frame_ms)
+            logger.info(
+                "audio_timing utterance_id=%s stage=utterance_end "
+                "timestamp_monotonic=%.6f pcm_duration_ms=%.1f wall_duration_ms=%s frames=%d",
+                self._utterance_id,
+                ended,
+                segment.duration_ms,
+                f"{wall_ms:.1f}" if wall_ms is not None else "unknown",
+                frame_count,
+            )
+            return segment, self._handle_utterance_completed(segment)
         return None, None
+
+    def _inspect_barge_in(self, frame: bytes) -> None:
+        rms = compute_pcm_rms(frame)
+        self._observe_rms("tts_mic", rms)
+        if self._interruption_triggered:
+            self._pending_interruption_frames.append(frame)
+            return
+
+        if (
+            self._playback_started
+            and self._interruption_calibration_seen < self._interruption_calibration_frames
+        ):
+            self._interruption_calibration_seen += 1
+            # Calibrate only energy close to the configured leakage floor. A
+            # much louder opening frame may already be the user; treating it as
+            # leakage raises the adaptive threshold above that same voice and
+            # makes an immediate interruption impossible.
+            calibration_ceiling = (
+                self.interruption_threshold_rms * self.interruption_leak_multiplier
+            )
+            if rms < calibration_ceiling:
+                self._speaker_leak_peak_rms = max(self._speaker_leak_peak_rms, rms)
+                return
+
+        effective_threshold = max(
+            self.interruption_threshold_rms,
+            self._speaker_leak_peak_rms * self.interruption_leak_multiplier,
+        )
+        if rms < effective_threshold:
+            self._interruption_voice_frames = 0
+            self._interruption_buffer.clear()
+            return
+
+        self._interruption_voice_frames += 1
+        self._interruption_buffer.append(frame)
+        if self._interruption_voice_frames < self._interruption_frames_required:
+            return
+
+        self._interruption_triggered = True
+        self._pending_interruption_frames.extend(self._interruption_buffer)
+        self._speech_cancel.set()
+        stop_started = self._clock()
+        self.audio_output.stop()
+        stop_ended = self._clock()
+        logger.info(
+            "audio_timing stage=barge_in_trigger timestamp_monotonic=%.6f "
+            "rms=%.5f threshold=%.5f stop_latency_ms=%.1f buffered_frames=%d",
+            stop_started,
+            rms,
+            effective_threshold,
+            (stop_ended - stop_started) * 1000.0,
+            len(self._pending_interruption_frames),
+        )
+        if self.event_bus:
+            self.event_bus.create_and_publish(
+                event_type=EventType.SPEECH_INTERRUPTED,
+                source="audio_coordinator",
+                payload={
+                    "rms": round(rms, 4),
+                    "threshold": round(effective_threshold, 4),
+                },
+            )
 
     def _capture_loop(self) -> None:
         """Background thread reading and processing microphone frames."""
@@ -161,6 +343,33 @@ class AudioInteractionCoordinator:
                 logger.exception("Audio capture loop failed")
                 self._publish_audio_error("capture_loop", exc)
                 self._running = False
+
+    def _observe_rms(self, phase: str, rms: float) -> None:
+        """Aggregate bounded RMS diagnostics without logging PCM or every frame."""
+        samples = self._rms_samples.setdefault(phase, deque(maxlen=500))
+        samples.append(rms)
+        now = self._clock()
+        if now - self._last_rms_report_monotonic < 5.0:
+            return
+        self._last_rms_report_monotonic = now
+        for sample_phase, phase_samples in sorted(self._rms_samples.items()):
+            if not phase_samples:
+                continue
+            values = sorted(phase_samples)
+            p50 = values[len(values) // 2]
+            p95 = values[min(len(values) - 1, int(len(values) * 0.95))]
+            logger.info(
+                "audio_rms phase=%s timestamp_monotonic=%.6f frames=%d "
+                "avg=%.5f p50=%.5f p95=%.5f max=%.5f",
+                sample_phase,
+                now,
+                len(values),
+                sum(values) / len(values),
+                p50,
+                p95,
+                values[-1],
+            )
+            phase_samples.clear()
 
     # -------------------------------------------------------------------------
     # Event and State Handlers
@@ -201,6 +410,8 @@ class AudioInteractionCoordinator:
 
     def _handle_utterance_completed(self, segment: AudioSegment) -> Transcript:
         """Handle finalized utterance segment, trigger STT, and publish events."""
+        utterance_id = self._utterance_id
+        audio_ended = self._clock()
         if self.event_bus:
             self.event_bus.create_and_publish(
                 event_type=EventType.VOICE_ENDED,
@@ -228,12 +439,28 @@ class AudioInteractionCoordinator:
             self.face_controller.set_state(AssistantState.PROCESSING)
 
         # Execute STT transcription. A backend failure must not strand the state machine.
+        stt_started = self._clock()
+        logger.info(
+            "audio_timing utterance_id=%s stage=stt_start timestamp_monotonic=%.6f",
+            utterance_id,
+            stt_started,
+        )
         try:
             transcript = self.stt.transcribe(segment)
         except Exception as exc:
             logger.exception("STT backend failed")
             self._publish_audio_error("stt", exc)
             transcript = Transcript(text="", language="es", confidence=None, latency_ms=0.0)
+        stt_ended = self._clock()
+        logger.info(
+            "audio_timing utterance_id=%s stage=stt_end timestamp_monotonic=%.6f "
+            "duration_ms=%.1f backend_latency_ms=%.1f transcript_chars=%d",
+            utterance_id,
+            stt_ended,
+            (stt_ended - stt_started) * 1000.0,
+            transcript.latency_ms,
+            len(transcript.text),
+        )
 
         with self._lock:
             self._last_transcript = transcript
@@ -246,6 +473,8 @@ class AudioInteractionCoordinator:
                     "text": transcript.text,
                     "confidence": transcript.confidence,
                     "latency_ms": transcript.latency_ms,
+                    "utterance_id": utterance_id,
+                    "audio_end_monotonic": audio_ended,
                 },
             )
 
@@ -283,6 +512,20 @@ class AudioInteractionCoordinator:
         if not text.strip():
             return SpeechOutput(duration_ms=0.0)
 
+        self._speech_cancel.clear()
+        self._interruption_voice_frames = 0
+        self._interruption_buffer.clear()
+        self._pending_interruption_frames.clear()
+        self._interruption_triggered = False
+        self._interruption_calibration_seen = 0
+        self._speaker_leak_peak_rms = 0.0
+        self._playback_started = False
+        speech_requested = self._clock()
+        logger.info(
+            "audio_timing stage=tts_request timestamp_monotonic=%.6f text_chars=%d",
+            speech_requested,
+            len(text),
+        )
         self.turn_gate.start_speaking()
         prev_state = self.state_manager.current_state if self.state_manager else AssistantState.IDLE
         restore_state = prev_state
@@ -296,6 +539,14 @@ class AudioInteractionCoordinator:
             if speech_started:
                 return
             speech_started = True
+            self._playback_started = True
+            logger.info(
+                "audio_timing stage=first_pcm_submit timestamp_monotonic=%.6f "
+                "request_to_pcm_ms=%.1f chunk_latency_ms=%.1f",
+                self._clock(),
+                (self._clock() - speech_requested) * 1000.0,
+                first_output.latency_ms,
+            )
             if self.state_manager:
                 try:
                     self.state_manager.transition_to(AssistantState.SPEAKING, reason="tts_playback_started")
@@ -314,9 +565,29 @@ class AudioInteractionCoordinator:
                     },
                 )
 
-        def play_chunk(chunk: SpeechOutput) -> None:
+        def play_chunk(
+            chunk: SpeechOutput,
+            chunk_index: int,
+            gap_ms: float | None,
+            prefetch_lead_ms: float | None = None,
+        ) -> None:
             if not chunk.audio_data:
                 return
+            logger.info(
+                "audio_timing stage=tts_chunk_ready timestamp_monotonic=%.6f "
+                "chunk=%d synthesis_latency_ms=%.1f audio_duration_ms=%.1f "
+                "gap_ms=%s prefetch_lead_ms=%s",
+                self._clock(),
+                chunk_index,
+                chunk.latency_ms,
+                chunk.duration_ms,
+                f"{gap_ms:.1f}" if gap_ms is not None else "first",
+                (
+                    f"{prefetch_lead_ms:.1f}"
+                    if prefetch_lead_ms is not None
+                    else "first"
+                ),
+            )
             start_playback(chunk)
             rms = compute_pcm_rms(chunk.audio_data)
             mouth_level = min(1.0, max(0.2, rms * 2.5)) if rms > 0.01 else 0.0
@@ -326,25 +597,111 @@ class AudioInteractionCoordinator:
                 chunk.audio_data,
                 sample_rate=chunk.sample_rate,
                 channels=chunk.channels,
+                cancel_event=self._speech_cancel,
+            )
+            logger.info(
+                "audio_timing stage=tts_chunk_played timestamp_monotonic=%.6f chunk=%d",
+                self._clock(),
+                chunk_index,
             )
 
         try:
             if isinstance(self.tts, StreamingTtsBackend):
+                streaming_tts = self.tts
                 combined = bytearray()
                 total_duration_ms = 0.0
                 first_audio_latency_ms = 0.0
                 sample_rate = 22050
                 channels = 1
-                for chunk in self.tts.synthesize_chunks(req):
-                    if not chunk.audio_data:
-                        continue
-                    if not combined:
-                        first_audio_latency_ms = chunk.latency_ms
-                    play_chunk(chunk)
-                    combined.extend(chunk.audio_data)
-                    total_duration_ms += chunk.duration_ms
-                    sample_rate = chunk.sample_rate
-                    channels = chunk.channels
+                previous_playback_ended: float | None = None
+                ready_chunks: queue.Queue[object] = queue.Queue(maxsize=1)
+                synthesis_slot = threading.Event()
+                synthesis_stop = threading.Event()
+                stream_end = object()
+                synthesis_slot.set()
+
+                def synthesis_cancelled() -> bool:
+                    return synthesis_stop.is_set() or self._speech_cancel.is_set()
+
+                def synthesize_one_ahead() -> None:
+                    try:
+                        chunks = iter(streaming_tts.synthesize_chunks(req))
+                        while not synthesis_cancelled():
+                            if not synthesis_slot.wait(timeout=0.05):
+                                continue
+                            synthesis_slot.clear()
+                            try:
+                                chunk = next(chunks)
+                            except StopIteration:
+                                ready_chunks.put_nowait(stream_end)
+                                return
+                            if synthesis_cancelled():
+                                logger.info(
+                                    "audio_timing stage=tts_prefetch_discarded "
+                                    "timestamp_monotonic=%.6f",
+                                    self._clock(),
+                                )
+                                return
+                            ready_chunks.put_nowait(
+                                _ReadySpeechChunk(
+                                    output=chunk,
+                                    ready_monotonic=self._clock(),
+                                )
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        if not synthesis_cancelled():
+                            ready_chunks.put_nowait(exc)
+
+                synthesis_thread = threading.Thread(
+                    target=synthesize_one_ahead,
+                    name="ailen-tts-prefetch",
+                    daemon=True,
+                )
+                synthesis_thread.start()
+                chunk_index = 0
+                try:
+                    while not self._speech_cancel.is_set():
+                        try:
+                            item = ready_chunks.get(timeout=0.05)
+                        except queue.Empty:
+                            continue
+                        synthesis_slot.set()
+                        if item is stream_end:
+                            break
+                        if isinstance(item, Exception):
+                            raise item
+                        if not isinstance(item, _ReadySpeechChunk):
+                            raise TypeError("Unexpected TTS prefetch result")
+
+                        chunk = item.output
+                        if not chunk.audio_data:
+                            continue
+                        chunk_index += 1
+                        if not combined:
+                            first_audio_latency_ms = chunk.latency_ms
+                        if previous_playback_ended is None:
+                            gap_ms = None
+                            prefetch_lead_ms = None
+                        else:
+                            gap_ms = max(
+                                0.0,
+                                (item.ready_monotonic - previous_playback_ended) * 1000.0,
+                            )
+                            prefetch_lead_ms = max(
+                                0.0,
+                                (previous_playback_ended - item.ready_monotonic) * 1000.0,
+                            )
+                        play_chunk(chunk, chunk_index, gap_ms, prefetch_lead_ms)
+                        previous_playback_ended = self._clock()
+                        if self._speech_cancel.is_set():
+                            break
+                        combined.extend(chunk.audio_data)
+                        total_duration_ms += chunk.duration_ms
+                        sample_rate = chunk.sample_rate
+                        channels = chunk.channels
+                finally:
+                    synthesis_stop.set()
+                    synthesis_slot.set()
                 output = SpeechOutput(
                     audio_data=bytes(combined) if combined else None,
                     sample_rate=sample_rate,
@@ -354,7 +711,8 @@ class AudioInteractionCoordinator:
                 )
             else:
                 output = self.tts.synthesize(req)
-                play_chunk(output)
+                if not self._speech_cancel.is_set():
+                    play_chunk(output, 1, None)
             success = bool(output.audio_data)
         except Exception as exc:
             logger.exception("TTS/playback failed")

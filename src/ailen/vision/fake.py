@@ -24,7 +24,12 @@ class FakeVisionBackend(VisionBackend):
 
     def health(self) -> VisionHealth:
         status = ServiceStatus.HEALTHY if self._running else ServiceStatus.DISABLED
-        return VisionHealth(status=status, detail="fake vision")
+        return VisionHealth(
+            status=status,
+            detail="fake vision",
+            stream_has_frames=self._running,
+            frames_processed=1 if self._running else 0,
+        )
 
     def get_latest_presence(self) -> PresenceObservation:
         if not self._running:

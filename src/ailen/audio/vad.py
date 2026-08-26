@@ -50,8 +50,9 @@ class EnergyVad(VoiceActivityDetector):
         """Analyze a PCM frame and return VadResult."""
         rms = compute_pcm_rms(frame)
         energy = rms * rms
+        is_trigger = rms >= self.threshold_rms
 
-        if rms >= self.threshold_rms:
+        if is_trigger:
             self._hangover_counter = self.hangover_frames
             is_speech = True
         elif self._hangover_counter > 0:
@@ -60,7 +61,12 @@ class EnergyVad(VoiceActivityDetector):
         else:
             is_speech = False
 
-        return VadResult(is_speech=is_speech, rms=rms, energy=energy)
+        return VadResult(
+            is_speech=is_speech,
+            rms=rms,
+            energy=energy,
+            is_trigger=is_trigger,
+        )
 
     def reset(self) -> None:
         """Reset hangover counters."""
@@ -112,13 +118,19 @@ class UtteranceCollector:
         self._pre_roll_buffer: deque[bytes] = deque(maxlen=self._pre_roll_frame_count)
         self._collected_frames: list[bytes] = []
         self._is_in_utterance = False
-        self._consecutive_speech_frames = 0
+        self._speech_evidence_frames = 0
         self._consecutive_silence_frames = 0
+        self._last_vad_result: VadResult | None = None
 
     @property
     def is_in_utterance(self) -> bool:
         """Return True if currently accumulating speech."""
         return self._is_in_utterance
+
+    @property
+    def last_vad_result(self) -> VadResult | None:
+        """Return the VAD decision for the most recently processed frame."""
+        return self._last_vad_result
 
     def process_frame(self, frame: bytes) -> tuple[AudioSegment | None, bool]:
         """Process a single PCM frame.
@@ -128,20 +140,29 @@ class UtteranceCollector:
         - `is_active_speech`: True if the current frame is considered active voice.
         """
         vad_res = self.vad.process_frame(frame)
+        self._last_vad_result = vad_res
 
         if not self._is_in_utterance:
             # IDLE state: maintain pre-roll ring buffer
             self._pre_roll_buffer.append(frame)
 
-            if vad_res.is_speech:
-                self._consecutive_speech_frames += 1
-                if self._consecutive_speech_frames >= self._min_speech_frames_needed:
+            # A detector hangover may bridge short low-energy gaps in natural
+            # speech, but only actual threshold crossings count toward the
+            # minimum evidence required to start an utterance.
+            is_start_evidence = (
+                vad_res.is_trigger
+                if vad_res.is_trigger is not None
+                else vad_res.is_speech
+            )
+            if is_start_evidence:
+                self._speech_evidence_frames += 1
+                if self._speech_evidence_frames >= self._min_speech_frames_needed:
                     # Speech confirmed! Transition to active utterance
                     self._is_in_utterance = True
                     self._consecutive_silence_frames = 0
                     self._collected_frames = list(self._pre_roll_buffer)
-            else:
-                self._consecutive_speech_frames = 0
+            elif not vad_res.is_speech:
+                self._speech_evidence_frames = 0
 
             return None, self._is_in_utterance
 
@@ -184,8 +205,9 @@ class UtteranceCollector:
     def reset(self) -> None:
         """Reset utterance collector to initial state."""
         self._is_in_utterance = False
-        self._consecutive_speech_frames = 0
+        self._speech_evidence_frames = 0
         self._consecutive_silence_frames = 0
         self._collected_frames.clear()
         self._pre_roll_buffer.clear()
+        self._last_vad_result = None
         self.vad.reset()

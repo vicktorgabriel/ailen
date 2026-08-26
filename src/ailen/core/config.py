@@ -34,6 +34,7 @@ class DisplayConfig:
     """Face and display output configuration."""
     enabled: bool = True
     backend: str = "auto"  # "auto", "sdl2", "drm", "x11", "headless"
+    face_style: str = "vector"  # "vector" or "pixel"
     width: int = 1280
     height: int = 720
     fullscreen: bool = True
@@ -65,18 +66,26 @@ class VisionConfig:
     # Optional authenticated RTSP source. Password is resolved at runtime from
     # network_camera_password_env and is never persisted in TOML.
     network_camera_enabled: bool = False
-    # Legacy compatibility only. New configurations should use camera_source.
-    network_camera_preferred: bool = False
     network_camera_host: str = ""
     network_camera_port: int = 554
     network_camera_path: str = "/h264_hd.sdp"
     network_camera_username: str = ""
     network_camera_password_env: str = "AILEN_CAMERA_PASSWORD"
+    camera_control_driver: str = "none"
+    network_camera_http_port: int = 80
+    camera_control_timeout_seconds: float = 3.0
+    camera_startup_daynight_mode: str = "auto"
+    rtsp_transport: str = "tcp"
+    rtsp_open_timeout_ms: int = 3000
+    rtsp_read_timeout_ms: int = 2500
+    rtsp_reconnect_after_failures: int = 3
     fps: int = 5
     detector: str = "haar"
     detector_model_path: str = ""
     detector_score_threshold: float = 0.8
-    presence_debounce_seconds: float = 2.0
+    presence_confirm_seconds: float = 0.8
+    absence_confirm_seconds: float = 2.0
+    dropout_grace_seconds: float = 0.6
     min_confidence: float = 0.5
 
 
@@ -92,11 +101,16 @@ class SpeechConfig:
     tts_config_path: str = ""
     vad_engine: str = "energy"  # "energy", "mock"
     vad_threshold: float = 0.02
-    silence_timeout_ms: int = 700
-    min_speech_ms: int = 250
+    vad_hangover_ms: int = 120
+    pre_roll_ms: int = 250
+    silence_timeout_ms: int = 550
+    min_speech_ms: int = 180
     max_utterance_seconds: float = 15.0
-    half_duplex: bool = True
-    vad_sensitivity: int = 2
+    interruption_enabled: bool = True
+    interruption_threshold_rms: float = 0.02
+    interruption_min_ms: int = 120
+    interruption_calibration_ms: int = 160
+    interruption_leak_multiplier: float = 1.25
 
 
 @dataclass
@@ -167,7 +181,7 @@ class MemoryConfig:
 
 @dataclass
 class PersonalityConfig:
-    """Personality simulation parameters."""
+    """Safe stylistic personality parameters, never authority or permissions."""
     seed: str = "ailen-seed-01"
     evolution_enabled: bool = True
     evolution_rate: float = 1.0
@@ -175,6 +189,9 @@ class PersonalityConfig:
     base_sociability: float = 0.6
     base_formality: float = 0.5
     base_humor: float = 0.5
+    base_verbosity: float = 0.4
+    base_patience: float = 0.7
+    base_expressiveness: float = 0.6
 
 
 @dataclass
@@ -198,8 +215,10 @@ class WebConfig:
 
 @dataclass
 class NetworkConfig:
-    """Outbound network policy for controlled tools, separate from cloud AI."""
+    """Outbound network policy and explicit web-search provider selection."""
     outbound_web_enabled: bool = False
+    web_search_provider: str = "none"
+    web_search_region: str = "ar-es"
 
 
 @dataclass
@@ -326,10 +345,6 @@ def load_config_from_dict(raw: dict[str, Any]) -> AILENConfig:
         for k, v in vision_raw.items():
             if hasattr(cfg.vision, k):
                 setattr(cfg.vision, k, v)
-        # Preserve old configs that expressed source choice via the boolean
-        # network_camera_preferred flag. Explicit camera_source always wins.
-        if "camera_source" not in vision_raw and cfg.vision.network_camera_preferred:
-            cfg.vision.camera_source = "rtsp"
 
     if "speech" in raw and isinstance(raw["speech"], dict):
         for k, v in raw["speech"].items():
@@ -466,6 +481,8 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("display width and height must be positive integers")
     if config.display.fps_limit < 1 or config.display.fps_limit > 120:
         errors.append("display.fps_limit must be between 1 and 120")
+    if config.display.face_style not in {"vector", "pixel"}:
+        errors.append("display.face_style must be one of: vector, pixel")
     if not (0 <= config.audio.output_volume <= 100):
         errors.append("audio.output_volume must be between 0 and 100")
     if not (0 <= config.audio.input_volume <= 100):
@@ -476,14 +493,24 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("audio.channels must be 1 (mono) or 2 (stereo)")
     if config.audio.frame_ms <= 0:
         errors.append("audio.frame_ms must be positive")
+    if config.speech.vad_engine not in {"energy", "mock"}:
+        errors.append("speech.vad_engine must be one of: energy, mock")
     if not (0.0 <= config.speech.vad_threshold <= 1.0):
         errors.append("speech.vad_threshold must be between 0.0 and 1.0")
+    if config.speech.vad_hangover_ms < 0:
+        errors.append("speech.vad_hangover_ms must be >= 0")
+    if config.speech.pre_roll_ms < 0:
+        errors.append("speech.pre_roll_ms must be >= 0")
     if config.speech.silence_timeout_ms <= 0:
         errors.append("speech.silence_timeout_ms must be positive")
     if config.speech.min_speech_ms <= 0:
         errors.append("speech.min_speech_ms must be positive")
     if config.speech.max_utterance_seconds <= 0:
         errors.append("speech.max_utterance_seconds must be positive")
+    if config.network.web_search_provider not in {"none", "ddgs"}:
+        errors.append("network.web_search_provider must be one of: none, ddgs")
+    if not config.network.web_search_region.strip():
+        errors.append("network.web_search_region must not be empty")
     if config.vision.fps < 1:
         errors.append("vision.fps must be >= 1")
     source_mode = config.vision.camera_source.strip().lower()
@@ -500,8 +527,38 @@ def validate_config(config: AILENConfig) -> list[str]:
             errors.append("vision.network_camera_path is required when network camera is enabled")
         if config.vision.network_camera_username.strip() and not config.vision.network_camera_password_env.strip():
             errors.append("vision.network_camera_password_env is required for authenticated network camera")
-    if config.vision.presence_debounce_seconds < 0:
-        errors.append("vision.presence_debounce_seconds must be >= 0")
+    if config.vision.camera_control_driver not in {"none", "tp_link_nc250"}:
+        errors.append("vision.camera_control_driver must be one of: none, tp_link_nc250")
+    if not (1 <= config.vision.network_camera_http_port <= 65535):
+        errors.append("vision.network_camera_http_port must be between 1 and 65535")
+    if config.vision.camera_control_timeout_seconds <= 0:
+        errors.append("vision.camera_control_timeout_seconds must be positive")
+    if config.vision.camera_startup_daynight_mode not in {"auto", "day", "night"}:
+        errors.append("vision.camera_startup_daynight_mode must be one of: auto, day, night")
+    if config.vision.rtsp_transport not in {"tcp", "udp"}:
+        errors.append("vision.rtsp_transport must be one of: tcp, udp")
+    if config.vision.rtsp_open_timeout_ms < 250:
+        errors.append("vision.rtsp_open_timeout_ms must be >= 250")
+    if config.vision.rtsp_read_timeout_ms < 250:
+        errors.append("vision.rtsp_read_timeout_ms must be >= 250")
+    if config.vision.rtsp_reconnect_after_failures < 1:
+        errors.append("vision.rtsp_reconnect_after_failures must be >= 1")
+    if config.speech.silence_timeout_ms < 100:
+        errors.append("speech.silence_timeout_ms must be >= 100")
+    if not (0.0 < config.speech.interruption_threshold_rms <= 1.0):
+        errors.append("speech.interruption_threshold_rms must be between 0.0 and 1.0")
+    if config.speech.interruption_min_ms < 40:
+        errors.append("speech.interruption_min_ms must be >= 40")
+    if config.speech.interruption_calibration_ms < 0:
+        errors.append("speech.interruption_calibration_ms must be >= 0")
+    if config.speech.interruption_leak_multiplier < 1.0:
+        errors.append("speech.interruption_leak_multiplier must be >= 1.0")
+    if config.vision.presence_confirm_seconds < 0:
+        errors.append("vision.presence_confirm_seconds must be >= 0")
+    if config.vision.absence_confirm_seconds < 0:
+        errors.append("vision.absence_confirm_seconds must be >= 0")
+    if config.vision.dropout_grace_seconds < 0:
+        errors.append("vision.dropout_grace_seconds must be >= 0")
     if not (0.0 <= config.vision.min_confidence <= 1.0):
         errors.append("vision.min_confidence must be between 0.0 and 1.0")
     if config.vision.detector not in {"haar", "yunet"}:
@@ -510,6 +567,19 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("vision.detector_score_threshold must be between 0.0 and 1.0")
     if config.vision.detector == "yunet" and not config.vision.detector_model_path.strip():
         errors.append("vision.detector_model_path is required when vision.detector=yunet")
+    personality_values = {
+        "evolution_rate": config.personality.evolution_rate,
+        "base_curiosity": config.personality.base_curiosity,
+        "base_sociability": config.personality.base_sociability,
+        "base_formality": config.personality.base_formality,
+        "base_humor": config.personality.base_humor,
+        "base_verbosity": config.personality.base_verbosity,
+        "base_patience": config.personality.base_patience,
+        "base_expressiveness": config.personality.base_expressiveness,
+    }
+    for name, value in personality_values.items():
+        if not (0.0 <= value <= 1.0):
+            errors.append(f"personality.{name} must be between 0.0 and 1.0")
     if config.ai.timeout_seconds <= 0:
         errors.append("ai.timeout_seconds must be positive")
     if config.ai.daily_budget_usd < 0:

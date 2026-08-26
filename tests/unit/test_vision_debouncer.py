@@ -21,7 +21,7 @@ class ControllableClock:
 
 def test_debouncer_confirms_presence_after_threshold() -> None:
     clock = ControllableClock(0.0)
-    debouncer = VisionDebouncer(debounce_seconds=2.0, clock=clock)
+    debouncer = VisionDebouncer(presence_confirm_seconds=2.0, absence_confirm_seconds=2.0, dropout_grace_seconds=0.0, clock=clock)
 
     # Initial state: absent
     assert debouncer.stable_presence is False
@@ -50,7 +50,7 @@ def test_debouncer_confirms_presence_after_threshold() -> None:
 
 def test_debouncer_rejects_single_frame_flicker() -> None:
     clock = ControllableClock(0.0)
-    debouncer = VisionDebouncer(debounce_seconds=2.0, clock=clock)
+    debouncer = VisionDebouncer(presence_confirm_seconds=2.0, absence_confirm_seconds=2.0, dropout_grace_seconds=0.0, clock=clock)
 
     # False positive flicker: 1 frame of presence at t=0.0
     raw_flicker = PresenceObservation(present=True, faces_count=1)
@@ -72,7 +72,7 @@ def test_debouncer_rejects_single_frame_flicker() -> None:
 
 def test_debouncer_loss_debounce() -> None:
     clock = ControllableClock(0.0)
-    debouncer = VisionDebouncer(debounce_seconds=2.0, clock=clock)
+    debouncer = VisionDebouncer(presence_confirm_seconds=2.0, absence_confirm_seconds=2.0, dropout_grace_seconds=0.0, clock=clock)
 
     # Establish stable presence
     raw_present = PresenceObservation(present=True, faces_count=1)
@@ -107,7 +107,7 @@ def test_debouncer_loss_debounce() -> None:
 
 def test_debouncer_real_time_coordinate_tracking_while_present() -> None:
     clock = ControllableClock(0.0)
-    debouncer = VisionDebouncer(debounce_seconds=1.0, clock=clock)
+    debouncer = VisionDebouncer(presence_confirm_seconds=1.0, absence_confirm_seconds=1.0, dropout_grace_seconds=0.0, clock=clock)
 
     # Establish stable presence
     raw1 = PresenceObservation(present=True, primary_x_normalized=0.1, primary_y_normalized=0.2)
@@ -128,12 +128,12 @@ def test_debouncer_real_time_coordinate_tracking_while_present() -> None:
 
 def test_debouncer_rejects_negative_window() -> None:
     with pytest.raises(ValueError):
-        VisionDebouncer(debounce_seconds=-0.01)
+        VisionDebouncer(presence_confirm_seconds=-0.01)
 
 
 def test_debouncer_reset() -> None:
     clock = ControllableClock(0.0)
-    debouncer = VisionDebouncer(debounce_seconds=1.0, clock=clock)
+    debouncer = VisionDebouncer(presence_confirm_seconds=1.0, absence_confirm_seconds=1.0, dropout_grace_seconds=0.0, clock=clock)
 
     raw = PresenceObservation(present=True)
     debouncer.update(raw)
@@ -149,7 +149,6 @@ def test_debouncer_reset() -> None:
 def test_debouncer_hysteresis_tolerates_short_detection_misses() -> None:
     clock = ControllableClock(0.0)
     debouncer = VisionDebouncer(
-        debounce_seconds=2.0,
         clock=clock,
         presence_confirm_seconds=0.8,
         absence_confirm_seconds=2.0,

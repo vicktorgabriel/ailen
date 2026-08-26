@@ -119,7 +119,9 @@ def create_parser() -> argparse.ArgumentParser:
     demo_vis.add_argument("--detector", choices=("haar", "yunet"), default="haar", help="Face detector (default: haar)")
     demo_vis.add_argument("--model", default="", help="YuNet ONNX model path when --detector=yunet")
     demo_vis.add_argument("--score", type=float, default=0.8, help="YuNet score threshold 0..1 (default: 0.8)")
-    demo_vis.add_argument("--debounce", type=float, default=2.0, help="Debounce window in seconds (default: 2.0)")
+    demo_vis.add_argument("--presence-confirm", type=float, default=0.8, help="Seconds to confirm presence")
+    demo_vis.add_argument("--absence-confirm", type=float, default=2.0, help="Seconds to confirm absence")
+    demo_vis.add_argument("--dropout-grace", type=float, default=0.6, help="Seconds to tolerate detector dropouts")
     demo_vis.add_argument("--duration", type=float, default=10.0, help="Run duration in seconds (default: 10.0)")
 
     # Subcommand: demo vad
@@ -538,7 +540,9 @@ def cmd_demo_vision(args: argparse.Namespace, config_path: str | None) -> int:
     detector = str(getattr(args, "detector", "haar"))
     model_path = str(getattr(args, "model", ""))
     score_threshold = float(getattr(args, "score", 0.8))
-    debounce_sec = float(getattr(args, "debounce", 2.0))
+    presence_confirm = float(getattr(args, "presence_confirm", 0.8))
+    absence_confirm = float(getattr(args, "absence_confirm", 2.0))
+    dropout_grace = float(getattr(args, "dropout_grace", 0.6))
     duration = float(getattr(args, "duration", 10.0))
 
     backend = OpenCvVisionBackend(
@@ -549,15 +553,18 @@ def cmd_demo_vision(args: argparse.Namespace, config_path: str | None) -> int:
         yunet_score_threshold=score_threshold,
     )
     debouncer = VisionDebouncer(
-        debounce_seconds=debounce_sec,
-        presence_confirm_seconds=min(0.8, debounce_sec),
-        absence_confirm_seconds=debounce_sec,
-        dropout_grace_seconds=min(0.6, debounce_sec),
+        presence_confirm_seconds=presence_confirm,
+        absence_confirm_seconds=absence_confirm,
+        dropout_grace_seconds=dropout_grace,
     )
 
     print("==========================================================")
     print(" AILEN Vision POC — Demo de Presencia y Debounce")
-    print(f" Dispositivo: {camera_dev} | Detector: {detector} | Ventana Debounce: {debounce_sec}s | Duración: {duration}s")
+    print(
+        f" Dispositivo: {camera_dev} | Detector: {detector} | "
+        f"Presencia: {presence_confirm}s | Ausencia: {absence_confirm}s | "
+        f"Gracia: {dropout_grace}s | Duración: {duration}s"
+    )
     print("==========================================================")
 
     backend.start()
@@ -1233,6 +1240,7 @@ def cmd_lab_start(args: argparse.Namespace, config_path: str | None) -> int:
     from ailen.runtime.runner import LabRunner
 
     cfg = load_config(config_path)
+    setup_logging(cfg.logging)
     runner = LabRunner(
         config=cfg,
         dry_run=getattr(args, "dry_run", False),

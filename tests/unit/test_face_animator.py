@@ -1,9 +1,11 @@
 """Unit tests for FaceAnimator and normalized FacePose generation."""
 
 import random
+from unittest.mock import MagicMock
 
 from ailen.domain.enums import AssistantState
 from ailen.face.animator import FaceAnimator
+from ailen.face.gui import TkinterFaceController
 from ailen.face.models import FacePose
 from ailen.face.null import NullFaceController
 
@@ -112,11 +114,45 @@ def test_face_animator_speech_mouth_opening() -> None:
     animator.set_speech_level(0.75)
 
     pose = animator.step()
-    assert pose.mouth_open == 0.75
+    assert animator.speech_level == 0.75
+    assert 0.1 < pose.mouth_open < 0.8
 
     animator.set_speech_level(0.0)
     pose_closed = animator.step()
     assert pose_closed.mouth_open == 0.0
+
+
+def test_face_animator_articulates_continuously_from_bounded_chunk_energy() -> None:
+    clock = ControlledClock(100.0)
+    animator = FaceAnimator(clock=clock)
+    animator.set_state(AssistantState.SPEAKING)
+    animator.set_speech_level(0.4)
+
+    poses = []
+    for _ in range(8):
+        poses.append(animator.step())
+        clock.advance(0.04)
+
+    mouth_positions = {round(pose.mouth_open, 3) for pose in poses}
+    head_positions = {round(pose.head_tilt, 3) for pose in poses}
+    assert len(mouth_positions) >= 5
+    assert max(mouth_positions) - min(mouth_positions) > 0.20
+    assert len(head_positions) >= 5
+
+
+def test_transient_expression_keeps_articulating_while_speaking() -> None:
+    clock = ControlledClock(100.0)
+    animator = FaceAnimator(clock=clock)
+    animator.set_expression("happy")
+    animator.set_state(AssistantState.SPEAKING)
+    animator.set_speech_level(0.5)
+
+    first = animator.step()
+    clock.advance(0.09)
+    second = animator.step()
+
+    assert first.expression == second.expression == "happy"
+    assert first.mouth_open != second.mouth_open
 
 
 def test_face_animator_blinking_cycle() -> None:
@@ -181,3 +217,137 @@ def test_null_face_controller_with_animator() -> None:
     assert pose.expression == "attentive"
     assert controller.state == AssistantState.ATTENTION
     assert controller.speech_level == 0.8
+
+def test_tkinter_face_controller_accepts_pixel_style_without_opening_window() -> None:
+    controller = TkinterFaceController(style="pixel", width=640, height=360, fullscreen=False)
+    assert controller.style == "pixel"
+    fallback = TkinterFaceController(style="unknown")
+    assert fallback.style == "vector"
+
+
+def test_pixel_renderer_uses_finer_grid_at_asrock_resolution() -> None:
+    assert TkinterFaceController._pixel_block_size(480) == 4
+    assert TkinterFaceController._pixel_block_size(240) == 2
+
+
+def test_pixel_renderer_reports_requested_and_rendered_expression(caplog) -> None:
+    clock = ControlledClock(100.0)
+    controller = TkinterFaceController(
+        style="pixel",
+        width=640,
+        height=360,
+        animator=FaceAnimator(clock=clock),
+    )
+    canvas = MagicMock()
+    canvas.winfo_width.return_value = 640
+    canvas.winfo_height.return_value = 360
+    controller._canvas = canvas
+
+    with caplog.at_level("INFO", logger="ailen.face.gui"):
+        controller.set_expression("happy", duration_seconds=2.0)
+        controller._render_frame()
+
+    assert controller._last_rendered_expression == "happy"
+    assert "stage=requested expression=happy" in caplog.text
+    assert "stage=rendered expression=happy" in caplog.text
+    assert canvas.create_rectangle.called
+
+
+def test_pixel_renderer_gives_every_allowed_expression_distinct_geometry() -> None:
+    render_calls: dict[str, tuple[str, ...]] = {}
+
+    for expression in FaceAnimator.SUPPORTED_EXPRESSIONS:
+        clock = ControlledClock(100.0)
+        controller = TkinterFaceController(
+            style="pixel",
+            width=800,
+            height=480,
+            animator=FaceAnimator(clock=clock),
+        )
+        canvas = MagicMock()
+        canvas.winfo_width.return_value = 800
+        canvas.winfo_height.return_value = 480
+        controller._canvas = canvas
+        controller.set_expression(expression, duration_seconds=2.0)
+
+        controller._render_frame()
+
+        render_calls[expression] = tuple(str(call) for call in canvas.method_calls)
+
+    assert len(set(render_calls.values())) == len(FaceAnimator.SUPPORTED_EXPRESSIONS)
+
+
+def test_pixel_renderer_mouth_changes_under_same_expression() -> None:
+    controller = TkinterFaceController(style="pixel", width=800, height=480)
+    canvas = MagicMock()
+    controller._canvas = canvas
+
+    controller._draw_pixel_face(
+        pose=FacePose(expression="happy", mouth_open=0.18, mouth_width=0.8),
+        width=800,
+        height=480,
+        eye_color="#38bdf8",
+        highlight_color="#bae6fd",
+        shadow_color="#0ea5e9",
+        pupil_color="#075985",
+        mouth_color="#38bdf8",
+    )
+    low_open_calls = tuple(str(call) for call in canvas.method_calls)
+    canvas.reset_mock()
+
+    controller._draw_pixel_face(
+        pose=FacePose(expression="happy", mouth_open=0.78, mouth_width=0.8),
+        width=800,
+        height=480,
+        eye_color="#38bdf8",
+        highlight_color="#bae6fd",
+        shadow_color="#0ea5e9",
+        pupil_color="#075985",
+        mouth_color="#38bdf8",
+    )
+    high_open_calls = tuple(str(call) for call in canvas.method_calls)
+
+    assert low_open_calls != high_open_calls
+    assert any("#bae6fd" in call for call in high_open_calls)
+    assert any("#0ea5e9" in call for call in high_open_calls)
+
+def test_face_animator_user_expressions_change_geometry() -> None:
+    clock = ControlledClock(100.0)
+    animator = FaceAnimator(clock=clock)
+
+    animator.set_expression("happy")
+    happy = animator.step()
+    assert happy.expression == "happy"
+    assert happy.mouth_width > 0.7
+
+    animator.set_expression("surprised")
+    surprised = animator.step()
+    assert surprised.mouth_open > 0.2
+    assert surprised.left_eye_open > happy.left_eye_open
+
+    animator.set_expression("wink")
+    wink = animator.step()
+    assert wink.left_eye_open < 0.1
+    assert wink.right_eye_open > 0.8
+
+
+def test_face_animator_rejects_unbounded_expression_names() -> None:
+    animator = FaceAnimator()
+    try:
+        animator.set_expression("ready")
+    except ValueError as exc:
+        assert "unsupported face expression" in str(exc)
+    else:
+        raise AssertionError("unbounded expression name was accepted")
+
+
+def test_transient_expression_survives_speaking_state_then_expires() -> None:
+    clock = ControlledClock(100.0)
+    animator = FaceAnimator(clock=clock)
+    animator.set_expression("happy", duration_seconds=2.0)
+
+    animator.set_state(AssistantState.SPEAKING)
+    assert animator.step().expression == "happy"
+
+    clock.advance(2.1)
+    assert animator.step().expression == "speaking"

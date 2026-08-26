@@ -1,7 +1,7 @@
-"""Audio Turn Gate for Half-Duplex Speech/Audio Coordination.
+"""Audio turn gate for conversational speech coordination.
 
-Prevents the assistant from listening to and transcribing its own speaker output
-by blocking audio input while text-to-speech (TTS) playback is active.
+Normal STT stays blocked while AILEN speaks, while a separate barge-in detector
+may still inspect raw microphone energy and cancel playback.
 """
 
 import threading
@@ -17,16 +17,7 @@ class GateState(str, Enum):
 
 
 class AudioTurnGate:
-    """Controls half-duplex turn-taking between microphone and speaker.
-
-    While speaking:
-    - Input audio frames are rejected / dropped.
-    - VAD and STT buffers are held in a safe state.
-
-    After speaking completes:
-    - Listening re-opens after a configurable settling cooldown
-      to let acoustic room reverb dissipate.
-    """
+    """Coordinates ownership of the normal STT path during processing/speech."""
 
     def __init__(
         self,
@@ -46,6 +37,18 @@ class AudioTurnGate:
         """Current gate state."""
         with self._lock:
             return self._state
+
+    @property
+    def is_speaking(self) -> bool:
+        """Whether TTS currently owns the normal microphone path."""
+        with self._lock:
+            return "speaking" in self._blockers
+
+    @property
+    def is_processing(self) -> bool:
+        """Whether an interaction is currently being processed."""
+        with self._lock:
+            return "processing" in self._blockers
 
     def start_speaking(self) -> None:
         """Signal that speech synthesis/playback has started. Blocks input."""

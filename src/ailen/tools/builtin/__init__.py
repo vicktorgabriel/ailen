@@ -1,6 +1,8 @@
 """Builtin allowlisted tools for AILEN Core."""
 
+from ailen.tools.builtin.camera import CameraTool
 from ailen.tools.builtin.clock import ClockTool
+from ailen.tools.builtin.face_expression import FaceExpressionTool
 from ailen.tools.builtin.music import LocalMusicService, MprisMusicService, MusicService, MusicTool
 from ailen.tools.builtin.notes import NotesTool
 from ailen.tools.builtin.reminders import ReminderService, RemindersTool
@@ -25,7 +27,9 @@ from ailen.tools.builtin.web_search import (
 
 __all__ = [
     "AudioVolumeService",
+    "CameraTool",
     "ClockTool",
+    "FaceExpressionTool",
     "FakeAudioVolumeService",
     "FakeWebSearchProvider",
     "LocalMusicService",

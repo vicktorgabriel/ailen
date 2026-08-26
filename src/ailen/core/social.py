@@ -41,7 +41,7 @@ class SocialEngine:
                 action=SocialAction.WAKE,
                 reason_code="PRESENCE_WAKE",
                 gaze_target=gaze or (0.0, 0.0),
-                expression_hint="waking",
+                expression_hint="curious",
             )
 
         # 3. Active ongoing conversation -> don't interrupt with greeting
@@ -68,7 +68,7 @@ class SocialEngine:
                 action=SocialAction.LOOK_AT,
                 reason_code="ALREADY_GREETED_PRESENCE",
                 gaze_target=gaze or (0.0, 0.0),
-                expression_hint="attentive",
+                expression_hint="neutral",
             )
 
         # 6. Cooldown active
@@ -80,7 +80,7 @@ class SocialEngine:
                     action=SocialAction.LOOK_AT,
                     reason_code="COOLDOWN_ACTIVE",
                     gaze_target=gaze or (0.0, 0.0),
-                    expression_hint="attentive",
+                    expression_hint="neutral",
                     metadata={"elapsed": elapsed, "cooldown": cooldown},
                 )
 
@@ -101,7 +101,7 @@ class SocialEngine:
                 reason_code="PUBLIC_GREETING_ALLOWED",
                 gaze_target=gaze_target,
                 greeting_intent="formal_welcome",
-                expression_hint="polite",
+                expression_hint="happy",
             )
 
         if mode == SocialMode.SHOP:
@@ -110,7 +110,7 @@ class SocialEngine:
                 reason_code="SHOP_GREETING_ALLOWED",
                 gaze_target=gaze_target,
                 greeting_intent="customer_welcome",
-                expression_hint="welcoming",
+                expression_hint="happy",
             )
 
         if mode == SocialMode.HOME:
@@ -119,7 +119,7 @@ class SocialEngine:
                 reason_code="HOME_GREETING_ALLOWED",
                 gaze_target=gaze_target,
                 greeting_intent="casual_greeting",
-                expression_hint="friendly",
+                expression_hint="happy",
             )
 
         if mode == SocialMode.WORKSHOP:
@@ -128,7 +128,7 @@ class SocialEngine:
                 reason_code="WORKSHOP_GREETING_ALLOWED",
                 gaze_target=gaze_target,
                 greeting_intent="workshop_ack",
-                expression_hint="ready",
+                expression_hint="focused",
             )
 
         if mode == SocialMode.PRIVATE:
@@ -137,7 +137,7 @@ class SocialEngine:
                 reason_code="PRIVATE_GREETING_ALLOWED",
                 gaze_target=gaze_target,
                 greeting_intent="personal_greeting",
-                expression_hint="warm",
+                expression_hint="happy",
             )
 
         return SocialDecision(

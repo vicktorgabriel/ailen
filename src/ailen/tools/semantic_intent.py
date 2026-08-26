@@ -1,8 +1,8 @@
-"""Bounded local-LLM fallback for imperfect voice tool intents.
+"""Bounded local-LLM resolver for imperfect voice tool intents.
 
-The model may only *propose* one registered, non-network, non-destructive tool call.
-Core validates the proposal against the tool schema and ToolExecutor enforces all
-normal permissions before execution. The model never executes a tool directly.
+The model may only propose registered tools allowed by runtime policy. Core validates
+the proposal against the tool schema and ToolExecutor enforces permissions before
+execution. The model never executes a tool directly.
 """
 
 from __future__ import annotations
@@ -24,16 +24,6 @@ from ailen.tools.registry import ToolRegistry
 class SemanticToolIntentResolver:
     """Use a trusted local model as a constrained intent parser when rules miss."""
 
-    _HINT_TERMS = (
-        "hora", "fecha", "día", "dia",
-        "volumen", "silencio", "mute", "sonido", "audio",
-        "nota", "notas", "anota", "anotá", "apunta", "apuntá", "recorda", "recordá",
-        "comprar", "mañana", "recordatorio",
-        "temporizador", "timer", "alarma", "cuenta regresiva", "cronómetro", "cronometro",
-        "música", "musica", "canción", "cancion", "pausa", "siguiente",
-        "sistema", "hardware", "cpu", "ram", "batería", "bateria",
-    )
-
     def __init__(
         self,
         backend: AiBackend | None,
@@ -41,28 +31,48 @@ class SemanticToolIntentResolver:
         repository: MemoryRepository | None = None,
         min_confidence: float = 0.78,
         request_timeout_seconds: float = 5.0,
+        allow_network_tools: bool = False,
     ) -> None:
         self.backend = backend
         self.registry = registry
         self.repository = repository
         self.min_confidence = min_confidence
         self.request_timeout_seconds = max(1.0, request_timeout_seconds)
+        self.allow_network_tools = allow_network_tools
 
     def should_attempt(self, text: str, session_id: str | None = None) -> bool:
-        """Avoid a second inference call for ordinary conversational turns."""
+        """Gate parsing only on capabilities advertised for the current turn.
+
+        ``session_id`` remains part of the resolver contract because history is
+        supplied to the parser after this gate. Prior messages must not open the
+        gate themselves: an unrelated short reply after a tool turn otherwise
+        pays for a second LLM inference.
+        """
+        del session_id
         clean = " ".join((text or "").lower().split())
-        if self._has_any_hint(clean, self._HINT_TERMS):
-            return True
-        # Very short elliptical questions often come from imperfect STT. Only use
-        # history as a hint when the recent conversation itself involved a tool domain.
-        if self.repository is not None and session_id and len(clean.split()) <= 5:
-            try:
-                recent = self.repository.get_session_messages(session_id, limit=4)
-            except Exception:  # noqa: BLE001
-                recent = []
-            recent_text = " ".join(m.content.lower() for m in recent)
-            return self._has_any_hint(recent_text, self._HINT_TERMS)
-        return False
+        return bool(self._matching_tool_names(clean))
+
+    @staticmethod
+    def _tool_hints(tool: Any) -> tuple[str, ...]:
+        """Return only routing language explicitly declared by the tool.
+
+        Descriptions and schema values explain execution after routing; they are
+        not safe intent triggers. Deriving hints from them made generic words
+        such as ``actual``, ``forma`` or enum values invoke a second LLM on
+        otherwise ordinary conversation turns.
+        """
+        declared = (str(item).strip().lower() for item in getattr(tool, "intent_hints", ()))
+        return tuple(dict.fromkeys(item for item in declared if item))
+
+    def _matching_tool_names(self, text: str) -> set[str]:
+        matched: set[str] = set()
+        for tool in self.registry.list_tools():
+            available = getattr(tool, "is_available", None)
+            if isinstance(available, bool) and not available:
+                continue
+            if self._has_any_hint(text, self._tool_hints(tool)):
+                matched.add(tool.name)
+        return matched
 
     def resolve(
         self,
@@ -96,14 +106,17 @@ class SemanticToolIntentResolver:
             }
             for tool in allowed.values()
         ]
+        tool_guidance = " ".join(
+            guidance
+            for tool in allowed.values()
+            if (guidance := str(getattr(tool, "intent_guidance", "")).strip())
+        )
         prompt = (
             "Interpretá el último texto como posible comando de voz para AILEN. "
             "El STT puede omitir artículos, signos o alguna palabra. Usá el historial sólo para resolver referencias. "
-            "Elegí una herramienta únicamente si la intención de usar/consultar una capacidad local es suficientemente clara. "
+            "Elegí una herramienta únicamente si la intención de usar/consultar una capacidad registrada es suficientemente clara. "
             "Si es charla, una frase incompleta sin intención clara, o faltan datos imprescindibles, devolvé chat. "
-            "Nunca inventes texto faltante para crear una nota. 'nota comprar X' puede significar guardar una nota, no una compra financiera. "
-            "Si preguntan cuál/qué nota fue guardada o anotada y no nombran un tema concreto, usá notes list; no busques la palabra 'nota'. "
-            "Si preguntan por contenido concreto de una nota, como 'qué tengo que comprar mañana', usá notes search con sólo palabras de contenido útiles, por ejemplo 'comprar mañana'. "
+            f"{tool_guidance + ' ' if tool_guidance else ''}"
             "Devolvé SOLO JSON válido, sin markdown ni explicación, con esta forma exacta: "
             '{"kind":"tool|chat","tool":"nombre_o_vacio","arguments":{},"confidence":0.0}.\n'
             f"TOOLS={json.dumps(tool_specs, ensure_ascii=False)}\n"
@@ -159,34 +172,16 @@ class SemanticToolIntentResolver:
             requires_llm=False,
             confidence=confidence_f,
             raw_text=text,
-            source="semantic_local",
+            source="semantic_tool",
             latency_ms=latency_ms,
         )
 
 
-    @staticmethod
-    def _narrow_tools_for_text(text: str, allowed: dict[str, Any]) -> dict[str, Any]:
-        """Reduce semantic parser prompt to likely tool domains for lower latency.
-
-        This only narrows an already policy-approved allowlist; it never adds a tool.
-        """
+    def _narrow_tools_for_text(self, text: str, allowed: dict[str, Any]) -> dict[str, Any]:
+        """Narrow using hints declared by the tools themselves, never a central domain table."""
         clean = " ".join((text or "").lower().split())
-        domain_hints: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
-            (("hora", "fecha", "día", "dia"), ("clock",)),
-            (("volumen", "silencio", "mute", "sonido", "audio"), ("volume",)),
-            (("nota", "notas", "anota", "anotá", "anotame", "recorda", "recordá", "guardar", "guardame", "comprar"), ("notes",)),
-            (("temporizador", "timer", "alarma", "cuenta regresiva", "cronómetro", "cronometro"), ("timer",)),
-            (("música", "musica", "canción", "cancion", "pausa", "siguiente"), ("music",)),
-            (("sistema", "hardware", "cpu", "ram", "batería", "bateria"), ("system_status",)),
-        ]
-        selected: set[str] = set()
-        for hints, tools in domain_hints:
-            if SemanticToolIntentResolver._has_any_hint(clean, hints):
-                selected.update(tools)
-        if not selected:
-            return allowed
-        narrowed = {name: tool for name, tool in allowed.items() if name in selected}
-        return narrowed or allowed
+        matched = self._matching_tool_names(clean)
+        return {name: tool for name, tool in allowed.items() if name in matched}
 
     @staticmethod
     def _has_any_hint(text: str, hints: tuple[str, ...]) -> bool:
@@ -204,7 +199,12 @@ class SemanticToolIntentResolver:
     def _allowed_tools(self, mode: SocialMode) -> dict[str, Any]:
         allowed: dict[str, Any] = {}
         for tool in self.registry.list_tools():
-            if getattr(tool, "requires_network", False) or getattr(tool, "destructive", False):
+            available = getattr(tool, "is_available", None)
+            if isinstance(available, bool) and not available:
+                continue
+            if getattr(tool, "requires_network", False) and not self.allow_network_tools:
+                continue
+            if getattr(tool, "destructive", False):
                 continue
             allowed_modes = getattr(tool, "allowed_modes", set(SocialMode))
             if mode not in allowed_modes:

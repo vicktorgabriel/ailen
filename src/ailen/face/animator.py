@@ -25,6 +25,20 @@ class FaceAnimator:
     - Deterministic testing support via injectable clock and PRNG seed.
     """
 
+    SUPPORTED_EXPRESSIONS = (
+        "neutral",
+        "happy",
+        "curious",
+        "surprised",
+        "confused",
+        "wink",
+        "focused",
+        "sad",
+        "skeptical",
+        "excited",
+        "playful",
+    )
+
     def __init__(
         self,
         clock: Callable[[], float] | None = None,
@@ -38,8 +52,11 @@ class FaceAnimator:
         self._gaze_smoothing_speed = gaze_smoothing_speed
 
         self._state: AssistantState = AssistantState.IDLE
-        self._expression: str = "neutral"
+        self._state_expression: str = "neutral"
+        self._expression_override: str | None = None
+        self._expression_expires_at: float | None = None
         self._speech_level: float = 0.0
+        self._speech_started_at: float | None = None
 
         # Gaze targets and current smoothed values
         self._target_gaze_x: float = 0.0
@@ -90,7 +107,15 @@ class FaceAnimator:
             AssistantState.ERROR: "error",
             AssistantState.DEGRADED: "degraded",
         }
-        self._expression = expression_by_state[state]
+        self._state_expression = expression_by_state[state]
+        if state in {
+            AssistantState.BOOTING,
+            AssistantState.SLEEP,
+            AssistantState.ERROR,
+            AssistantState.DEGRADED,
+        }:
+            self._expression_override = None
+            self._expression_expires_at = None
 
     def set_gaze(self, x: float, y: float) -> None:
         """Set the target gaze coordinates normalized to [-1.0, 1.0]."""
@@ -99,11 +124,22 @@ class FaceAnimator:
 
     def set_speech_level(self, level: float) -> None:
         """Set current speech synthesis energy / mouth openness [0.0, 1.0]."""
-        self._speech_level = max(0.0, min(1.0, level))
+        bounded = max(0.0, min(1.0, level))
+        if bounded > 0.0 and self._speech_level <= 0.0:
+            self._speech_started_at = self._now()
+        elif bounded <= 0.0:
+            self._speech_started_at = None
+        self._speech_level = bounded
 
-    def set_expression(self, expression: str) -> None:
-        """Set a named expression hint."""
-        self._expression = expression
+    def set_expression(self, expression: str, duration_seconds: float = 5.0) -> None:
+        """Apply one bounded transient gesture without replacing interaction state."""
+        clean = expression.strip().lower()
+        if clean not in self.SUPPORTED_EXPRESSIONS:
+            raise ValueError(f"unsupported face expression: {clean}")
+        if not 0.5 <= duration_seconds <= 10.0:
+            raise ValueError("expression duration must be between 0.5 and 10 seconds")
+        self._expression_override = clean
+        self._expression_expires_at = self._now() + duration_seconds
 
     def sleep(self) -> None:
         """Put the face into sleep state."""
@@ -112,7 +148,18 @@ class FaceAnimator:
     def wake(self) -> None:
         """Wake the face from sleep."""
         self.set_state(AssistantState.IDLE)
-        self._expression = "waking"
+        self._state_expression = "waking"
+
+    def _effective_expression(self, now: float) -> str:
+        """Resolve a transient gesture over state and expire it deterministically."""
+        if (
+            self._expression_override is not None
+            and self._expression_expires_at is not None
+            and now >= self._expression_expires_at
+        ):
+            self._expression_override = None
+            self._expression_expires_at = None
+        return self._expression_override or self._state_expression
 
     # -------------------------------------------------------------------------
     # Pose Computation / Update Loop
@@ -123,6 +170,7 @@ class FaceAnimator:
         now = current_time if current_time is not None else self._now()
         dt = max(0.0, now - self._last_update_time)
         self._last_update_time = now
+        expression = self._effective_expression(now)
 
         # 1. Smooth gaze interpolation
         lerp_factor = min(1.0, dt * self._gaze_smoothing_speed) if dt > 0 else 0.0
@@ -130,7 +178,7 @@ class FaceAnimator:
         self._curr_gaze_y += (self._target_gaze_y - self._curr_gaze_y) * lerp_factor
 
         # 2. Sleeping state: eyes closed, no blinks, static
-        if self._state == AssistantState.SLEEP or self._expression == "sleep":
+        if self._state == AssistantState.SLEEP or expression == "sleep":
             return FacePose(
                 gaze_x=0.0,
                 gaze_y=-0.2,
@@ -183,32 +231,112 @@ class FaceAnimator:
             base_eye_open = 0.75
             mouth_width = 0.40
 
+        expression_mouth_open = 0.0
+        if expression == "happy":
+            base_eye_open = 0.72
+            pupil_size = 0.58
+            mouth_width = 0.82
+        elif expression == "curious":
+            base_eye_open = 0.92
+            pupil_size = 0.62
+            head_tilt = 0.10
+        elif expression == "surprised":
+            base_eye_open = 1.0
+            pupil_size = 0.68
+            mouth_width = 0.42
+            expression_mouth_open = 0.32
+        elif expression == "confused":
+            base_eye_open = 0.76
+            pupil_size = 0.46
+            mouth_width = 0.42
+            head_tilt = -0.12
+        elif expression == "focused":
+            base_eye_open = 0.78
+            pupil_size = 0.44
+            mouth_width = 0.40
+
+        elif expression == "sad":
+            base_eye_open = 0.68
+            pupil_size = 0.48
+            mouth_width = 0.44
+            head_tilt = -0.06
+        elif expression == "skeptical":
+            base_eye_open = 0.82
+            pupil_size = 0.45
+            mouth_width = 0.46
+            head_tilt = -0.08
+        elif expression == "excited":
+            base_eye_open = 1.0
+            pupil_size = 0.72
+            mouth_width = 0.88
+            expression_mouth_open = 0.22
+            head_tilt = 0.06
+        elif expression == "playful":
+            base_eye_open = 0.84
+            pupil_size = 0.62
+            mouth_width = 0.74
+            head_tilt = 0.12
+
+        # Piper currently exposes one energy estimate per synthesized chunk.
+        # Turn that bounded intensity into a deterministic articulation carrier
+        # so the mouth keeps moving throughout playback without coupling Face
+        # to PCM buffers, aplay, or the TTS backend.
+        mouth_open = expression_mouth_open
+        speech_elapsed = 0.0
+        if self._speech_level > 0.0:
+            speech_started_at = self._speech_started_at or now
+            speech_elapsed = max(0.0, now - speech_started_at)
+            syllable = 0.5 + 0.5 * math.sin(speech_elapsed * math.tau * 4.1)
+            consonant = 0.5 + 0.5 * math.sin(
+                speech_elapsed * math.tau * 7.3 + 0.8
+            )
+            articulation = 0.72 * syllable + 0.28 * consonant
+            energy = 0.55 + 0.45 * self._speech_level
+            mouth_open = 0.10 + 0.68 * energy * articulation
+            mouth_width += 0.08 * math.sin(speech_elapsed * math.tau * 2.3 + 0.4)
+            head_tilt += 0.045 * math.sin(speech_elapsed * math.tau * 0.75)
+            base_eye_open += 0.025 * math.sin(speech_elapsed * math.tau * 1.2)
+            pupil_size += 0.018 * math.sin(speech_elapsed * math.tau * 1.7)
+
         # Apply blink occlusion: eye_open decreases towards 0.0 as blink_progress increases
         eye_open = max(0.0, base_eye_open * (1.0 - blink_progress))
-
-        # 5. Mouth aperture (driven by speech level when speaking or explicitly set)
-        mouth_open = 0.0
-        if self._state == AssistantState.SPEAKING or self._speech_level > 0.0:
-            mouth_open = self._speech_level
+        left_eye_open = eye_open
+        right_eye_open = eye_open
+        if expression == "wink" and blink_progress < 0.15:
+            left_eye_open = 0.04
+            right_eye_open = max(right_eye_open, 0.85)
+        elif expression == "skeptical":
+            left_eye_open *= 0.62
+            right_eye_open = min(1.0, right_eye_open * 1.08)
+        elif expression == "playful":
+            left_eye_open = min(1.0, left_eye_open * 1.06)
+            right_eye_open *= 0.84
 
         # 6. Micro-saccades / subtle variation (when idle or listening)
         effective_gaze_x = self._curr_gaze_x
         effective_gaze_y = self._curr_gaze_y
-        if self._state in (AssistantState.IDLE, AssistantState.LISTENING):
+        if self._state in (
+            AssistantState.IDLE,
+            AssistantState.LISTENING,
+            AssistantState.SPEAKING,
+        ):
             # Very gentle low-frequency micro wobble
             effective_gaze_x += 0.015 * math.sin(now * 0.8)
             effective_gaze_y += 0.010 * math.cos(now * 0.6)
+        if self._speech_level > 0.0:
+            effective_gaze_x += 0.018 * math.sin(speech_elapsed * math.tau * 0.9)
+            effective_gaze_y += 0.012 * math.cos(speech_elapsed * math.tau * 1.1)
 
         return FacePose(
             gaze_x=max(-1.0, min(1.0, effective_gaze_x)),
             gaze_y=max(-1.0, min(1.0, effective_gaze_y)),
-            left_eye_open=eye_open,
-            right_eye_open=eye_open,
-            pupil_size=pupil_size,
+            left_eye_open=left_eye_open,
+            right_eye_open=right_eye_open,
+            pupil_size=max(0.0, min(1.0, pupil_size)),
             mouth_open=max(0.0, min(1.0, mouth_open)),
-            mouth_width=mouth_width,
-            expression=self._expression,
+            mouth_width=max(0.0, min(1.0, mouth_width)),
+            expression=expression,
             blink_progress=blink_progress,
-            head_tilt=head_tilt,
+            head_tilt=max(-1.0, min(1.0, head_tilt)),
             timestamp=now,
         )

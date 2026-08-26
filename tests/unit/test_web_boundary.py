@@ -1,5 +1,9 @@
 """Unit tests for Web Search and Web Fetch boundaries and anti-SSRF protections."""
 
+import sys
+from datetime import UTC, datetime
+from types import ModuleType
+
 from ailen.domain.enums import ErrorCode
 from ailen.tools.builtin.web_fetch import (
     ALLOWED_CONTENT_TYPES,
@@ -8,6 +12,7 @@ from ailen.tools.builtin.web_fetch import (
     WebFetchTool,
 )
 from ailen.tools.builtin.web_search import (
+    DdgsWebSearchProvider,
     FakeWebSearchProvider,
     UnconfiguredWebSearchProvider,
     WebSearchRequest,
@@ -51,6 +56,71 @@ def test_web_search_fake_provider() -> None:
     assert result.data["count"] == 1
     assert result.data["results"][0]["title"] == "Python Programming"
     assert result.requires_llm_summary is True
+
+
+def test_web_search_defaults_to_three_results() -> None:
+    provider = FakeWebSearchProvider(
+        canned_results={
+            "python": [
+                WebSearchResult(
+                    title=f"Resultado {index}",
+                    snippet="Contenido",
+                    url=f"https://example.com/{index}",
+                )
+                for index in range(5)
+            ]
+        }
+    )
+
+    result = WebSearchTool(provider=provider).execute(
+        {"query": "python"},
+        ToolContext(),
+    )
+
+    assert provider.call_history[-1].max_results == 3
+    assert result.data["count"] == 3
+
+
+def test_web_search_forwards_bounded_news_freshness() -> None:
+    provider = FakeWebSearchProvider()
+
+    WebSearchTool(provider=provider).execute(
+        {"query": "Python", "category": "news", "freshness": "day"},
+        ToolContext(),
+    )
+
+    request = provider.call_history[-1]
+    assert request.category == "news"
+    assert request.freshness == "day"
+
+
+def test_web_search_news_only_exposes_valid_dated_results() -> None:
+    provider = FakeWebSearchProvider(
+        canned_results={
+            "python": [
+                WebSearchResult(
+                    title="Sin fecha",
+                    snippet="No debe llegar al resumen de actualidad.",
+                    url="https://example.com/undated",
+                ),
+                WebSearchResult(
+                    title="Fechada",
+                    snippet="Puede llegar al resumen.",
+                    url="https://example.com/dated",
+                    published_at=datetime.now(UTC).isoformat(),
+                ),
+            ]
+        }
+    )
+
+    result = WebSearchTool(provider=provider).execute(
+        {"query": "python", "category": "news", "freshness": "day"},
+        ToolContext(),
+    )
+
+    assert result.data["count"] == 1
+    assert result.data["results"][0]["title"] == "Fechada"
+    assert result.data["results"][0]["published_at"].endswith("+00:00")
 
 
 def test_web_fetch_policy_ip_blocking() -> None:
@@ -139,3 +209,111 @@ def test_web_search_bounds_and_sanitizes_provider_output() -> None:
     assert len(item["snippet"]) <= 1200
     assert item["url"] == ""
     assert len(item["source"]) <= 120
+
+def test_ddgs_provider_normalizes_results_without_network(monkeypatch) -> None:
+    calls = {}
+
+    class FakeDDGS:
+        def __init__(self, timeout):  # type: ignore[no-untyped-def]
+            calls["timeout"] = timeout
+
+        def text(self, query, **kwargs):  # type: ignore[no-untyped-def]
+            calls["query"] = query
+            calls["kwargs"] = kwargs
+            return [
+                {
+                    "title": "Resultado",
+                    "body": "Contenido encontrado",
+                    "href": "https://example.com/info",
+                }
+            ]
+
+    fake_module = ModuleType("ddgs")
+    fake_module.DDGS = FakeDDGS  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ddgs", fake_module)
+    monkeypatch.setattr(
+        "ailen.tools.builtin.web_search.importlib.util.find_spec",
+        lambda _name: object(),
+    )
+
+    provider = DdgsWebSearchProvider(region="ar-es")
+    response = provider.search(WebSearchRequest(query="prueba", max_results=2, timeout=4.2))
+
+    assert response.success is True
+    assert response.cost_tier == "FREE"
+    assert response.results[0].title == "Resultado"
+    assert response.results[0].source == "example.com"
+    assert calls["query"] == "prueba"
+    assert calls["kwargs"]["region"] == "ar-es"
+    assert calls["kwargs"]["max_results"] == 2
+
+
+def test_ddgs_news_provider_preserves_publication_timestamp(monkeypatch) -> None:
+    calls = {}
+
+    class FakeDDGS:
+        def __init__(self, timeout):  # type: ignore[no-untyped-def]
+            calls["timeout"] = timeout
+
+        def news(self, query, **kwargs):  # type: ignore[no-untyped-def]
+            calls["query"] = query
+            calls["kwargs"] = kwargs
+            return [
+                {
+                    "date": "2026-08-25T11:58:00+00:00",
+                    "title": "Novedad de Python",
+                    "body": "Contenido fechado",
+                    "url": "https://example.com/news",
+                    "source": "Example News",
+                }
+            ]
+
+    fake_module = ModuleType("ddgs")
+    fake_module.DDGS = FakeDDGS  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ddgs", fake_module)
+    monkeypatch.setattr(
+        "ailen.tools.builtin.web_search.importlib.util.find_spec",
+        lambda _name: object(),
+    )
+
+    provider = DdgsWebSearchProvider(region="ar-es")
+    response = provider.search(
+        WebSearchRequest(
+            query="Python",
+            max_results=3,
+            timeout=4.2,
+            category="news",
+            freshness="day",
+        )
+    )
+
+    assert response.success is True
+    assert response.results[0].published_at == "2026-08-25T11:58:00+00:00"
+    assert response.results[0].source == "Example News"
+    assert calls["kwargs"]["timelimit"] == "d"
+
+
+def test_ddgs_no_news_results_are_a_successful_empty_search(monkeypatch) -> None:
+    class FakeDDGS:
+        def __init__(self, timeout):  # type: ignore[no-untyped-def]
+            del timeout
+
+        def news(self, query, **kwargs):  # type: ignore[no-untyped-def]
+            del query, kwargs
+            raise RuntimeError("No results found.")
+
+    fake_module = ModuleType("ddgs")
+    fake_module.DDGS = FakeDDGS  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ddgs", fake_module)
+    monkeypatch.setattr(
+        "ailen.tools.builtin.web_search.importlib.util.find_spec",
+        lambda _name: object(),
+    )
+
+    response = DdgsWebSearchProvider().search(
+        WebSearchRequest(query="Python", category="news", freshness="day")
+    )
+
+    assert response.success is True
+    assert response.status == "OK"
+    assert response.results == []

@@ -2,6 +2,7 @@
 
 import logging
 
+from ailen.core.capabilities import CapabilityDescriptor
 from ailen.domain.enums import AssistantState
 from ailen.face.animator import FaceAnimator
 from ailen.face.models import FacePose
@@ -24,6 +25,12 @@ class NullFaceController:
         self.expression: str = "neutral"
         self.sleeping: bool = False
 
+    def capabilities(self) -> list[CapabilityDescriptor]:
+        return [
+            CapabilityDescriptor("face.display", "mostrar una cara animada", False, "face"),
+            CapabilityDescriptor("face.expression", "cambiar expresiones faciales", False, "face"),
+        ]
+
     def set_state(self, state: AssistantState) -> None:
         self.state = state
         self.animator.set_state(state)
@@ -37,9 +44,9 @@ class NullFaceController:
         self.speech_level = max(0.0, min(1.0, level))
         self.animator.set_speech_level(level)
 
-    def set_expression(self, expression: str) -> None:
+    def set_expression(self, expression: str, duration_seconds: float = 5.0) -> None:
         self.expression = expression
-        self.animator.set_expression(expression)
+        self.animator.set_expression(expression, duration_seconds)
 
     def sleep(self) -> None:
         self.sleeping = True

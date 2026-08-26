@@ -1,142 +1,101 @@
-"""Piper-based offline Text-to-Speech (TTS) backend.
+"""Canonical Piper offline Text-to-Speech backend using the piper-tts Python API."""
 
-Wraps the current Piper CLI using safe argv execution. Piper remains an optional
-external component: AILEN Core does not depend on it being installed.
-"""
-
+import importlib.util
 import logging
-import shutil
-import subprocess
-import sys
-import tempfile
 import time
-import wave
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from ailen.audio.contracts import (
-    AudioBackendHealth,
-    SpeechOutput,
-    SpeechRequest,
-    TtsBackend,
-)
+from ailen.audio.contracts import AudioBackendHealth, SpeechOutput, SpeechRequest, TtsBackend
 from ailen.audio.speech_text import normalize_text_for_speech
 from ailen.domain.enums import ServiceStatus
 
 logger = logging.getLogger(__name__)
 
 
-def resolve_piper_executable(binary_path: str = "piper") -> str | None:
-    """Resolve Piper from an explicit path, PATH, or the active Python environment."""
-    configured = Path(binary_path)
-    if configured.is_file():
-        return str(configured)
-
-    resolved = shutil.which(binary_path)
-    if resolved:
-        return resolved
-
-    # When AILEN is invoked directly as .venv/bin/ailen, the venv's bin
-    # directory is not guaranteed to be on PATH. Prefer its sibling executable
-    # before declaring Piper unavailable.
-    if not configured.parent.parts or str(configured.parent) == ".":
-        # Do not resolve sys.executable here: virtualenv Python is commonly a
-        # symlink to /usr/bin/python, while console scripts such as `piper` live
-        # next to the venv launcher in .venv/bin.
-        sibling = Path(sys.executable).absolute().with_name(configured.name)
-        if sibling.is_file():
-            return str(sibling)
-    return None
+def piper_runtime_available() -> bool:
+    """Return whether the canonical piper-tts Python runtime is installed."""
+    try:
+        return (
+            importlib.util.find_spec("piper") is not None
+            and importlib.util.find_spec("piper.voice") is not None
+        )
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
 
 
 class PiperTtsBackend(TtsBackend):
-    """Piper TTS backend using the local command-line executable."""
+    """Cached PiperVoice backend with incremental sentence audio."""
 
-    def __init__(
-        self,
-        binary_path: str = "piper",
-        model_path: str = "",
-        config_path: str = "",
-    ) -> None:
-        self.binary_path = binary_path
+    def __init__(self, model_path: str = "", config_path: str = "") -> None:
         self.model_path = model_path
         self.config_path = config_path
-        self._resolved_binary: str | None = None
         self._health_status = ServiceStatus.UNKNOWN
         self._health_detail = "Uninitialized"
-        self._python_voice: Any | None = None
-        self._python_voice_load_attempted = False
-
-    def _resolve_binary(self) -> str | None:
-        return resolve_piper_executable(self.binary_path)
+        self._voice: Any | None = None
+        self._load_attempted = False
 
     def _check_availability(self) -> bool:
-        """Check if Piper binary and ONNX model are available."""
-        self._resolved_binary = self._resolve_binary()
-        if not self._resolved_binary:
+        if not piper_runtime_available():
             self._health_status = ServiceStatus.DISABLED
-            self._health_detail = f"Piper binary not found: {self.binary_path}"
+            self._health_detail = "piper-tts Python package is not installed"
             return False
-
         if not self.model_path or not Path(self.model_path).is_file():
             self._health_status = ServiceStatus.DISABLED
-            self._health_detail = (
-                f"Piper ONNX model file not found: {self.model_path or '<empty>'}"
-            )
+            self._health_detail = f"Piper ONNX model file not found: {self.model_path or '<empty>'}"
             return False
-
+        if self.config_path and not Path(self.config_path).is_file():
+            self._health_status = ServiceStatus.DISABLED
+            self._health_detail = f"Piper voice config file not found: {self.config_path}"
+            return False
         self._health_status = ServiceStatus.HEALTHY
-        self._health_detail = f"Piper ready (model: {Path(self.model_path).name})"
+        self._health_detail = f"Piper Python runtime ready (model: {Path(self.model_path).name})"
         return True
 
-    def _load_python_voice(self) -> Any | None:
-        """Load and cache Piper's Python voice API when available.
-
-        The CLI remains the blocking fallback, but piper-tts exposes sentence
-        AudioChunks through PiperVoice.synthesize(). Keeping the loaded voice in
-        memory avoids reloading the ONNX model for every spoken response.
-        """
-        if self._python_voice_load_attempted:
-            return self._python_voice
-        self._python_voice_load_attempted = True
-        if not self.model_path or not Path(self.model_path).is_file():
+    def _load_voice(self) -> Any | None:
+        if self._voice is not None:
+            return self._voice
+        if self._load_attempted:
+            return None
+        self._load_attempted = True
+        if not self._check_availability():
             return None
         try:
             from piper.voice import PiperVoice  # type: ignore[import-untyped]
 
-            config = self.config_path if self.config_path and Path(self.config_path).is_file() else None
-            self._python_voice = PiperVoice.load(self.model_path, config_path=config, use_cuda=False)
+            config = self.config_path or None
+            self._voice = PiperVoice.load(self.model_path, config_path=config, use_cuda=False)
+            self._health_status = ServiceStatus.HEALTHY
+            self._health_detail = f"Piper voice loaded (model: {Path(self.model_path).name})"
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Piper Python streaming API unavailable; using CLI fallback: %s", exc)
-            self._python_voice = None
-        return self._python_voice
+            self._voice = None
+            self._health_status = ServiceStatus.UNHEALTHY
+            self._health_detail = f"Piper voice load failed: {exc}"
+            logger.warning("Piper voice load failed: %s", exc)
+        return self._voice
+
+    @staticmethod
+    def _make_synthesis_config(request: SpeechRequest) -> Any:
+        from piper.config import SynthesisConfig  # type: ignore[import-untyped]
+
+        return SynthesisConfig(
+            length_scale=(1.0 / max(0.2, min(3.0, request.rate))) if request.rate != 1.0 else None,
+            volume=max(0.0, min(2.0, request.volume)),
+        )
 
     def synthesize_chunks(self, request: SpeechRequest) -> Iterable[SpeechOutput]:
-        """Yield sentence audio as soon as Piper's Python API produces it.
-
-        Falls back to the existing blocking CLI synthesis as a single chunk when
-        the Python API is unavailable.
-        """
+        """Yield canonical 16-bit PCM chunks directly from the cached PiperVoice."""
         clean_text = normalize_text_for_speech(request.text)
         if not clean_text:
             return
-
-        start_t = time.monotonic()
-        voice = self._load_python_voice()
+        voice = self._load_voice()
         if voice is None:
-            fallback = self.synthesize(request)
-            if fallback.audio_data:
-                yield fallback
             return
 
+        start_t = time.monotonic()
+        syn_config = self._make_synthesis_config(request)
         try:
-            from piper.config import SynthesisConfig  # type: ignore[import-untyped]
-
-            syn_config = SynthesisConfig(
-                length_scale=(1.0 / max(0.2, min(3.0, request.rate))) if request.rate != 1.0 else None,
-                volume=max(0.0, min(2.0, request.volume)),
-            )
             for chunk in voice.synthesize(clean_text, syn_config=syn_config):
                 if chunk.sample_width != 2:
                     raise ValueError(f"Unsupported Piper sample width: {chunk.sample_width * 8}-bit")
@@ -144,9 +103,9 @@ class PiperTtsBackend(TtsBackend):
                 if not pcm:
                     continue
                 duration_ms = (
-                    len(pcm) / float(chunk.sample_rate * chunk.sample_channels * chunk.sample_width) * 1000.0
-                    if chunk.sample_rate > 0 and chunk.sample_channels > 0
-                    else 0.0
+                    len(pcm)
+                    / float(chunk.sample_rate * chunk.sample_channels * chunk.sample_width)
+                    * 1000.0
                 )
                 yield SpeechOutput(
                     audio_data=pcm,
@@ -156,103 +115,35 @@ class PiperTtsBackend(TtsBackend):
                     latency_ms=(time.monotonic() - start_t) * 1000.0,
                 )
             self._health_status = ServiceStatus.HEALTHY
-            self._health_detail = f"Piper Python API ready (model: {Path(self.model_path).name})"
+            self._health_detail = f"Piper voice active (model: {Path(self.model_path).name})"
         except Exception as exc:  # noqa: BLE001
             self._health_status = ServiceStatus.UNHEALTHY
-            self._health_detail = f"Piper chunk synthesis failed: {exc}"
-            logger.warning("Piper chunk synthesis failed: %s", exc)
+            self._health_detail = f"Piper synthesis failed: {exc}"
+            logger.warning("Piper synthesis failed: %s", exc)
+
+    def synthesize(self, request: SpeechRequest) -> SpeechOutput:
+        """Aggregate the same canonical streaming path into one SpeechOutput."""
+        chunks = list(self.synthesize_chunks(request))
+        if not chunks:
+            return SpeechOutput(audio_data=None, duration_ms=0.0, latency_ms=0.0)
+        sample_rate = chunks[0].sample_rate
+        channels = chunks[0].channels
+        if any(chunk.sample_rate != sample_rate or chunk.channels != channels for chunk in chunks):
+            self._health_status = ServiceStatus.UNHEALTHY
+            self._health_detail = "Piper returned inconsistent audio formats across chunks"
+            return SpeechOutput(audio_data=None, duration_ms=0.0, latency_ms=chunks[0].latency_ms)
+        return SpeechOutput(
+            audio_data=b"".join(chunk.audio_data or b"" for chunk in chunks),
+            sample_rate=sample_rate,
+            channels=channels,
+            duration_ms=sum(chunk.duration_ms for chunk in chunks),
+            latency_ms=chunks[0].latency_ms,
+        )
 
     def warmup(self) -> bool:
-        """Preload the Python Piper voice so the first live reply avoids model-load latency.
-
-        Returns False when only the CLI fallback is available; that is not a TTS
-        failure because blocking synthesis can still operate.
-        """
-        return self._load_python_voice() is not None
+        """Load and cache the configured voice before the first spoken turn."""
+        return self._load_voice() is not None
 
     def health(self) -> AudioBackendHealth:
         self._check_availability()
         return AudioBackendHealth(status=self._health_status, detail=self._health_detail)
-
-    def synthesize(self, request: SpeechRequest) -> SpeechOutput:
-        """Synthesize text and return canonical 16-bit PCM extracted from Piper WAV output."""
-        start_t = time.monotonic()
-        clean_text = normalize_text_for_speech(request.text)
-        if not clean_text:
-            return SpeechOutput(audio_data=b"", duration_ms=0.0, latency_ms=0.0)
-
-        if not self._check_availability() or self._resolved_binary is None:
-            return SpeechOutput(audio_data=None, duration_ms=0.0, latency_ms=0.0)
-
-        temp_path: str | None = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                temp_path = tmp.name
-
-            cmd = [
-                self._resolved_binary,
-                "-m",
-                self.model_path,
-                "-f",
-                temp_path,
-            ]
-            if self.config_path and Path(self.config_path).is_file():
-                cmd.extend(["-c", self.config_path])
-            if request.rate != 1.0:
-                length_scale = 1.0 / max(0.2, min(3.0, request.rate))
-                cmd.extend(["--length-scale", f"{length_scale:.3f}"])
-            if request.volume != 1.0:
-                cmd.extend(["--volume", f"{max(0.0, min(2.0, request.volume)):.3f}"])
-
-            result = subprocess.run(
-                cmd,
-                input=(clean_text + "\n").encode("utf-8"),
-                capture_output=True,
-                timeout=30.0,
-                check=False,
-            )
-            latency_ms = (time.monotonic() - start_t) * 1000.0
-            if result.returncode != 0:
-                self._health_status = ServiceStatus.UNHEALTHY
-                stderr = result.stderr.decode("utf-8", errors="replace").strip()
-                self._health_detail = f"Piper exited with code {result.returncode}"
-                logger.warning("Piper exited with code %d: %s", result.returncode, stderr)
-                return SpeechOutput(audio_data=None, latency_ms=latency_ms)
-
-            with wave.open(temp_path, "rb") as wav_file:
-                channels = wav_file.getnchannels()
-                sample_width = wav_file.getsampwidth()
-                sample_rate = wav_file.getframerate()
-                frame_count = wav_file.getnframes()
-                pcm = wav_file.readframes(frame_count)
-
-            if sample_width != 2:
-                self._health_status = ServiceStatus.UNHEALTHY
-                self._health_detail = f"Unsupported Piper sample width: {sample_width * 8}-bit"
-                return SpeechOutput(audio_data=None, latency_ms=latency_ms)
-
-            duration_ms = (frame_count / sample_rate * 1000.0) if sample_rate > 0 else 0.0
-            self._health_status = ServiceStatus.HEALTHY
-            self._health_detail = f"Piper ready (model: {Path(self.model_path).name})"
-            return SpeechOutput(
-                audio_data=pcm,
-                sample_rate=sample_rate,
-                channels=channels,
-                duration_ms=duration_ms,
-                latency_ms=latency_ms,
-            )
-        except (subprocess.TimeoutExpired, OSError, wave.Error) as exc:
-            self._health_status = ServiceStatus.UNHEALTHY
-            self._health_detail = f"Piper synthesis failed: {exc}"
-            logger.warning("Piper synthesis failed: %s", exc)
-            return SpeechOutput(
-                audio_data=None,
-                duration_ms=0.0,
-                latency_ms=(time.monotonic() - start_t) * 1000.0,
-            )
-        finally:
-            if temp_path:
-                try:
-                    Path(temp_path).unlink(missing_ok=True)
-                except OSError as exc:
-                    logger.debug("Failed to remove Piper temp file %s: %s", temp_path, exc)

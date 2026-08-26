@@ -145,6 +145,8 @@ class OllamaNativeBackend(AiBackend):
                     return self._failure("empty_response", latency_ms)
                 eval_count = data.get("eval_count")
                 eval_duration = data.get("eval_duration")
+                prompt_eval_duration = data.get("prompt_eval_duration")
+                load_duration = data.get("load_duration")
                 generation_tps: float | None = None
                 if (
                     isinstance(eval_count, int)
@@ -159,6 +161,21 @@ class OllamaNativeBackend(AiBackend):
                     estimated_cost=0.0,
                     currency="USD",
                     generation_tokens_per_second=generation_tps,
+                    prompt_eval_ms=(
+                        float(prompt_eval_duration) / 1_000_000.0
+                        if isinstance(prompt_eval_duration, int | float)
+                        else None
+                    ),
+                    generation_ms=(
+                        float(eval_duration) / 1_000_000.0
+                        if isinstance(eval_duration, int | float)
+                        else None
+                    ),
+                    load_ms=(
+                        float(load_duration) / 1_000_000.0
+                        if isinstance(load_duration, int | float)
+                        else None
+                    ),
                 )
                 return AiResponse(
                     text=text,

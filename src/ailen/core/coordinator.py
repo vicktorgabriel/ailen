@@ -49,6 +49,11 @@ class InteractionCoordinator:
         """Return current social operating mode."""
         return self._mode
 
+    @property
+    def current_presence(self) -> bool:
+        """Return the presence state already accepted by Core."""
+        return self._current_presence
+
     def set_mode(self, mode: SocialMode) -> None:
         """Update active social mode."""
         self._mode = mode
@@ -115,7 +120,7 @@ class InteractionCoordinator:
                 self.face_controller.set_state(self.state_manager.current_state)
                 if obs.primary_x_normalized is not None and obs.primary_y_normalized is not None:
                     self.face_controller.set_gaze(obs.primary_x_normalized, obs.primary_y_normalized)
-                if decision.expression_hint:
+                if decision.expression_hint and not was_present:
                     self.face_controller.set_expression(decision.expression_hint)
 
             # Presence events represent transitions, not every camera observation.

@@ -53,6 +53,46 @@ def test_utterance_collector_ignores_short_transient_noise() -> None:
     assert collector.is_in_utterance is False
 
 
+def test_energy_vad_hangover_does_not_confirm_a_new_utterance() -> None:
+    vad = EnergyVad(threshold_rms=0.02, hangover_frames=6)
+    collector = UtteranceCollector(
+        vad=vad,
+        frame_ms=20.0,
+        min_speech_ms=160.0,
+        silence_timeout_ms=100.0,
+    )
+    voice = generate_tone_pcm(freq_hz=440.0, duration_ms=20.0, amplitude=0.1)
+    silence = generate_silence_pcm(duration_ms=20.0)
+
+    collector.process_frame(voice)
+    collector.process_frame(voice)
+    for _ in range(6):
+        collector.process_frame(silence)
+
+    assert collector.is_in_utterance is False
+
+
+def test_energy_vad_hangover_bridges_real_voice_evidence_without_counting_gap() -> None:
+    vad = EnergyVad(threshold_rms=0.02, hangover_frames=2)
+    collector = UtteranceCollector(
+        vad=vad,
+        frame_ms=20.0,
+        min_speech_ms=80.0,
+        silence_timeout_ms=100.0,
+    )
+    voice = generate_tone_pcm(freq_hz=440.0, duration_ms=20.0, amplitude=0.1)
+    silence = generate_silence_pcm(duration_ms=20.0)
+
+    collector.process_frame(voice)
+    collector.process_frame(voice)
+    collector.process_frame(silence)  # bridged by hangover, but does not add evidence
+    collector.process_frame(voice)
+    _segment, is_active = collector.process_frame(voice)
+
+    assert is_active is True
+    assert collector.is_in_utterance is True
+
+
 def test_utterance_collector_completes_utterance_on_silence_timeout() -> None:
     vad = EnergyVad(threshold_rms=0.02, hangover_frames=0)
     # min_speech=40ms (2 frames), silence_timeout=60ms (3 frames)

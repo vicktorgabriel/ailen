@@ -28,6 +28,13 @@ class VisionHealth:
     """Health of a vision backend."""
     status: ServiceStatus = ServiceStatus.UNKNOWN
     detail: str = ""
+    stream_has_frames: bool = False
+    frames_processed: int = 0
+    frame_read_failures: int = 0
+    last_valid_frame_at: str | None = None
+    last_valid_frame_age_seconds: float | None = None
+    capture_thread_alive: bool | None = None
+    last_inference_ms: float | None = None
 
 
 @runtime_checkable

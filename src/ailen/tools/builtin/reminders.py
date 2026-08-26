@@ -90,6 +90,7 @@ class RemindersTool:
 
     name: str = "reminders"
     description: str = "Crea, lista o cancela recordatorios persistentes con fecha u hora explícita."
+    intent_hints = ("recordatorio", "recordame", "recordáme", "recuérdame", "recuerdame", "avisame", "avísame")
     schema: ClassVar[dict[str, Any]] = {
         "properties": {
             "action": {
@@ -116,6 +117,10 @@ class RemindersTool:
 
     def __init__(self, repository: MemoryRepository | None = None) -> None:
         self.repository = repository
+
+    @property
+    def is_available(self) -> bool:
+        return self.repository is not None
 
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         del context

@@ -50,6 +50,7 @@ def test_coordinator_full_presence_lifecycle() -> None:
 
     # 3. Transitions to ATTENTION
     assert state_mgr.current_state == AssistantState.ATTENTION
+    assert coordinator.current_presence is True
 
     # 4. Social engine decided GREET
     assert decision1.action == SocialAction.GREET
@@ -77,6 +78,7 @@ def test_coordinator_full_presence_lifecycle() -> None:
 
     # 8. Transitions back to IDLE and publishes PRESENCE_LOST
     assert state_mgr.current_state == AssistantState.IDLE
+    assert coordinator.current_presence is False
     assert decision3.action == SocialAction.STAY_SILENT
     assert event_bus.history[-1].event_type == EventType.PRESENCE_LOST
 

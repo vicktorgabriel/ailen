@@ -187,3 +187,54 @@ def test_low_quality_transcript_reprompts_without_calling_llm(monkeypatch) -> No
     assert runner.metrics.stt_fail_count == 1
     assert len(started) == 1
     assert started[0][0] == runner._run_stt_reprompt
+
+def test_lab_runner_stop_waits_for_inflight_interaction(tmp_path: Path) -> None:
+    import threading
+
+    runner = LabRunner(
+        config=AILENConfig(),
+        dry_run=True,
+        headless=True,
+        no_camera=True,
+        no_audio=True,
+        no_ai=True,
+        log_dir=tmp_path,
+    )
+    runner._is_running = True
+    with runner._interaction_lock:
+        runner._is_processing_interaction = True
+
+    def release() -> None:
+        time.sleep(0.12)
+        with runner._interaction_lock:
+            runner._is_processing_interaction = False
+
+    worker = threading.Thread(target=release)
+    worker.start()
+    started = time.monotonic()
+    runner.stop()
+    elapsed = time.monotonic() - started
+    worker.join(timeout=1.0)
+
+    assert elapsed >= 0.08
+    assert runner._is_running is False
+
+
+def test_lab_runner_wires_vad_from_speech_config() -> None:
+    cfg = AILENConfig()
+    cfg.speech.vad_threshold = 0.013
+    cfg.speech.vad_hangover_ms = 80
+    cfg.speech.pre_roll_ms = 300
+    cfg.speech.silence_timeout_ms = 520
+    cfg.speech.min_speech_ms = 160
+    runner = LabRunner(config=cfg, dry_run=True, simulate=True)
+    runner.inspect_and_plan()
+    runner.init_components()
+
+    assert runner.audio_coordinator is not None
+    collector = runner.audio_coordinator.collector
+    assert collector.vad.threshold_rms == 0.013  # type: ignore[attr-defined]
+    assert collector.vad.hangover_frames == 4  # type: ignore[attr-defined]
+    assert collector.min_speech_ms == 160
+    assert collector.silence_timeout_ms == 520
+    assert collector._pre_roll_frame_count == 15

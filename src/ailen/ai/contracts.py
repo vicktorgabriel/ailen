@@ -25,6 +25,9 @@ class AiUsage:
     estimated_cost: float | None = None
     currency: str | None = None
     generation_tokens_per_second: float | None = None
+    prompt_eval_ms: float | None = None
+    generation_ms: float | None = None
+    load_ms: float | None = None
 
 
 @dataclass

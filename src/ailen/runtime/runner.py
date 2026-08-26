@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import queue
 import signal
 import threading
@@ -25,10 +26,13 @@ from ailen.audio.contracts import (
 )
 from ailen.audio.coordinator import AudioInteractionCoordinator
 from ailen.audio.stt_quality import SttQualityEvaluator
+from ailen.audio.vad import EnergyVad, UtteranceCollector
+from ailen.core.capabilities import CapabilityDescriptor, CapabilityProvider, CapabilityRegistry
 from ailen.core.config import AILENConfig
 from ailen.core.conversation import ConversationCoordinator
 from ailen.core.coordinator import InteractionCoordinator
 from ailen.core.events import EventBus
+from ailen.core.personality import PersonalityService, PersonalityTraits
 from ailen.core.social import SocialEngine
 from ailen.core.state import StateManager
 from ailen.domain.enums import AssistantState, EventType, PrivacyLevel, ServiceStatus
@@ -50,7 +54,9 @@ from ailen.runtime.managed import ManagedLlamaRuntime
 from ailen.runtime.manager import LocalRuntimeManager
 from ailen.runtime.metrics import LabSessionMetrics
 from ailen.tools.builtin import (
+    CameraTool,
     ClockTool,
+    FaceExpressionTool,
     MprisMusicService,
     MusicTool,
     NotesTool,
@@ -62,10 +68,12 @@ from ailen.tools.builtin import (
     WebFetchTool,
     WebSearchTool,
 )
+from ailen.tools.builtin.web_search import create_web_search_provider
 from ailen.tools.executor import ToolExecutor
 from ailen.tools.registry import ToolRegistry
 from ailen.tools.semantic_intent import SemanticToolIntentResolver
-from ailen.vision.contracts import VisionBackend
+from ailen.vision.contracts import PresenceObservation, VisionBackend
+from ailen.vision.control import CameraControl, create_camera_control
 from ailen.vision.debouncer import VisionDebouncer
 
 logger = logging.getLogger("ailen.runtime.runner")
@@ -128,11 +136,11 @@ class LabRunner:
         # Components
         self.face_controller: FaceController = NullFaceController()
         self.vision_backend: VisionBackend | None = None
+        self.camera_control: CameraControl | None = None
         self.vision_debouncer = VisionDebouncer(
-            debounce_seconds=config.vision.presence_debounce_seconds,
-            presence_confirm_seconds=min(0.8, config.vision.presence_debounce_seconds),
-            absence_confirm_seconds=config.vision.presence_debounce_seconds,
-            dropout_grace_seconds=min(0.6, config.vision.presence_debounce_seconds),
+            presence_confirm_seconds=config.vision.presence_confirm_seconds,
+            absence_confirm_seconds=config.vision.absence_confirm_seconds,
+            dropout_grace_seconds=config.vision.dropout_grace_seconds,
         )
         self.audio_in: AudioInputBackend | None = None
         self.audio_out: AudioOutputBackend | None = None
@@ -145,13 +153,16 @@ class LabRunner:
         self.interaction_coordinator: InteractionCoordinator | None = None
         self.audio_coordinator: AudioInteractionCoordinator | None = None
         self.tool_registry: ToolRegistry | None = None
+        self.capability_registry: CapabilityRegistry | None = None
         self.tool_executor: ToolExecutor | None = None
         self.conversation_coordinator: ConversationCoordinator | None = None
+        self.personality_service: PersonalityService | None = None
         self.reminder_service: ReminderService | None = None
         self._pending_reminder_announcements: queue.Queue[dict[str, str]] = queue.Queue()
         self.managed_runtime = managed_runtime
 
         self._vision_thread: threading.Thread | None = None
+        self._vision_observations_delivered = 0
 
     def inspect_and_plan(self) -> tuple[HardwareCapabilityReport, ModelPlan]:
         """Detect hardware capabilities, discover runtimes, and compute optimal model plan."""
@@ -198,6 +209,30 @@ class LabRunner:
             simulate=self.simulate,
         )
         self.component_statuses.append(vision_st)
+
+        camera_password = os.getenv(self.config.vision.network_camera_password_env, "")
+        self.camera_control = create_camera_control(
+            self.config.vision.camera_control_driver,
+            host=self.config.vision.network_camera_host,
+            username=self.config.vision.network_camera_username,
+            password=camera_password,
+            port=self.config.vision.network_camera_http_port,
+            timeout_seconds=self.config.vision.camera_control_timeout_seconds,
+        )
+        if self.config.vision.camera_control_driver != "none":
+            control_configured = bool(self.camera_control and self.camera_control.is_configured)
+            self.component_statuses.append(
+                ComponentStatus(
+                    name="CameraControl",
+                    backend=self.config.vision.camera_control_driver,
+                    state="PENDING" if control_configured else "UNAVAILABLE",
+                    detail=(
+                        "Configured; management endpoint not verified yet"
+                        if control_configured
+                        else f"Missing {self.config.vision.network_camera_password_env} or camera control settings"
+                    ),
+                )
+            )
 
         # 3. Audio I/O
         self.audio_in, self.audio_out, audio_st = factory.build_audio_io(
@@ -278,6 +313,14 @@ class LabRunner:
             self.db_mgr = SQLiteManager(str(db_path))
             MigrationRunner(self.db_mgr).run_migrations()
             self.memory_repo = MemoryRepository(self.db_mgr)
+            recovered_sessions = self.memory_repo.close_open_sessions(
+                source_node_id=self.config.node.node_id
+            )
+            if recovered_sessions:
+                logger.info(
+                    "Closed %d orphan conversation session(s) from a previous unclean exit",
+                    recovered_sessions,
+                )
             conversation_session = self.memory_repo.create_session(
                 mode=self.config.social.default_mode,
                 source_node_id=self.config.node.node_id,
@@ -286,7 +329,25 @@ class LabRunner:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not initialize SQLite memory: %s", exc)
 
-        # 8. Wire Social & Interaction Coordinators
+        # 8. Build bounded persistent personality profile. Existing SQLite
+        # tables from migration 0001 store only safe stylistic traits/events.
+        self.personality_service = PersonalityService(
+            identity_id=self.config.personality.seed,
+            defaults=PersonalityTraits(
+                humor=self.config.personality.base_humor,
+                formality=self.config.personality.base_formality,
+                curiosity=self.config.personality.base_curiosity,
+                initiative=self.config.personality.base_sociability,
+                verbosity=self.config.personality.base_verbosity,
+                patience=self.config.personality.base_patience,
+                expressiveness=self.config.personality.base_expressiveness,
+            ),
+            repository=self.memory_repo,
+            enabled=self.config.personality.evolution_enabled,
+            evolution_rate=self.config.personality.evolution_rate,
+        )
+
+        # 9. Wire Social & Interaction Coordinators
         self.social_engine = SocialEngine(
             default_cooldown_seconds=self.config.social.greeting_cooldown_seconds,
             allow_greetings=self.config.social.auto_greeting_enabled,
@@ -304,15 +365,41 @@ class LabRunner:
         # speech chain is available. Passing None here would trigger the generic
         # coordinator's Fake defaults, which is forbidden outside --simulate.
         if self.audio_in and self.audio_out and self.stt_backend and self.tts_backend:
+            if self.config.speech.vad_engine != "energy":
+                raise RuntimeError(
+                    f"Live Lab requires speech.vad_engine=energy, got {self.config.speech.vad_engine!r}"
+                )
+            frame_ms = self.config.audio.frame_ms
+            hangover_frames = max(0, round(self.config.speech.vad_hangover_ms / frame_ms))
+            collector = UtteranceCollector(
+                vad=EnergyVad(
+                    threshold_rms=self.config.speech.vad_threshold,
+                    hangover_frames=hangover_frames,
+                ),
+                sample_rate=self.config.audio.sample_rate,
+                channels=self.config.audio.channels,
+                frame_ms=frame_ms,
+                min_speech_ms=self.config.speech.min_speech_ms,
+                silence_timeout_ms=self.config.speech.silence_timeout_ms,
+                max_utterance_seconds=self.config.speech.max_utterance_seconds,
+                pre_roll_ms=self.config.speech.pre_roll_ms,
+            )
             self.audio_coordinator = AudioInteractionCoordinator(
                 audio_input=self.audio_in,
                 audio_output=self.audio_out,
                 stt=self.stt_backend,
                 tts=self.tts_backend,
+                utterance_collector=collector,
                 state_manager=self.state_manager,
                 face_controller=self.face_controller,
                 event_bus=self.event_bus,
                 auto_reset_after_stt=not bool(self.ai_backends),
+                interruption_enabled=self.config.speech.interruption_enabled,
+                interruption_threshold_rms=self.config.speech.interruption_threshold_rms,
+                interruption_min_ms=self.config.speech.interruption_min_ms,
+                interruption_calibration_ms=self.config.speech.interruption_calibration_ms,
+                interruption_leak_multiplier=self.config.speech.interruption_leak_multiplier,
+                frame_ms=frame_ms,
             )
 
         # 10. Wire Tool Registry & Controlled Executor. Reminders persist in
@@ -324,14 +411,21 @@ class LabRunner:
                 event_bus=self.event_bus,
             )
         self.tool_registry = ToolRegistry([
+            CameraTool(self.camera_control),
             ClockTool(),
+            FaceExpressionTool(self.face_controller),
             TimerTool(),
             RemindersTool(repository=self.memory_repo),
             VolumeTool(),
             MusicTool(service=MprisMusicService()),
             NotesTool(repository=self.memory_repo),
             SystemStatusTool(),
-            WebSearchTool(),
+            WebSearchTool(
+                provider=create_web_search_provider(
+                    self.config.network.web_search_provider,
+                    region=self.config.network.web_search_region,
+                )
+            ),
             WebFetchTool(),
         ])
         self.tool_executor = ToolExecutor(
@@ -339,6 +433,26 @@ class LabRunner:
             event_bus=self.event_bus,
             repository=self.memory_repo,
         )
+        self.capability_registry = CapabilityRegistry(
+            self.tool_registry,
+            network_access_allowed=self.config.network.outbound_web_enabled,
+        )
+        self.capability_registry.register(
+            CapabilityDescriptor(
+                key="ai.conversation",
+                description="conversar usando el modelo de IA disponible",
+                available=bool(self.ai_backends),
+                source="ai",
+            )
+        )
+        for provider in (
+            self.face_controller,
+            self.vision_backend,
+            self.camera_control,
+            self.audio_coordinator,
+        ):
+            if isinstance(provider, CapabilityProvider):
+                self.capability_registry.register_provider(provider)
 
         # 11. Wire Conversation Coordinator. Cloud/LAN policies are the same
         # audited policies used by normal Core, including budget enforcement.
@@ -366,6 +480,7 @@ class LabRunner:
                 registry=self.tool_registry,
                 repository=self.memory_repo,
                 request_timeout_seconds=self.config.ai.local.intent_timeout_seconds,
+                allow_network_tools=self.config.network.outbound_web_enabled,
             )
             self.conversation_coordinator = ConversationCoordinator(
                 context_builder=context_builder,
@@ -386,6 +501,8 @@ class LabRunner:
                 budget_policy=budget_policy,
                 runtime_context_provider=self._runtime_context_snapshot,
                 repository=self.memory_repo,
+                personality_service=self.personality_service,
+                capability_registry=self.capability_registry,
             )
 
         # 12. Subscribe to lightweight events for single-flight conversation and
@@ -479,8 +596,10 @@ class LabRunner:
             and self.vision_backend is not None
             and getattr(self.vision_backend, "provides_face_confidence", False)
         )
+        face_display_active = self.face_controller.__class__.__name__ == "TkinterFaceController"
         return {
             "camera_active": camera_active,
+            "face_display_active": face_display_active,
             "presence_detected": bool(camera_active and stable.present),
             "faces_count": stable.faces_count if camera_active and stable.present else 0,
             "face_detection_verified": face_detection_verified,
@@ -536,6 +655,7 @@ class LabRunner:
 
         payload = getattr(event, "payload", {}) if hasattr(event, "payload") else {}
         text = str(payload.get("text", "")).strip()
+        trace_id = str(payload.get("utterance_id", "")).strip() or None
         latency_raw = payload.get("latency_ms")
         latency_ms = float(latency_raw) if isinstance(latency_raw, (int, float)) else 0.0
 
@@ -570,7 +690,11 @@ class LabRunner:
             self.audio_coordinator.turn_gate.start_processing()
             self.audio_coordinator.collector.reset()
 
-        threading.Thread(target=self._process_conversation, args=(text,), daemon=True).start()
+        threading.Thread(
+            target=self._process_conversation,
+            args=(text, trace_id),
+            daemon=True,
+        ).start()
 
     def _on_speech_finished_event(self, event: Any) -> None:
         """Record measured TTS synthesis latency when the audio layer reports it."""
@@ -639,7 +763,7 @@ class LabRunner:
             with self._interaction_lock:
                 self._is_processing_interaction = False
 
-    def _process_conversation(self, text: str) -> None:
+    def _process_conversation(self, text: str, trace_id: str | None = None) -> None:
         """Process conversational turn from transcript to AI response and vocal speech."""
         try:
             if not self.conversation_coordinator:
@@ -653,10 +777,10 @@ class LabRunner:
             self.face_controller.set_state(AssistantState.PROCESSING)
 
             print(f"[router] Routing prompt for '{self.config.identity.display_name}'...")
-            resp, _plan = self.conversation_coordinator.handle_user_input(
-                text,
-                session_id=self._conversation_session_id,
-            )
+            input_kwargs: dict[str, Any] = {"session_id": self._conversation_session_id}
+            if trace_id is not None:
+                input_kwargs["trace_id"] = trace_id
+            resp, _plan = self.conversation_coordinator.handle_user_input(text, **input_kwargs)
 
             in_tok = resp.usage.input_tokens if resp.usage else None
             out_tok = resp.usage.output_tokens if resp.usage else None
@@ -664,6 +788,9 @@ class LabRunner:
                 latency_ms=resp.latency_ms,
                 in_tokens=in_tok,
                 out_tokens=out_tok,
+                prompt_eval_ms=resp.usage.prompt_eval_ms if resp.usage else None,
+                generation_ms=resp.usage.generation_ms if resp.usage else None,
+                load_ms=resp.usage.load_ms if resp.usage else None,
             )
 
             print(
@@ -691,19 +818,94 @@ class LabRunner:
 
     def _vision_loop(self) -> None:
         """Background loop reading camera presence observations and updating gaze/social engine."""
+        last_observation_timestamp: str | None = None
+        last_report_monotonic = 0.0
+        last_raw_presence: bool | None = None
+        last_stable_presence: bool | None = None
+        last_health_status: ServiceStatus | None = None
         while self._is_running and self.vision_backend:
             try:
                 obs = self.vision_backend.get_latest_presence()
-                self.metrics.record_vision_obs()
+                health = self.vision_backend.health()
+                self.metrics.record_vision_poll()
+                is_new_frame = bool(
+                    health.stream_has_frames
+                    and obs.timestamp != last_observation_timestamp
+                )
+                if is_new_frame:
+                    last_observation_timestamp = obs.timestamp
+                    self.metrics.record_vision_frame()
 
-                if self.interaction_coordinator:
-                    self.interaction_coordinator.handle_raw_presence_observation(obs)
+                if self.interaction_coordinator and is_new_frame:
+                    self.interaction_coordinator.handle_raw_presence_observation(
+                        obs
+                    )
+                    self._vision_observations_delivered += 1
+                elif (
+                    self.interaction_coordinator
+                    and health.status != ServiceStatus.HEALTHY
+                ):
+                    self.interaction_coordinator.handle_raw_presence_observation(
+                        PresenceObservation(present=False)
+                    )
+                    self._vision_observations_delivered += 1
 
-                if obs.present and self.face_controller:
+                if is_new_frame and obs.present and self.face_controller:
                     self.face_controller.set_gaze(
                         obs.primary_x_normalized or 0.0,
                         obs.primary_y_normalized or 0.0,
                     )
+
+                stable = self.vision_debouncer.latest_stable
+                now = time.monotonic()
+                report_due = now - last_report_monotonic >= 5.0
+                state_changed = (
+                    obs.present != last_raw_presence
+                    or stable.present != last_stable_presence
+                    or health.status != last_health_status
+                )
+                if report_due or state_changed:
+                    frame_age_ms = (
+                        None
+                        if health.last_valid_frame_age_seconds is None
+                        else health.last_valid_frame_age_seconds * 1000.0
+                    )
+                    logger.info(
+                        "vision_timing timestamp_monotonic=%.6f health=%s "
+                        "stream_has_frames=%s capture_thread_alive=%s valid_frames=%d "
+                        "read_failures=%d last_valid_frame_age_ms=%s "
+                        "yunet_inference_ms=%s raw_present=%s raw_faces=%d "
+                        "raw_confidence=%s stable_present=%s stable_faces=%d "
+                        "core_present=%s observations_delivered=%d new_frame=%s",
+                        now,
+                        health.status.value,
+                        health.stream_has_frames,
+                        health.capture_thread_alive,
+                        health.frames_processed,
+                        health.frame_read_failures,
+                        "unknown" if frame_age_ms is None else f"{frame_age_ms:.1f}",
+                        (
+                            "unknown"
+                            if health.last_inference_ms is None
+                            else f"{health.last_inference_ms:.1f}"
+                        ),
+                        obs.present,
+                        obs.faces_count,
+                        "unknown" if obs.confidence is None else f"{obs.confidence:.3f}",
+                        stable.present,
+                        stable.faces_count,
+                        (
+                            self.interaction_coordinator.current_presence
+                            if self.interaction_coordinator
+                            else False
+                        ),
+                        self._vision_observations_delivered,
+                        is_new_frame,
+                    )
+                    last_report_monotonic = now
+                    last_raw_presence = obs.present
+                    last_stable_presence = stable.present
+                    last_health_status = health.status
 
                 time.sleep(0.05)  # 20 Hz poll
             except Exception as exc:  # noqa: BLE001
@@ -757,16 +959,50 @@ class LabRunner:
         self._is_running = True
         start_time = time.time()
 
-        # 1. Start Vision Backend & Thread, then turn startup failures into
+        # Open a real face window when the selected controller supports it.
+        # Tk events are then pumped by the existing main runtime loop.
+        if hasattr(self.face_controller, "start_window"):
+            try:
+                self.face_controller.start_window(interactive_keys=False)  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not open face window: %s", exc)
+                for status in self.component_statuses:
+                    if status.name == "Face":
+                        status.state = "DEGRADED"
+                        status.detail = f"Face window failed: {exc}"
+
+        # 1. Apply explicit camera-management state before opening its video stream.
+        if self.camera_control is not None:
+            try:
+                camera_status = self.camera_control.set_daynight_mode(
+                    self.config.vision.camera_startup_daynight_mode
+                )
+                logger.info("Camera day/night mode applied: %s", camera_status.daynight_mode)
+                for component in self.component_statuses:
+                    if component.name == "CameraControl":
+                        component.state = "READY"
+                        component.detail = f"Management verified; day/night={camera_status.daynight_mode}"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Camera day/night control failed: %s", type(exc).__name__)
+                for component in self.component_statuses:
+                    if component.name == "CameraControl":
+                        component.state = "DEGRADED"
+                        component.detail = f"Day/night control failed: {type(exc).__name__}"
+
+        # 2. Start Vision Backend & Thread, then turn startup failures into
         # explicit component state instead of leaving an optimistic READY row.
         if self.vision_backend:
             try:
                 self.vision_backend.start()
                 vision_health = self.vision_backend.health()
-                if not self.simulate and vision_health.status != ServiceStatus.HEALTHY:
+                if not self.simulate:
                     for status in self.component_statuses:
                         if status.name == "Vision":
-                            status.state = "DEGRADED"
+                            status.state = (
+                                "READY"
+                                if vision_health.status == ServiceStatus.HEALTHY
+                                else "DEGRADED"
+                            )
                             status.detail = vision_health.detail
                 self._vision_thread = threading.Thread(target=self._vision_loop, daemon=True)
                 self._vision_thread.start()
@@ -782,14 +1018,14 @@ class LabRunner:
         self._prewarm_ai_models()
 
         # 3. Prewarm optional TTS runtime before microphone capture starts. This
-        # avoids charging Piper model-load time to the first user response while
-        # preserving the blocking CLI fallback if the Python API is unavailable.
+        # avoids charging Piper model-load time to the first user response. The
+        # Python API is the only canonical Piper synthesis route.
         if not self.simulate and self.tts_backend and hasattr(self.tts_backend, "warmup"):
             try:
                 warmed = bool(self.tts_backend.warmup())  # type: ignore[attr-defined]
-                logger.info("TTS prewarm %s", "completed" if warmed else "not available; CLI fallback retained")
+                logger.info("TTS prewarm %s", "completed" if warmed else "not available")
             except Exception as exc:  # noqa: BLE001
-                logger.warning("TTS prewarm failed; retaining normal fallback: %s", exc)
+                logger.warning("TTS prewarm failed: %s", exc)
 
         # 4. Start Audio Coordinator only when the complete speech chain was
         # wired. Missing STT/TTS never silently activates fake defaults.
@@ -851,6 +1087,22 @@ class LabRunner:
         if not self._is_running:
             return
         self._is_running = False
+
+        # Let an in-flight conversation/reprompt/reminder finish before tearing
+        # down native audio/TTS resources. This avoids process aborts when a
+        # duration limit or signal lands in the middle of a spoken turn.
+        interaction_deadline = time.monotonic() + 8.0
+        while True:
+            with self._interaction_lock:
+                interaction_active = self._is_processing_interaction
+            if not interaction_active or time.monotonic() >= interaction_deadline:
+                break
+            time.sleep(0.05)
+        if interaction_active:
+            logger.warning(
+                "Shutdown grace expired with an interaction still active; continuing teardown"
+            )
+
         self.metrics.finalize()
 
         # Stop scheduler before audio/database teardown so no new due events are

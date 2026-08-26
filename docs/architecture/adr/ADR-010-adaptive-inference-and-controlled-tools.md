@@ -46,6 +46,33 @@ El modelo no obtiene acceso directo e irrestricto a Internet. AILEN Core expone 
 
 El LLM recibe resultados estructurados/sanitizados y elabora una respuesta.
 
+Los disparadores del parser semántico se declaran en cada tool. Nombres,
+descripciones, valores de schema y palabras temporales genéricas no se convierten
+automáticamente en triggers: hacerlo causó una segunda inferencia serial en charla
+cotidiana. El historial sólo se entrega después de que el texto actual abre ese
+gate; nunca lo abre por sí mismo. En ASRock, `muy bien` tras un turno de hora pasó
+de una inferencia semántica de 1.3–1.7 s a `attempted=false` en 0.3 ms; el turno
+textual real completo midió 1.354 s bajo la carga coexistente observada. Para
+información cambiante no cubierta por una regla inequívoca queda
+pendiente evaluar un plan estructurado del mismo modelo conversacional (respuesta
+o tool request) contra un dataset local antes de reemplazar el routing actual.
+
+La guía especializada del parser también pertenece a cada tool mediante
+`intent_guidance`; el resolver sólo incluye la guía de las candidatas del turno.
+Así, una consulta web no paga tokens por reglas de Notes. En ASRock el prompt del
+parser Web bajó de 416 a 318 tokens y una muestra pasó de 1.549 s a 1.374 s antes
+de incorporar el contrato fechado de noticias.
+
+`WebSearchRequest` distingue búsqueda general (`text`) de noticias (`news`) y
+puede acotar frescura a día/semana/mes. Los resultados de noticias transportan
+`published_at` hasta la síntesis; Core descarta noticias sin timestamp ISO válido,
+futuras por más de cinco minutos o fuera de la ventana solicitada antes del LLM.
+El default conversacional es tres resultados porque Core sólo proyecta tres al
+modelo. DDGS medido con cinco resultados tuvo mediana 2.766 s y con tres 1.515 s
+en tres muestras por variante; la red externa sigue siendo variable. «Sin
+resultados» es una búsqueda vacía válida, no un error ni permiso para improvisar
+actualidad.
+
 ### 5. Híbrido como configuración de producto
 
 El onboarding detecta hardware y propone automáticamente el modo recomendado:

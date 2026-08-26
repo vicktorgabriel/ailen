@@ -228,6 +228,7 @@ class MusicTool:
 
     name: str = "music"
     description: str = "Controla la reproducción de música (reproducir, pausar, reanudar, siguiente, parar, estado)."
+    intent_hints = ("música", "musica", "canción", "cancion", "pausa", "siguiente", "reproducir", "poné música", "pone musica")
     schema: ClassVar[dict[str, Any]] = {
         "properties": {
             "action": {
@@ -255,6 +256,14 @@ class MusicTool:
 
     def __init__(self, service: MusicService | None = None) -> None:
         self.service = service if service is not None else UnavailableMusicService()
+
+    @property
+    def is_available(self) -> bool:
+        """Whether a real playback target is currently reachable."""
+        try:
+            return self.service.get_status().get("state") != "UNAVAILABLE"
+        except Exception:  # noqa: BLE001
+            return False
 
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         action = validated_args["action"]

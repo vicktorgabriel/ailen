@@ -67,7 +67,7 @@ class FakeAiBackend(AiBackend):
         return AiResponse(
             text=text,
             tool_calls=[],
-            finish_reason="stop",
+            finish_reason=self._finish_reason,
             usage=AiUsage(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,

@@ -88,7 +88,7 @@ La decisión definitiva queda sujeta a benchmark en la Banghó y cierre de este 
 2. **VAD y Utterance Collection (Half-Duplex):**
    - VAD liviano en Python puro (`EnergyVad`) calculando RMS sobre frames de 20 ms sin dependencias ML. El benchmark DEV mide latencia lógica, no porcentaje de CPU en hardware objetivo.
    - `UtteranceCollector` con defaults actuales de pre-roll 200 ms, mínimo de voz 250 ms, timeout de silencio 700 ms y corte máximo 15 s.
-   - `AudioTurnGate` con compuerta Half-Duplex (`SPEAKING_BLOCKED` mientras el asistente habla + settling cooldown acústico configurable de 200 ms) para prevenir feedback acústico y auto-transcripción.
+   - `AudioTurnGate` bloquea el camino normal de STT durante procesamiento/TTS y aplica settling cooldown. Un detector RMS separado puede pedir barge-in, cancelar `aplay` desde otro thread y conservar esos frames hasta que el turno anterior libere la compuerta.
 
 3. **STT (Speech-to-Text):**
    - Backend local preferente inicial para perfiles ligeros: `VoskSttBackend` (`vosk` como extra opcional `[stt-vosk]`), pendiente de benchmark físico.
@@ -97,7 +97,41 @@ La decisión definitiva queda sujeta a benchmark en la Banghó y cierre de este 
    - Documentación de investigación: `docs/research/STT_BACKEND_POC.md`.
 
 4. **TTS (Text-to-Speech) y Mouth Sync:**
-   - Backend preferente POC: `PiperTtsBackend` sobre el CLI actual de Piper; genera WAV temporal y AILEN conserva sample-rate/canales reales del archivo.
-   - Baseline de boca: un nivel RMS global durante el playback y retorno a 0.0 al finalizar. Lip-sync dinámico por chunks queda pendiente.
+   - Backend preferente POC: `PiperTtsBackend` usa exclusivamente la API Python `piper-tts`, conserva `PiperVoice` cargada y entrega PCM incremental. El fallback CLI/WAV temporal fue eliminado para mantener una sola ruta canónica.
+   - La energía RMS de cada chunk limita la intensidad de habla. `FaceAnimator`
+     deriva de ella una articulación temporal determinista y vuelve a 0.0 al
+     finalizar. Es animación sincronizada con playback, no lip-sync fonémico.
    - `AudioInteractionCoordinator` integra el pipeline y emite eventos livianos (`VOICE_STARTED`, `VOICE_ENDED`, `SPEECH_CAPTURED`, `TRANSCRIPT_READY`, `SPEECH_STARTED`, `SPEECH_FINISHED`, `AUDIO_ERROR`) sin PCM.
    - Documentación de investigación: `docs/research/TTS_BACKEND_POC.md`.
+
+## Nota de auditoría física ASRock — 2026-08-26
+
+- PipeWire entregaba frames de 20 ms en ráfagas con p95 ~129 ms cuando `arecord`
+  no fijaba período/buffer. Derivar `-F/-B` desde `frame_ms` dejó p95 22.66 ms
+  sobre G600 sin cambiar de dispositivo ni de STT.
+- El hangover de `EnergyVad` mantiene una frase ya iniciada, pero no cuenta como
+  evidencia para alcanzar `min_speech_ms`. La prueba idle de 8 s pasó de una
+  frase falsa a cero con la misma configuración física.
+- El G600 observado emite pulsos idle repetidos (~0.012–0.023 RMS). Con threshold
+  0.012 podían impedir 500 ms de silencio hasta el máximo de 15 s; el perfil Lab
+  local en 0.022 terminó enunciados en 0.26–1.98 s. No se convierte en default:
+  falta repetir sensibilidad de voz baja con un micrófono sano.
+- `AudioOutputBackend.play` recibe el token de cancelación del turno. Se validó
+  `stop()` con `aplay` PipeWire activo en 0.03–1.51 ms en harness y 0.2 ms durante
+  conversación; los frames interrumpidos llegaron a Vosk como el transcript
+  correcto. Esto es evidencia del ASRock, no un requisito extrapolable.
+- `FaceAnimator` separa estado de interacción de gesto transitorio validado; un
+  cambio a `SPEAKING` ya no borra inmediatamente una expresión explícita.
+- En ASRock, el renderer pixel de 800x480 pasó de bloques planos de 13 px a una
+  malla de 4 px con contornos de dos escalones, iris/pupila y paleta de tres tonos.
+  La articulación mueve boca, mirada y cabeza aun bajo un gesto transitorio. Una
+  demo aislada a 30 FPS midió 2.1% CPU de proceso y 25.9 MB RSS bajo la carga
+  coexistente observada; no se extrapola a Banghó/SF20BA.
+- La NC250 mantiene gestión HTTP, RTSP y detección como estados separados. En el
+  firmware observado las respuestas FCGI pueden ser `JSON&&JSON`; el driver las
+  valida por fragmento, confirma por lectura el modo aplicado y no marca la
+  capacidad disponible por mera presencia de credenciales.
+- Piper mantiene como máximo una oración prefetched mientras reproduce la actual.
+  En la sesión integrada los chunks observados tuvieron `gap_ms=0`; en muestras
+  aisladas, pausas previas de 1.36–1.43 s bajaron a ~13–219 ms. La cancelación no
+  espera síntesis en vuelo y descarta su resultado; no existe lip-sync fonémico.

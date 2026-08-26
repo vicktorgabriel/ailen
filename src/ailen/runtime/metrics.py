@@ -20,6 +20,9 @@ class LabSessionMetrics:
 
     ai_calls_count: int = 0
     ai_latencies_ms: list[float] = field(default_factory=list)
+    ai_prompt_eval_ms: list[float] = field(default_factory=list)
+    ai_generation_ms: list[float] = field(default_factory=list)
+    ai_load_ms: list[float] = field(default_factory=list)
     input_tokens_total: int = 0
     output_tokens_total: int = 0
     token_usage_complete: bool = True
@@ -28,7 +31,8 @@ class LabSessionMetrics:
 
     ttfar_latencies_ms: list[float] = field(default_factory=list)
 
-    vision_observations_count: int = 0
+    vision_polls_count: int = 0
+    vision_valid_frames_count: int = 0
     presence_transitions_count: int = 0
     face_frames_count: int = 0
 
@@ -57,11 +61,20 @@ class LabSessionMetrics:
         latency_ms: float,
         in_tokens: int | None = None,
         out_tokens: int | None = None,
+        prompt_eval_ms: float | None = None,
+        generation_ms: float | None = None,
+        load_ms: float | None = None,
     ) -> None:
         """Record an AI inference request without fabricating missing token usage."""
         self.ai_calls_count += 1
         if latency_ms > 0:
             self.ai_latencies_ms.append(latency_ms)
+        if prompt_eval_ms is not None and prompt_eval_ms >= 0:
+            self.ai_prompt_eval_ms.append(prompt_eval_ms)
+        if generation_ms is not None and generation_ms >= 0:
+            self.ai_generation_ms.append(generation_ms)
+        if load_ms is not None and load_ms >= 0:
+            self.ai_load_ms.append(load_ms)
         if in_tokens is None or out_tokens is None:
             self.token_usage_complete = False
             return
@@ -74,9 +87,13 @@ class LabSessionMetrics:
         if latency_ms > 0:
             self.tts_latencies_ms.append(latency_ms)
 
-    def record_vision_obs(self) -> None:
-        """Increment observed vision frames."""
-        self.vision_observations_count += 1
+    def record_vision_poll(self) -> None:
+        """Increment runtime reads of the latest observation."""
+        self.vision_polls_count += 1
+
+    def record_vision_frame(self) -> None:
+        """Increment observations backed by a newly decoded camera frame."""
+        self.vision_valid_frames_count += 1
 
     def record_presence_transition(self) -> None:
         """Increment presence state changes."""
@@ -131,12 +148,18 @@ class LabSessionMetrics:
                 "calls": self.ai_calls_count,
                 "latency_avg_ms": self._avg(self.ai_latencies_ms),
                 "latency_p95_ms": self._p95(self.ai_latencies_ms),
+                "prompt_eval_avg_ms": self._avg(self.ai_prompt_eval_ms),
+                "prompt_eval_p95_ms": self._p95(self.ai_prompt_eval_ms),
+                "generation_avg_ms": self._avg(self.ai_generation_ms),
+                "generation_p95_ms": self._p95(self.ai_generation_ms),
+                "load_avg_ms": self._avg(self.ai_load_ms),
                 "tokens_in": self.input_tokens_total if self.token_usage_complete else None,
                 "tokens_out": self.output_tokens_total if self.token_usage_complete else None,
                 "token_usage_complete": self.token_usage_complete,
             },
             "presence": {
-                "observations": self.vision_observations_count,
+                "polls": self.vision_polls_count,
+                "valid_frames": self.vision_valid_frames_count,
                 "transitions": self.presence_transitions_count,
             },
             "face": {

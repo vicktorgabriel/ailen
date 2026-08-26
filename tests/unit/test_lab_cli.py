@@ -28,12 +28,16 @@ def test_cli_lab_inspect_text_and_json() -> None:
 
 
 def test_cli_lab_start_dry_run() -> None:
-    with patch("sys.stdout", new=StringIO()) as fake_out:
+    with (
+        patch("sys.stdout", new=StringIO()) as fake_out,
+        patch("ailen.cli.setup_logging") as setup_logging,
+    ):
         ret = main(["lab", "start", "--dry-run", "--headless", "--no-camera", "--no-audio", "--no-ai"])
         assert ret == 0
         out_text = fake_out.getvalue()
         assert "AILEN LAB COMPONENT STATUS" in out_text
         assert "Dry-run complete" in out_text
+        setup_logging.assert_called_once()
 
 
 def test_cli_lab_start_simulate() -> None:

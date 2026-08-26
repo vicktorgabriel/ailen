@@ -117,6 +117,7 @@ class WebFetchTool:
 
     name: str = "web_fetch"
     description: str = "Descarga y extrae contenido de texto público de una URL de forma segura."
+    intent_hints = ("url", "enlace", "página", "pagina", "sitio web", "abrí", "abre")
     schema: ClassVar[dict[str, Any]] = {
         "properties": {
             "url": {

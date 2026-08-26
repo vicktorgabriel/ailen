@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from ailen.domain.enums import ErrorCode
 from ailen.infrastructure.sqlite.connection import SQLiteManager
 from ailen.infrastructure.sqlite.migrations import MigrationRunner
 from ailen.memory.repository import MemoryRepository
@@ -64,6 +65,20 @@ def test_notes_tool_integration(tmp_path: Path) -> None:
     res_search = tool.execute({"action": "search", "query": "oscilador"}, ToolContext())
     assert res_search.success is True
     assert res_search.data["count"] == 1
+
+
+def test_notes_tool_without_repository_fails_closed() -> None:
+    tool = NotesTool()
+
+    result = tool.execute(
+        {"action": "create", "text": "esto no debe quedar sólo en RAM"},
+        ToolContext(),
+    )
+
+    assert tool.is_available is False
+    assert result.success is False
+    assert result.status_code == "UNAVAILABLE"
+    assert result.error_code == ErrorCode.TOOL_UNAVAILABLE
 
 
 def test_notes_search_matches_noncontiguous_meaningful_tokens(tmp_path: Path) -> None:

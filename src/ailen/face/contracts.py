@@ -24,8 +24,8 @@ class FaceController(Protocol):
         """Set mouth/energy level (0.0..1.0) while speaking."""
         ...
 
-    def set_expression(self, expression: str) -> None:
-        """Apply a named expression (e.g. 'neutral', 'happy', 'focused')."""
+    def set_expression(self, expression: str, duration_seconds: float = 5.0) -> None:
+        """Apply a bounded transient named expression."""
         ...
 
     def sleep(self) -> None:

@@ -42,7 +42,7 @@ The benchmark prompts are longer than the physical short-voice turns. In the phy
 
 ## TTS latency finding
 
-The installed `piper-tts` Python API exposes sentence `AudioChunk` iteration. After the voice model is cached in-process, a local test produced the first chunk in ~65 ms and completed synthesis of a short two-sentence sample in ~0.40 s. The initial model load cost was about 2 s, so Lab now prewarms Piper before microphone capture begins. CLI synthesis remains the fallback when the Python API is unavailable.
+The installed `piper-tts` Python API exposes sentence `AudioChunk` iteration. After the voice model is cached in-process, a local test produced the first chunk in ~65 ms and completed synthesis of a short two-sentence sample in ~0.40 s. The initial model load cost was about 2 s, so Lab now prewarms Piper before microphone capture begins. The cached Python API is the sole canonical synthesis route; an unavailable API degrades TTS explicitly instead of selecting a hidden CLI path.
 
 ## Next physical benchmarks
 

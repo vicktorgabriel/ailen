@@ -17,6 +17,7 @@ class SystemStatusTool:
 
     name: str = "system_status"
     description: str = "Informa el estado de hardware, CPU, memoria y salud del sistema de forma segura."
+    intent_hints = ("sistema", "hardware", "cpu", "ram", "memoria", "batería", "bateria", "carga")
     schema: ClassVar[dict[str, Any]] = {
         "properties": {
             "detailed": {

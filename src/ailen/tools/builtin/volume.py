@@ -236,6 +236,7 @@ class VolumeTool:
 
     name: str = "volume"
     description: str = "Controla el volumen del audio del sistema de forma segura."
+    intent_hints = ("volumen", "sonido", "audio", "silencio", "mute", "más fuerte", "mas fuerte", "más bajo", "mas bajo")
     schema: ClassVar[dict[str, Any]] = {
         "properties": {
             "action": {

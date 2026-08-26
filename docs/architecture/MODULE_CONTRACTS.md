@@ -249,6 +249,23 @@ VisionBackend.health()
 VisionBackend.get_latest_presence() -> PresenceObservation
 ```
 
+`VisionHealth` diferencia gestión/configuración de cámara de transporte y análisis:
+
+```text
+status
+detail
+stream_has_frames
+frames_processed
+frame_read_failures
+last_valid_frame_at?
+capture_thread_alive?
+last_inference_ms?
+```
+
+`HEALTHY` exige frames válidos recientes; abrir un socket RTSP o tener configuración
+no alcanza. El control HTTP específico de una cámara vive detrás de
+`CameraControl` y se ejecuta antes de abrir el stream cuando hay un modo inicial.
+
 ### `PresenceObservation`
 
 ```text
@@ -295,6 +312,8 @@ volume?
 ```
 
 `SpeechOutput` puede ser stream o referencia temporal, según implementación.
+Los backends incrementales pueden exponer `synthesize_chunks()`; cada latencia de
+chunk debe medirse sin confundir síntesis con reproducción.
 
 ## 13. Audio device service
 
@@ -309,18 +328,37 @@ Responsabilidades:
 
 No decide qué texto hablar.
 
+```text
+AudioOutputBackend.play(..., cancel_event?)
+AudioOutputBackend.stop()
+```
+
+El token de cancelación evita iniciar un chunk cuyo turno ya fue interrumpido.
+`stop()` debe poder finalizar la reproducción activa desde otro thread. El camino
+normal de STT queda bloqueado durante TTS, pero el detector acotado de barge-in
+sigue leyendo micrófono y conserva los frames del usuario.
+Para TTS incremental, el coordinador puede sintetizar como máximo un chunk futuro
+mientras reproduce el actual. La cancelación no espera esa síntesis: libera el
+turno y descarta cualquier resultado tardío antes de playback.
+
 ## 14. Face
 
 ```text
 FaceController.set_state(state)
 FaceController.set_gaze(x, y)
 FaceController.set_speech_level(level)
-FaceController.set_expression(expression)
+FaceController.set_expression(expression, duration_seconds=5.0)
 FaceController.sleep()
 FaceController.wake()
 ```
 
 Face no accede a SQLite, AI ni web.
+Las expresiones externas pertenecen a una allowlist y son overlays transitorios;
+los estados críticos (`SLEEP`, `ERROR`, `DEGRADED`) conservan prioridad.
+`set_speech_level()` entrega una intensidad acotada, no una coordenada de boca
+estática: `FaceAnimator` puede derivar articulación temporal normalizada mientras
+dure playback. Un overlay expresivo modifica ojos/cejas/forma base, pero no debe
+congelar esa articulación. El renderer nunca recibe PCM ni depende de TTS/audio.
 
 ## 15. Tool
 
@@ -333,6 +371,11 @@ permissions
 execute(validated_args, ToolContext) -> ToolResult
 ```
 
+Una tool que participa del routing semántico puede declarar `intent_hints` y
+`intent_guidance`. Sólo el texto actual abre el gate mediante hints; el historial
+no lo abre. Core incluye únicamente la guía de las tools candidatas y siempre
+valida la propuesta contra `schema` antes de ejecutar.
+
 ### `ToolResult`
 
 ```text
@@ -343,6 +386,11 @@ error_code?
 ```
 
 Prohibido exponer shell general como tool.
+
+Para WebSearch, el request puede declarar `category=text|news` y frescura
+`day|week|month`. Un resultado fechado expone `published_at`; Core conserva esa
+metadata al proyectar evidencia al LLM. Una búsqueda sin resultados es éxito con
+lista vacía, mientras timeout o fallo del proveedor permanecen errores explícitos.
 
 ## 16. Web admin
 

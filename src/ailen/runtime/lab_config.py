@@ -35,6 +35,15 @@ def generate_lab_config_toml(
 [identity]
 display_name = "Asistente"
 
+[display]
+enabled = true
+backend = "auto"
+face_style = "pixel"
+width = 800
+height = 480
+fullscreen = false
+fps_limit = 30
+
 [audio]
 input_device = "default"
 output_device = "default"
@@ -55,11 +64,16 @@ tts_model_path = "{tts_model_path}"
 tts_config_path = "{tts_config_path}"
 vad_engine = "energy"
 vad_threshold = 0.02
-silence_timeout_ms = 500
+vad_hangover_ms = 120
+pre_roll_ms = 250
+silence_timeout_ms = 550
 min_speech_ms = 250
 max_utterance_seconds = 15.0
-half_duplex = true
-vad_sensitivity = 2
+interruption_enabled = true
+interruption_threshold_rms = 0.08
+interruption_min_ms = 120
+interruption_calibration_ms = 160
+interruption_leak_multiplier = 1.25
 
 [vision]
 enabled = true
@@ -69,11 +83,15 @@ fps = 5
 detector = "haar"
 detector_model_path = ""
 detector_score_threshold = 0.8
-presence_debounce_seconds = 2.0
+presence_confirm_seconds = 0.8
+absence_confirm_seconds = 2.0
+dropout_grace_seconds = 0.6
 min_confidence = 0.5
 
 [network]
 outbound_web_enabled = true
+web_search_provider = "ddgs"
+web_search_region = "ar-es"
 
 [ai]
 provider = "local"
@@ -95,6 +113,18 @@ sqlite_path = "runtime/lab/ailen_lab.db"
 fts_enabled = true
 retention_days = 30
 auto_vacuum = true
+
+[personality]
+seed = "ailen-seed-01"
+evolution_enabled = true
+evolution_rate = 1.0
+base_curiosity = 0.7
+base_sociability = 0.6
+base_formality = 0.4
+base_humor = 0.5
+base_verbosity = 0.4
+base_patience = 0.7
+base_expressiveness = 0.6
 
 [social]
 default_mode = "workshop"

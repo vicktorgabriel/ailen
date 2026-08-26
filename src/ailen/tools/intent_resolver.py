@@ -146,13 +146,26 @@ class IntentResolver:
         ))
 
     def _match_clock(self, clean: str, raw_text: str) -> IntentResolution | None:
-        clock_exact = {
+        date_exact = {
+            "qué día es hoy", "que dia es hoy", "fecha de hoy",
+            "cuál es la fecha", "cual es la fecha",
+        }
+        if clean in date_exact:
+            return IntentResolution(
+                intent="clock",
+                tool_name="clock",
+                tool_args={"format": "date"},
+                requires_llm=False,
+                confidence=1.0,
+                raw_text=raw_text,
+            )
+
+        time_exact = {
             "qué hora es", "que hora es", "dime la hora", "decime la hora",
             "hora actual", "qué hora tenemos", "que hora tenemos",
-            "qué día es hoy", "que dia es hoy", "fecha de hoy", "cuál es la fecha", "cual es la fecha",
             "la hora", "hora", "hora es", "la hora es", "ahora es",
         }
-        clock_query = clean in clock_exact
+        clock_query = clean in time_exact
         if not clock_query and "hora" in clean:
             natural_markers = (
                 "qué hora", "que hora", "decime la hora", "dime la hora",
@@ -539,12 +552,35 @@ class IntentResolver:
             ):
                 continue
             if query:
+                tool_args = {"query": query}
+                if "noticias" in query_clean:
+                    tool_args["category"] = "news"
                 return IntentResolution(
                     intent="web_search",
                     tool_name="web_search",
-                    tool_args={"query": query},
+                    tool_args=tool_args,
                     requires_llm=True,
                     confidence=1.0,
                     raw_text=raw_text,
                 )
+
+        # Live weather/temperature questions are always external-data intents.
+        # They must never fall through to the conversational model to guess.
+        weather_terms = (
+            "clima", "pronóstico", "pronostico", "temperatura",
+            "va a llover", "lloverá", "llovera", "tiempo en ",
+        )
+        weather_markers = (
+            "ahora", "actual", "hoy", "mañana", "manana",
+            "cómo va", "como va", "cuánto hace", "cuanto hace", " en ",
+        )
+        if any(term in clean for term in weather_terms) and any(marker in clean for marker in weather_markers):
+            return IntentResolution(
+                intent="web_search",
+                tool_name="web_search",
+                tool_args={"query": raw_text.strip()},
+                requires_llm=True,
+                confidence=1.0,
+                raw_text=raw_text,
+            )
         return None

@@ -285,6 +285,14 @@ Debe quedar funcionando:
 - [x] persistencia conversacional real: `LabRunner` crea/cierra sesión `sess-*` y `ConversationCoordinator` persiste turnos sin duplicar input actual.
 - [x] WebSearch hardening: resultados acotados/no confiables; WebFetch HTTPS-only; política `[network].outbound_web_enabled` separada de cloud.
 - [ ] backend de reproducción musical real (PipeWire/MPRIS/local player) detrás de `MusicService`; `MprisMusicService` vía `playerctl` ya está cableado y testeado en software, pero falta validar reproducción audible con un player MPRIS real antes de cerrar este ítem.
+- [x] proveedor DDGS real para `WebSearchTool`, con búsqueda `text`, noticias
+  fechadas `news`, frescura acotada y vacío fail-closed; rate limit/política de
+  producción continúan abiertos en el ítem R4 específico.
+- [ ] catálogo/reproductor musical local seleccionable por nombre/estado de ánimo; MPRIS actual sólo controla un player ya abierto y no resuelve consultas libres como "poné música alegre".
+- [x] comandos de gesto facial allowlisted sobre `FaceAnimator`; once expresiones
+  tienen geometría pixel propia, sobreviven `SPEAKING` de forma acotada y la boca
+  continúa articulando durante playback.
+- [ ] visión avanzada opcional: objetos/pose/gestos y, en hardware potente, VLM local o LAN Brain; YuNet queda como baseline liviano de rostro/presencia.
 - [x] instalación limpia: `diagnose ai` y `demo ai` ejecutan migraciones SQLite antes de consultar `ai_usage`, evitando depender de una base ya inicializada en otro host.
 - [x] instalar Whisper.cpp tiny/base y verificar assets en Debian; [ ] decidir baseline STT sólo tras WER real sobre 10-20 utterances físicas.
 

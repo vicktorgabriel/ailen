@@ -57,6 +57,21 @@ class MemoryRepository:
             source_node_id=source_node_id,
         )
 
+    def close_open_sessions(self, source_node_id: str = "local") -> int:
+        """Close sessions left open by a previous unclean process exit on this node."""
+        now = utc_now_iso()
+        with self.db_manager.connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE sessions
+                SET ended_at = ?
+                WHERE ended_at IS NULL AND source_node_id = ?;
+                """,
+                (now, source_node_id),
+            )
+            return int(cursor.rowcount or 0)
+
     def end_session(self, session_id: str) -> None:
         """Mark a conversation session as ended."""
         now = utc_now_iso()
@@ -510,6 +525,60 @@ class MemoryRepository:
                 )
                 for r in rows
             ]
+
+    # -------------------------------------------------------------------------
+    # Personality State
+    # -------------------------------------------------------------------------
+
+    def get_personality_traits(self, identity_id: str) -> dict[str, float]:
+        """Return persisted stylistic trait values for one personality identity."""
+        with self.db_manager.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT trait_name, trait_value
+                FROM personality_state
+                WHERE identity_id = ?
+                ORDER BY trait_name;
+                """,
+                (identity_id,),
+            ).fetchall()
+        return {str(row["trait_name"]): float(row["trait_value"]) for row in rows}
+
+    def set_personality_trait(
+        self,
+        identity_id: str,
+        trait_name: str,
+        trait_value: float,
+        reason: str,
+        event_type: str = "EXPLICIT_STYLE_FEEDBACK",
+    ) -> None:
+        """Persist one bounded personality trait and append an audit event."""
+        now = utc_now_iso()
+        event_id = f"pers-{uuid.uuid4().hex[:12]}"
+        with self.db_manager.connection() as conn:
+            previous = conn.execute(
+                "SELECT trait_value FROM personality_state WHERE identity_id = ? AND trait_name = ?;",
+                (identity_id, trait_name),
+            ).fetchone()
+            old_value = float(previous["trait_value"]) if previous is not None else float(trait_value)
+            conn.execute(
+                """
+                INSERT INTO personality_state (identity_id, trait_name, trait_value, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(identity_id, trait_name) DO UPDATE SET
+                    trait_value = excluded.trait_value,
+                    updated_at = excluded.updated_at;
+                """,
+                (identity_id, trait_name, float(trait_value), now),
+            )
+            conn.execute(
+                """
+                INSERT INTO personality_events
+                    (event_id, identity_id, event_type, delta, reason, created_at)
+                VALUES (?, ?, ?, ?, ?, ?);
+                """,
+                (event_id, identity_id, event_type, float(trait_value) - old_value, reason[:500], now),
+            )
 
     # -------------------------------------------------------------------------
     # Persistent Reminders

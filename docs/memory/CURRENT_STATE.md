@@ -1,8 +1,61 @@
 # Estado actual — AILEN
 
-**Fecha:** 2026-08-24
+**Fecha:** 2026-08-26
 **Versión:** `0.1.0-dev.0`  
-**Fase:** R4 activo sobre baseline R3C auditado. Tools allowlisted/routing determinista, memoria conversacional SQLite y Web boundary permanecen estables. R4 ya incorpora selección explícita de fuente de cámara (`auto|usb|rtsp`), recordatorios persistentes separados de notas/timers (migración 0004 + `REMINDER_DUE`) y transporte MPRIS cableado en software. WebSearch real, Web Admin pendiente y reproducción musical audible siguen abiertos. En Debian están instalados Vosk + Whisper.cpp tiny/base para comparación; Vosk continúa baseline hasta prueba física suficiente. Suite actual: 521 tests; Ruff, mypy (131 archivos) y diff-check verdes.
+**Fase:** R4 activo sobre baseline R3C auditado. Tools allowlisted/routing determinista, memoria conversacional SQLite y Web boundary permanecen estables. R4 ya incorpora selección explícita de fuente de cámara (`auto|usb|rtsp`), recordatorios persistentes separados de notas/timers (migración 0004 + `REMINDER_DUE`), DDGS real y transporte MPRIS cableado en software. Web Admin, latencia WebSearch y reproducción musical audible siguen abiertos. En Debian están instalados Vosk + Whisper.cpp tiny/base para comparación; Vosk continúa baseline hasta prueba física suficiente. Suite actual: 591 tests; Ruff, mypy (135 archivos) y diff-check verdes.
+
+## Auditoría física de regresiones ASRock — 2026-08-26
+
+- Latencia: se confirmó doble inferencia en comentarios con palabras temporales
+  genéricas. El routing semántico ahora usa sólo hints declarados; `hoy está
+  fresco` vuelve a una inferencia. El historial ya no abre por sí solo el parser:
+  `muy bien` tras Clock midió semantic 0.3 ms (`attempted=false`), 458 tokens de
+  entrada, main LLM 1.340 s y turno texto total 1.354 s. La telemetría separa
+  resolvers, tool, prompt-eval, generación, TTS/chunks, primer PCM y playback.
+- Audio G600/PipeWire: período/buffer explícitos estabilizaron frames de 20 ms
+  (p95 observado 128.6 -> 22.66 ms). Hangover ya no satisface por sí mismo
+  `min_speech_ms`. El G600 produjo pulsos idle ~0.012–0.023 RMS que alargaban
+  utterances hasta 15 s; threshold Lab 0.022 las cerró en 0.26–1.98 s. No es un
+  default global y debe revalidarse con micrófono sano/voz baja.
+- Barge-in: el token de cancelación llega hasta `aplay`, `stop()` funciona desde
+  otro thread y los frames sobreviven processing/cooldown. Se observaron cortes
+  de 0.2 ms durante conversación y el audio preservado produjo transcript correcto.
+- NC250: gestión verificada en NIGHT=3 sin persistir credenciales. RTSP HD entregó
+  frames recientes con thread vivo; YuNet, presencia raw/estable y Core llegaron a
+  `present=true` con operador en cuadro. Un episodio de tres read timeouts degradó
+  salud y reconectó la misma ruta correctamente. VGA no abrió en este firmware.
+- Piper usa prefetch acotado de una oración. Los chunks integrados observados
+  tuvieron `gap_ms=0`; en muestras aisladas el residual fue ~13–219 ms frente a
+  ~1.36–1.43 s sin prefetch.
+- WebSearch implícito funcionó por DDGS real y no cayó a generación libre, pero el
+  turno textual midió 8.644 s: semantic 1.564 s, provider 4.669 s y resumen Qwen
+  2.386 s. Tras limitar el default a los tres resultados que Core realmente usa y
+  mover la guía específica a cada tool, una repetición midió 4.988 s: semantic
+  1.374 s, provider 2.030 s y resumen 1.581 s. La red y la longitud generada varían;
+  sigue siendo demasiado lento para voz y aún conserva dos inferencias seriales.
+- Actualidad Web: `DDGS.text()` entregó snippets sin año y Qwen presentó por error
+  Python 3.14 como futura. `WebSearchRequest` ahora separa `text|news`, acota
+  frescura y propaga `published_at` desde `DDGS.news()`. Core descarta noticias sin
+  timestamp válido o fuera de ventana, y «No results found» se normaliza como
+  búsqueda vacía honesta. Una consulta ambigua por «Python» devolvió noticias
+  fechadas de serpientes y el resumen las rechazó como irrelevantes; al especificar
+  «lenguaje de programación Python», routing midió 1.807 s, DDGS 1.654 s y no hubo
+  resultados válidos del día, sin síntesis posterior que inventara actualidad.
+- Conversación textual: la frase casual con «día» registró deterministic 0.6 ms,
+  semantic 0.5 ms con `attempted=false`, 398 tokens de entrada y turno total
+  1.777 s. El bloque de capacidades vacío ya no entra al prompt. En seis muestras
+  casuales la mediana fue 1.559 s y 42.5 tokens de salida; Qwen todavía agrega
+  preguntas/ofertas de soporte de forma variable, por lo que naturalidad no se
+  considera cerrada ni se aplicó un filtro que pueda borrar preguntas legítimas.
+- Expresiones: estado y gesto transitorio están separados; TTS ya no borra el
+  gesto explícito. El renderer pixel usa una malla de 4 px, contornos de dos
+  escalones y tres tonos a 800x480; once gestos acotados tienen geometría propia
+  y la boca articula aun bajo un gesto. Demo ASRock: 2.1% CPU de proceso y 25.9 MB
+  RSS a 30 FPS. La revisión fue aceptada visualmente por el operador; no existe
+  todavía metadata emocional espontánea desde el turno conversacional.
+- Pendiente: repetir TTFAR/escucha con micrófono sano; optimizar navegación sin
+  dos inferencias seriales; acotar respuestas todavía largas de Qwen y diseñar metadata
+  expresiva conversacional sin dar control directo de UI al modelo.
 
 ## Actualización Debian / R4 software — 2026-08-24
 
@@ -51,15 +104,15 @@
 - Motor lógico de rostro `FaceAnimator` y modelo `FacePose` agnóstico de renderer, con parpadeo no periódico, micro-movimientos y apertura de boca;
 - Baseline de despliegue aceptado en ADR-008: Debian 13 stable amd64 netinst/minimal, sin entorno de escritorio; con Tkinter se usa sólo Xorg/xinit/python3-tk y los nodos headless no instalan X;
 - Backend gráfico POC `TkinterFaceController` (sin dependencia pip, requiere `python3-tk`/stack gráfico del sistema) y `NullFaceController` para headless; consumo real pendiente de benchmark físico;
-- `VisionDebouncer` temporal para presencia física basado en `presence_debounce_seconds`;
-- Backend de cámara `OpenCvVisionBackend` con YuNet preferido en Lab para rostro/posición y Haar experimental como fallback;
+- `VisionDebouncer` con confirmación asimétrica de presencia/ausencia y gracia de dropout;
+- Backend de cámara `OpenCvVisionBackend` con YuNet preferido en Lab para rostro/posición y Haar como alternativa experimental explícita;
 - Formato canónico de audio: PCM 16-bit signed LE, mono, 16000 Hz (`src/ailen/audio/pcm.py`) con RMS matemático puro;
 - VAD en Python puro (`EnergyVad`) con umbral configurable y hangover; benchmark lógico DEV documentado sin extrapolar porcentaje de CPU a hardware objetivo;
 - `UtteranceCollector` con defaults actuales de pre-roll 200 ms, mínimo de habla 250 ms, silencio final 700 ms y corte máximo 15 s;
-- Compuerta Half-Duplex `AudioTurnGate` con cooldown acústico para prevenir auto-transcripción y feedback de parlantes;
+- `AudioTurnGate` bloquea STT normal durante processing/TTS; barge-in inspecciona RMS por separado, cancela playback y conserva audio de usuario;
 - Backends I/O reales ALSA (`AlsaAudioInputBackend`, `AlsaAudioOutputBackend`, `AlsaDeviceEnumerator`) y fakes para CI/tests;
 - Backend STT local offline `VoskSttBackend` (extra `[stt-vosk]`) y alternativa `WhisperCppSttBackend` (`whisper-cli` actual, nombres legacy best-effort); no inventan confidence cuando el motor no lo provee;
-- Backend TTS local offline `PiperTtsBackend` compatible con el CLI actual: WAV temporal, extracción de PCM/sample-rate/canales reales y control de velocidad/volumen;
+- Backend TTS local offline `PiperTtsBackend` por la API Python canónica, con voz cacheada y PCM incremental; no existe fallback CLI/WAV;
 - `AudioInteractionCoordinator` integrando micrófono, turn gate, VAD, STT, TTS y un nivel de boca RMS básico durante playback;
 - AI Router determinista `RuleBasedRouter` con soporte para todos los perfiles de hardware (`SATELLITE`, `CLOUD`, `HYBRID`, `LOCAL`, `LAN_BRAIN`), fallback explícito y reason codes estructurados (`RULE_ONLY_INTENT`, `CLOUD_FAST_PATH`, `CLOUD_BUDGET_EXCEEDED`, `PRIVATE_REMOTE_BLOCKED`, `ALL_BACKENDS_UNAVAILABLE`);
 - `OutboundPrivacyPolicy` determinista que prohíbe el envío de información `RESTRICTED` y `PRIVATE` hacia Cloud / Internet o nodos LAN no confiables;

@@ -5,7 +5,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from ailen.audio.piper_backend import resolve_piper_executable
+from ailen.audio.piper_backend import piper_runtime_available
 from ailen.core.config import AILENConfig
 from ailen.speech.catalog import SpeechAssetCatalog, SpeechAssetDescriptor
 from ailen.speech.downloader import SpeechAssetDownloader
@@ -120,9 +120,12 @@ class LabSpeechPreparer:
         tts_verified = self.store.verify(tts_desc) if (tts_desc and tts_installed) else False
         tts_path = self.store.get_asset_path(tts_desc) if tts_desc else None
 
-        piper_bin = resolve_piper_executable("piper")
-        tts_runtime_ok = bool(piper_bin)
-        tts_runtime_detail = f"Found '{piper_bin}'" if piper_bin else "piper binary missing from PATH"
+        tts_runtime_ok = piper_runtime_available()
+        tts_runtime_detail = (
+            "piper-tts Python runtime available"
+            if tts_runtime_ok
+            else "piper-tts Python package missing"
+        )
 
         tts_rep = SpeechComponentReport(
             engine="piper",

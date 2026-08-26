@@ -40,6 +40,9 @@ vision = [
 stt-vosk = [
     "vosk>=0.3.45",
 ]
+web = [
+    "ddgs>=9.14,<10",
+]
 
 [project.scripts]
 ailen = "ailen.cli:main"

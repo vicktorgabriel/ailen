@@ -104,6 +104,7 @@ class TimerTool:
 
     name: str = "timer"
     description: str = "Crea, lista o cancela temporizadores en memoria de manera determinista."
+    intent_hints = ("temporizador", "timer", "alarma", "cuenta regresiva", "cronómetro", "cronometro")
     schema: ClassVar[dict[str, Any]] = {
         "properties": {
             "action": {
