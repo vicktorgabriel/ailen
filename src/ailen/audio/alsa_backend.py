@@ -4,6 +4,7 @@ Uses standard Linux `arecord` and `aplay` utilities via safe subprocess invocati
 without requiring heavy external C wrappers or PortAudio dependencies.
 """
 
+import json
 import logging
 import os
 import re
@@ -85,6 +86,46 @@ class AlsaDeviceEnumerator(AudioDeviceEnumerator):
             return None
         route = result.stdout.strip()
         return route or None
+
+    def get_default_alsa_endpoint(self, is_input: bool) -> str | None:
+        """Map the current PipeWire/Pulse default route to a physical ALSA endpoint."""
+        route = self.get_default_route(is_input=is_input)
+        if not route or not shutil.which("pactl"):
+            return None
+        collection = "sources" if is_input else "sinks"
+        try:
+            result = subprocess.run(
+                ["pactl", "-f", "json", "list", collection],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                check=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to inspect default audio route properties: %s", exc)
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            entries = json.loads(result.stdout)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(entries, list):
+            return None
+        for entry in entries:
+            if not isinstance(entry, dict) or str(entry.get("name", "")) != route:
+                continue
+            properties = entry.get("properties")
+            if not isinstance(properties, dict):
+                return None
+            card = properties.get("alsa.card", properties.get("api.alsa.pcm.card"))
+            device = properties.get("alsa.device", "0")
+            card_text = str(card).strip() if card is not None else ""
+            device_text = str(device).strip()
+            if card_text.isdigit() and device_text.isdigit():
+                return f"plughw:CARD={card_text},DEV={device_text}"
+            return None
+        return None
 
     def list_hardware_devices(self, is_input: bool) -> list[AudioDevice]:
         """List physical ALSA card/device endpoints using ``-l`` rather than plugins.
@@ -561,6 +602,9 @@ class AutoAlsaAudioInputBackend(AudioInputBackend):
         )
 
     def _select_input_endpoint(self, hardware: list[AudioDevice]) -> str:
+        default_alsa = self._enumerator.get_default_alsa_endpoint(is_input=True)
+        if default_alsa:
+            return default_alsa
         routing = self._enumerator.list_devices()
         if any(device.is_input and device.id == "pipewire" for device in routing):
             return "pipewire"
@@ -661,8 +705,11 @@ class AutoAlsaAudioOutputBackend(AudioOutputBackend):
             )
             return
 
+        default_alsa = self._enumerator.get_default_alsa_endpoint(is_input=False)
         routing = self._enumerator.list_devices()
-        if any(device.is_output and device.id == "pipewire" for device in routing):
+        if default_alsa:
+            endpoint = default_alsa
+        elif any(device.is_output and device.id == "pipewire" for device in routing):
             endpoint = "pipewire"
         elif any(device.is_output and device.id == "default" for device in routing):
             endpoint = "default"

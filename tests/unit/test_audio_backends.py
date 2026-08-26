@@ -149,6 +149,30 @@ def test_alsa_hardware_parser_returns_plughw_endpoints() -> None:
     assert all(d.is_input and not d.is_output for d in devices)
 
 
+
+
+
+def test_alsa_maps_pipewire_default_source_to_physical_endpoint(monkeypatch) -> None:
+    enumerator = AlsaDeviceEnumerator()
+    monkeypatch.setattr("ailen.audio.alsa_backend.shutil.which", lambda _name: "/usr/bin/pactl")
+
+    class Result:
+        returncode = 0
+
+        def __init__(self, stdout: str) -> None:
+            self.stdout = stdout
+
+    def fake_run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+        if cmd == ["pactl", "get-default-source"]:
+            return Result("alsa_input.usb-mic.mono-fallback\n")
+        if cmd == ["pactl", "-f", "json", "list", "sources"]:
+            return Result('[{"name":"alsa_input.usb-mic.mono-fallback","properties":{"alsa.card":"2","alsa.device":"0"}}]')
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr("ailen.audio.alsa_backend.subprocess.run", fake_run)
+    assert enumerator.get_default_alsa_endpoint(is_input=True) == "plughw:CARD=2,DEV=0"
+
+
 def test_alsa_input_requests_frame_sized_pipewire_periods(monkeypatch) -> None:
     captured_cmd: list[str] = []
 
@@ -293,6 +317,10 @@ def test_auto_audio_input_waits_for_hotplug_and_reopens_on_inventory_change(monk
             assert is_input is True
             return self.default_route
 
+        def get_default_alsa_endpoint(self, is_input: bool) -> str | None:
+            assert is_input is True
+            return "plughw:CARD=USB,DEV=0"
+
         def list_devices(self) -> list[AudioDevice]:
             return [AudioDevice("pipewire", "PipeWire", is_input=True, is_output=False)]
 
@@ -337,7 +365,7 @@ def test_auto_audio_input_waits_for_hotplug_and_reopens_on_inventory_change(monk
         AudioDevice("plughw:CARD=USB,DEV=0", "USB mic", is_input=True, is_output=False)
     ]
     backend._rescan(force=True)
-    assert backend.active_device == "pipewire"
+    assert backend.active_device == "plughw:CARD=USB,DEV=0"
     assert backend.read_frame() == b"\x01\x00" * 320
     first = FakeInputBackend.instances[-1]
 
@@ -352,7 +380,7 @@ def test_auto_audio_input_waits_for_hotplug_and_reopens_on_inventory_change(monk
     )
     backend._rescan(force=True)
     assert rerouted.stopped is True
-    assert backend.active_device == "pipewire"
+    assert backend.active_device == "plughw:CARD=USB,DEV=0"
     assert FakeInputBackend.instances[-1] is not rerouted
 
     enumerator.hardware = []
@@ -375,6 +403,10 @@ def test_auto_audio_output_follows_playback_inventory_changes(monkeypatch) -> No
         def get_default_route(self, is_input: bool) -> str | None:
             assert is_input is False
             return self.default_route
+
+        def get_default_alsa_endpoint(self, is_input: bool) -> str | None:
+            assert is_input is False
+            return "plughw:CARD=Speaker,DEV=0"
 
         def list_devices(self) -> list[AudioDevice]:
             return [AudioDevice("pipewire", "PipeWire", is_input=False, is_output=True)]
@@ -412,7 +444,7 @@ def test_auto_audio_output_follows_playback_inventory_changes(monkeypatch) -> No
     ]
     backend.play(b"\x01\x00")
     first = FakeOutputBackend.instances[-1]
-    assert backend.active_device == "pipewire"
+    assert backend.active_device == "plughw:CARD=Speaker,DEV=0"
     assert first.played == 1
 
     enumerator.hardware.append(
@@ -420,5 +452,5 @@ def test_auto_audio_output_follows_playback_inventory_changes(monkeypatch) -> No
     )
     backend._rescan(force=True)
     assert first.stopped is True
-    assert backend.active_device == "pipewire"
+    assert backend.active_device == "plughw:CARD=Speaker,DEV=0"
     assert FakeOutputBackend.instances[-1] is not first
