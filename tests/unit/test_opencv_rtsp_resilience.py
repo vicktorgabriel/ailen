@@ -4,8 +4,8 @@ import os
 import time
 
 from ailen.domain.enums import ServiceStatus
-from ailen.vision.contracts import PresenceObservation
-from ailen.vision.opencv_backend import OpenCvVisionBackend
+from ailen.vision.contracts import PresenceObservation, VisionHealth
+from ailen.vision.opencv_backend import AutoOpenCvVisionBackend, OpenCvVisionBackend
 
 
 class FakeCapture:
@@ -177,3 +177,63 @@ def test_new_capture_run_does_not_reuse_previous_frame_evidence(monkeypatch) -> 
     assert health.last_valid_frame_at is None
     assert health.stream_has_frames is False
     assert health.status == ServiceStatus.DEGRADED
+
+
+
+def test_auto_vision_waits_without_camera_then_attaches_and_recycles() -> None:
+    candidates: list[str] = []
+
+    class FakeVisionBackend:
+        def __init__(self, source: str) -> None:
+            self.source_label = source
+            self.status = ServiceStatus.HEALTHY
+            self.stopped = False
+            self.observation = PresenceObservation(present=True, faces_count=1, confidence=0.9)
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def health(self) -> VisionHealth:
+            return VisionHealth(
+                status=self.status,
+                detail="fake camera",
+                stream_has_frames=self.status == ServiceStatus.HEALTHY,
+                frames_processed=3,
+                capture_thread_alive=True,
+            )
+
+        def get_latest_presence(self) -> PresenceObservation:
+            return self.observation
+
+    created: list[FakeVisionBackend] = []
+
+    def make_backend(source: str) -> FakeVisionBackend:
+        backend = FakeVisionBackend(source)
+        created.append(backend)
+        return backend
+
+    backend = AutoOpenCvVisionBackend(  # type: ignore[arg-type]
+        candidate_provider=lambda: list(candidates),
+        backend_factory=make_backend,
+        rescan_interval_seconds=0.25,
+    )
+    backend._running = True
+    backend._supervise_once()
+    assert backend.active_source_label is None
+    assert backend.health().status == ServiceStatus.DEGRADED
+
+    candidates.append("/dev/video7")
+    backend._last_scan = 0.0
+    backend._supervise_once()
+    assert backend.active_source_label == "/dev/video7"
+    assert backend.health().status == ServiceStatus.HEALTHY
+    assert backend.get_latest_presence().present is True
+
+    created[-1].status = ServiceStatus.UNHEALTHY
+    backend._supervise_once()
+    assert created[-1].stopped is True
+    assert backend.active_source_label is None
+    assert backend.health().status == ServiceStatus.DEGRADED

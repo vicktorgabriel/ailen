@@ -65,6 +65,27 @@ class AlsaDeviceEnumerator(AudioDeviceEnumerator):
 
         return devices
 
+    def get_default_route(self, is_input: bool) -> str | None:
+        """Return the current PipeWire/Pulse default source or sink when available."""
+        if not shutil.which("pactl"):
+            return None
+        command = "get-default-source" if is_input else "get-default-sink"
+        try:
+            result = subprocess.run(
+                ["pactl", command],
+                capture_output=True,
+                text=True,
+                timeout=1.0,
+                check=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to query default audio route: %s", exc)
+            return None
+        if result.returncode != 0:
+            return None
+        route = result.stdout.strip()
+        return route or None
+
     def list_hardware_devices(self, is_input: bool) -> list[AudioDevice]:
         """List physical ALSA card/device endpoints using ``-l`` rather than plugins.
 
@@ -422,3 +443,234 @@ class AlsaAudioOutputBackend(AudioOutputBackend):
                 )
             return AudioBackendHealth(status=ServiceStatus.DISABLED, detail="aplay not installed")
         return AudioBackendHealth(status=self._health_status, detail=self._health_detail)
+
+
+class AutoAlsaAudioInputBackend(AudioInputBackend):
+    """Hot-pluggable ALSA/PipeWire capture that survives device changes."""
+
+    def __init__(
+        self,
+        sample_rate: int = 16000,
+        channels: int = 1,
+        frame_ms: float = 20.0,
+        rescan_interval_seconds: float = 1.0,
+    ) -> None:
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.frame_ms = frame_ms
+        self.rescan_interval_seconds = max(0.25, rescan_interval_seconds)
+        self._enumerator = AlsaDeviceEnumerator()
+        self._delegate: AlsaAudioInputBackend | None = None
+        self._running = False
+        self._last_scan = 0.0
+        self._hardware_signature: tuple[str, ...] | None = None
+        self._health = AudioBackendHealth(
+            status=ServiceStatus.DEGRADED,
+            detail="Waiting for an audio capture device",
+        )
+
+    @property
+    def active_device(self) -> str | None:
+        return self._delegate.device if self._delegate is not None else None
+
+    def start(self) -> None:
+        self._running = True
+        self._rescan(force=True)
+
+    def stop(self) -> None:
+        self._running = False
+        self._detach()
+        self._health = AudioBackendHealth(ServiceStatus.DISABLED, "Stopped")
+
+    def read_frame(self, timeout_seconds: float = 0.1) -> bytes | None:
+        if not self._running:
+            return None
+        self._rescan()
+        delegate = self._delegate
+        if delegate is None:
+            time.sleep(min(max(0.0, timeout_seconds), 0.05))
+            return None
+
+        frame = delegate.read_frame(timeout_seconds)
+        health = delegate.health()
+        if health.status in {ServiceStatus.UNHEALTHY, ServiceStatus.DISABLED}:
+            logger.info("Auto audio input lost %s: %s", delegate.device, health.detail)
+            self._detach()
+            self._health = AudioBackendHealth(
+                ServiceStatus.DEGRADED,
+                "Capture device disappeared; rescanning",
+            )
+        else:
+            self._health = health
+        return frame
+
+    def health(self) -> AudioBackendHealth:
+        if self._delegate is not None:
+            return self._delegate.health()
+        return self._health
+
+    def _rescan(self, force: bool = False) -> None:
+        if not self._running:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_scan < self.rescan_interval_seconds:
+            return
+        self._last_scan = now
+
+        hardware = self._enumerator.list_hardware_devices(is_input=True)
+        default_route = self._enumerator.get_default_route(is_input=True)
+        signature = tuple(sorted(device.id for device in hardware)) + (
+            (f"route:{default_route}",) if default_route else ()
+        )
+        inventory_changed = (
+            self._hardware_signature is not None
+            and signature != self._hardware_signature
+        )
+        self._hardware_signature = signature
+        if inventory_changed and self._delegate is not None:
+            logger.info("Audio capture inventory changed; reopening default route")
+            self._detach()
+
+        if self._delegate is not None:
+            return
+        if not hardware:
+            self._health = AudioBackendHealth(
+                ServiceStatus.DEGRADED,
+                "No microphone detected; waiting for hot-plug",
+            )
+            return
+
+        endpoint = self._select_input_endpoint(hardware)
+        delegate = AlsaAudioInputBackend(
+            device=endpoint,
+            sample_rate=self.sample_rate,
+            channels=self.channels,
+            frame_ms=self.frame_ms,
+        )
+        delegate.start()
+        health = delegate.health()
+        if health.status == ServiceStatus.HEALTHY:
+            self._delegate = delegate
+            self._health = health
+            logger.info("Auto audio input attached: %s", endpoint)
+            return
+        delegate.stop()
+        self._health = AudioBackendHealth(
+            ServiceStatus.DEGRADED,
+            f"Detected capture endpoint {endpoint} but could not open it: {health.detail}",
+        )
+
+    def _select_input_endpoint(self, hardware: list[AudioDevice]) -> str:
+        routing = self._enumerator.list_devices()
+        if any(device.is_input and device.id == "pipewire" for device in routing):
+            return "pipewire"
+        if any(device.is_input and device.id == "default" for device in routing):
+            return "default"
+        return hardware[0].id
+
+    def _detach(self) -> None:
+        if self._delegate is not None:
+            try:
+                self._delegate.stop()
+            finally:
+                self._delegate = None
+
+
+class AutoAlsaAudioOutputBackend(AudioOutputBackend):
+    """Hot-pluggable ALSA/PipeWire playback that follows hardware changes."""
+
+    def __init__(self, rescan_interval_seconds: float = 1.0) -> None:
+        self.rescan_interval_seconds = max(0.25, rescan_interval_seconds)
+        self._enumerator = AlsaDeviceEnumerator()
+        self._delegate: AlsaAudioOutputBackend | None = None
+        self._last_scan = 0.0
+        self._hardware_signature: tuple[str, ...] | None = None
+        self._health = AudioBackendHealth(
+            status=ServiceStatus.DEGRADED,
+            detail="Waiting for an audio playback device",
+        )
+
+    @property
+    def active_device(self) -> str | None:
+        return self._delegate.device if self._delegate is not None else None
+
+    def play(
+        self,
+        audio_data: bytes,
+        sample_rate: int = 16000,
+        channels: int = 1,
+        cancel_event: Event | None = None,
+    ) -> None:
+        self._rescan(force=self._delegate is None)
+        delegate = self._delegate
+        if delegate is None:
+            return
+        delegate.play(
+            audio_data,
+            sample_rate=sample_rate,
+            channels=channels,
+            cancel_event=cancel_event,
+        )
+        health = delegate.health()
+        if health.status == ServiceStatus.UNHEALTHY:
+            logger.info("Auto audio output lost %s: %s", delegate.device, health.detail)
+            self._delegate = None
+            self._health = AudioBackendHealth(
+                ServiceStatus.DEGRADED,
+                "Playback device unavailable; rescanning",
+            )
+        else:
+            self._health = health
+
+    def stop(self) -> None:
+        if self._delegate is not None:
+            self._delegate.stop()
+
+    def health(self) -> AudioBackendHealth:
+        if self._delegate is not None:
+            return self._delegate.health()
+        return self._health
+
+    def _rescan(self, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - self._last_scan < self.rescan_interval_seconds:
+            return
+        self._last_scan = now
+
+        hardware = self._enumerator.list_hardware_devices(is_input=False)
+        default_route = self._enumerator.get_default_route(is_input=False)
+        signature = tuple(sorted(device.id for device in hardware)) + (
+            (f"route:{default_route}",) if default_route else ()
+        )
+        inventory_changed = (
+            self._hardware_signature is not None
+            and signature != self._hardware_signature
+        )
+        self._hardware_signature = signature
+        if inventory_changed and self._delegate is not None:
+            logger.info("Audio playback inventory changed; reopening default route")
+            self._delegate.stop()
+            self._delegate = None
+
+        if self._delegate is not None:
+            return
+        if not hardware:
+            self._health = AudioBackendHealth(
+                ServiceStatus.DEGRADED,
+                "No playback device detected; waiting for hot-plug",
+            )
+            return
+
+        routing = self._enumerator.list_devices()
+        if any(device.is_output and device.id == "pipewire" for device in routing):
+            endpoint = "pipewire"
+        elif any(device.is_output and device.id == "default" for device in routing):
+            endpoint = "default"
+        else:
+            endpoint = hardware[0].id
+        self._delegate = AlsaAudioOutputBackend(device=endpoint)
+        self._health = AudioBackendHealth(
+            ServiceStatus.HEALTHY,
+            f"Playback endpoint selected: {endpoint}",
+        )
+        logger.info("Auto audio output attached: %s", endpoint)

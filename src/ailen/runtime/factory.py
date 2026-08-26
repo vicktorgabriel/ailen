@@ -20,6 +20,8 @@ from ailen.audio.alsa_backend import (
     AlsaAudioInputBackend,
     AlsaAudioOutputBackend,
     AlsaDeviceEnumerator,
+    AutoAlsaAudioInputBackend,
+    AutoAlsaAudioOutputBackend,
 )
 from ailen.audio.contracts import (
     AudioInputBackend,
@@ -43,6 +45,7 @@ from ailen.face.contracts import FaceController
 from ailen.face.gui import TkinterFaceController
 from ailen.face.null import NullFaceController
 from ailen.hardware.contracts import HardwareCapabilityReport
+from ailen.hardware.detector import HardwareDetector
 from ailen.models.planner import ModelPlan
 from ailen.runtime.contracts import ExternalRuntimeDescriptor, RuntimeStatus, RuntimeType
 from ailen.runtime.inventory import RuntimeModelInventory
@@ -266,13 +269,7 @@ class LabComponentFactory:
                 selected_label = detected_devices[0]
                 selection_note = f"configured '{configured_device}' not detected; auto-selected USB/V4L2 camera"
             else:
-                return None, ComponentStatus(
-                    name="Vision",
-                    backend="OpenCV/V4L2",
-                    state="UNAVAILABLE",
-                    detail="USB/V4L2 camera source selected but no physical camera was detected",
-                    remediation="Connect a USB/V4L2 camera or select camera_source=auto/rtsp",
-                )
+                selection_note = "no USB/V4L2 camera detected yet; hot-plug discovery will keep scanning"
         else:  # auto
             if configured_device in detected_devices:
                 selected_device = configured_device
@@ -287,30 +284,76 @@ class LabComponentFactory:
                 selected_label = network_label
                 selection_note = "no local V4L2 camera detected; auto-selected network camera"
 
-        if selected_device is None:
-            if source_mode == "auto" and self.config.vision.network_camera_enabled and network_problem:
-                return None, ComponentStatus(
-                    name="Vision",
-                    backend="OpenCV/RTSP",
-                    state="UNAVAILABLE",
-                    detail=f"No USB/V4L2 camera detected; RTSP fallback unavailable: {network_problem}",
-                    remediation=(
-                        f"Connect a USB camera or set {self.config.vision.network_camera_password_env}"
-                        if self.config.vision.network_camera_username.strip()
-                        else "Connect a USB camera or complete RTSP configuration"
-                    ),
-                )
+        if selected_device is None and source_mode == "rtsp":
             return None, ComponentStatus(
                 name="Vision",
-                backend="OpenCV",
-                state="DISABLED",
-                detail="No local or configured network camera available",
-                remediation="Connect a camera, configure RTSP, or run with --no-camera",
+                backend="OpenCV/RTSP",
+                state="UNAVAILABLE",
+                detail=network_problem or "Selected RTSP camera is unavailable",
+                remediation=(
+                    f"Set {self.config.vision.network_camera_password_env} and verify RTSP camera availability"
+                    if self.config.vision.network_camera_username.strip()
+                    else "Verify RTSP camera availability"
+                ),
             )
 
         try:
-            from ailen.vision.opencv_backend import OpenCvVisionBackend
+            from ailen.vision.opencv_backend import AutoOpenCvVisionBackend, OpenCvVisionBackend
 
+            def make_backend(source: str | int) -> OpenCvVisionBackend:
+                return OpenCvVisionBackend(
+                    camera_device=source,
+                    fps=self.config.vision.fps,
+                    detector=self.config.vision.detector,
+                    yunet_model_path=self.config.vision.detector_model_path,
+                    yunet_score_threshold=self.config.vision.detector_score_threshold,
+                    rtsp_transport=self.config.vision.rtsp_transport,
+                    rtsp_open_timeout_ms=self.config.vision.rtsp_open_timeout_ms,
+                    rtsp_read_timeout_ms=self.config.vision.rtsp_read_timeout_ms,
+                    rtsp_reconnect_after_failures=self.config.vision.rtsp_reconnect_after_failures,
+                )
+
+            if source_mode in {"auto", "usb"}:
+                hardware_detector = HardwareDetector()
+
+                def discover_candidates() -> list[str | int]:
+                    cameras = hardware_detector.adapter.detect_cameras()
+                    local = [camera.device_path for camera in cameras if camera.is_available]
+                    ordered: list[str | int] = []
+                    if configured_device in local:
+                        ordered.append(configured_device)
+                    ordered.extend(device for device in local if device not in ordered)
+                    if source_mode == "auto" and self.config.vision.network_camera_enabled:
+                        host = self.config.vision.network_camera_host.strip()
+                        username = self.config.vision.network_camera_username.strip()
+                        password_env = self.config.vision.network_camera_password_env.strip()
+                        password = os.environ.get(password_env, "") if password_env else ""
+                        path = self.config.vision.network_camera_path.strip()
+                        if path and not path.startswith("/"):
+                            path = "/" + path
+                        if host and (not username or password):
+                            auth = (
+                                f"{quote(username, safe='')}:{quote(password, safe='')}@"
+                                if username
+                                else ""
+                            )
+                            ordered.append(
+                                f"rtsp://{auth}{host}:{self.config.vision.network_camera_port}{path}"
+                            )
+                    return ordered
+
+                auto_backend = AutoOpenCvVisionBackend(
+                    candidate_provider=discover_candidates,
+                    backend_factory=make_backend,
+                )
+                return auto_backend, ComponentStatus(
+                    name="Vision",
+                    backend="OpenCV auto-discovery",
+                    state="READY",
+                    detail="Hot-plug camera discovery enabled; GUI can run with no camera attached",
+                )
+
+            assert selected_device is not None
             backend = OpenCvVisionBackend(
                 camera_device=selected_device,
                 fps=self.config.vision.fps,
@@ -377,8 +420,8 @@ class LabComponentFactory:
             )
 
         try:
-            in_dev = self.config.audio.input_device
-            out_dev = self.config.audio.output_device
+            in_dev = self.config.audio.input_device.strip()
+            out_dev = self.config.audio.output_device.strip()
 
             if shutil.which("arecord") is None or shutil.which("aplay") is None:
                 return None, None, ComponentStatus(
@@ -387,6 +430,33 @@ class LabComponentFactory:
                     state="UNAVAILABLE",
                     detail="arecord/aplay not available",
                     remediation="Install alsa-utils before running live audio",
+                )
+
+            if in_dev == "auto" or out_dev == "auto":
+                in_backend: AudioInputBackend = (
+                    AutoAlsaAudioInputBackend(
+                        sample_rate=self.config.audio.sample_rate,
+                        channels=self.config.audio.channels,
+                        frame_ms=self.config.audio.frame_ms,
+                    )
+                    if in_dev == "auto"
+                    else AlsaAudioInputBackend(
+                        device=in_dev,
+                        sample_rate=self.config.audio.sample_rate,
+                        channels=self.config.audio.channels,
+                        frame_ms=self.config.audio.frame_ms,
+                    )
+                )
+                out_backend: AudioOutputBackend = (
+                    AutoAlsaAudioOutputBackend()
+                    if out_dev == "auto"
+                    else AlsaAudioOutputBackend(device=out_dev)
+                )
+                return in_backend, out_backend, ComponentStatus(
+                    name="Audio",
+                    backend="ALSA auto-discovery",
+                    state="READY",
+                    detail=f"Hot-plug audio enabled: in='{in_dev}' out='{out_dev}'",
                 )
 
             report_inputs = self.hardware_report.audio_inputs if self.hardware_report else []
@@ -441,7 +511,12 @@ class LabComponentFactory:
                     remediation="Run `ailen lab audio-devices` and choose a listed physical playback endpoint",
                 )
 
-            in_backend = AlsaAudioInputBackend(device=in_dev, sample_rate=self.config.audio.sample_rate)
+            in_backend = AlsaAudioInputBackend(
+                device=in_dev,
+                sample_rate=self.config.audio.sample_rate,
+                channels=self.config.audio.channels,
+                frame_ms=self.config.audio.frame_ms,
+            )
             out_backend = AlsaAudioOutputBackend(device=out_dev)
             return in_backend, out_backend, ComponentStatus(
                 name="Audio",

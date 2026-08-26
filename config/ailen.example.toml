@@ -27,8 +27,8 @@ fullscreen = true
 fps_limit = 30
 
 [audio]
-input_device = "default"
-output_device = "default"
+input_device = "default"        # use "auto" for hot-plug capture discovery
+output_device = "default"       # use "auto" for hot-plug playback discovery
 input_volume = 80
 output_volume = 80
 music_volume = 60

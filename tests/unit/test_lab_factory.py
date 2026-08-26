@@ -9,6 +9,7 @@ from ailen.hardware.contracts import (
     RamInfo,
 )
 from ailen.runtime.factory import LabComponentFactory
+from ailen.vision.opencv_backend import AutoOpenCvVisionBackend
 
 
 def test_factory_face_headless() -> None:
@@ -58,8 +59,9 @@ def test_factory_vision_no_cameras_detected() -> None:
     )
     factory = LabComponentFactory(config=cfg, hardware_report=report)
     vision, status = factory.build_vision(no_camera=False, simulate=False)
-    assert vision is None
-    assert status.state in ("DISABLED", "UNAVAILABLE")
+    assert isinstance(vision, AutoOpenCvVisionBackend)
+    assert status.state == "READY"
+    assert "Hot-plug camera discovery enabled" in status.detail
 
 
 
@@ -78,10 +80,9 @@ def test_factory_vision_auto_selects_detected_camera_when_configured_missing() -
     )
     factory = LabComponentFactory(config=cfg, hardware_report=report)
     vision, status = factory.build_vision()
-    assert vision is not None
-    assert getattr(vision, "camera_device", None) == "/dev/video1"
+    assert isinstance(vision, AutoOpenCvVisionBackend)
     assert status.state == "READY"
-    assert "auto-selected physical camera" in status.detail
+    assert "Hot-plug camera discovery enabled" in status.detail
 
 
 def test_factory_vision_uses_preferred_rtsp_without_v4l2(monkeypatch) -> None:
@@ -177,9 +178,10 @@ def test_factory_usb_source_never_falls_back_to_rtsp(monkeypatch) -> None:
         cameras=[],
     )
     vision, status = LabComponentFactory(cfg, report).build_vision()
-    assert vision is None
-    assert status.state == "UNAVAILABLE"
-    assert "USB/V4L2" in status.detail
+    assert isinstance(vision, AutoOpenCvVisionBackend)
+    assert status.state == "READY"
+    candidates = vision._candidate_provider()
+    assert all(not str(candidate).startswith("rtsp://") for candidate in candidates)
     assert "unit-test-camera-secret" not in status.detail
 
 
@@ -202,9 +204,12 @@ def test_factory_auto_source_can_fallback_to_rtsp(monkeypatch) -> None:
         cameras=[],
     )
     vision, status = LabComponentFactory(cfg, report).build_vision()
-    assert vision is not None
-    assert str(getattr(vision, "camera_device", "")).startswith("rtsp://admin:")
-    assert "auto-selected network camera" in status.detail
+    assert isinstance(vision, AutoOpenCvVisionBackend)
+    candidates = vision._candidate_provider()
+    assert any(str(candidate).startswith("rtsp://admin:") for candidate in candidates)
+    assert status.state == "READY"
+    assert "Hot-plug camera discovery enabled" in status.detail
+    assert "unit-test-camera-secret" not in status.detail
 
 
 

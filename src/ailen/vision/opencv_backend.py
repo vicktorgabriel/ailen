@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -390,3 +391,165 @@ class OpenCvVisionBackend(VisionBackend):
             primary_y_normalized=max(-1.0, min(1.0, norm_y)),
             confidence=None,
         )
+
+
+class AutoOpenCvVisionBackend(VisionBackend):
+    """Hot-pluggable vision supervisor for changing camera inventories.
+
+    It owns exactly one concrete ``OpenCvVisionBackend`` at a time. When no
+    source exists the supervisor remains alive and reports DEGRADED instead of
+    preventing the rest of AILEN from starting.
+    """
+
+    def __init__(
+        self,
+        candidate_provider: Callable[[], list[Any]],
+        backend_factory: Callable[[Any], OpenCvVisionBackend],
+        rescan_interval_seconds: float = 1.0,
+        recycle_stale_after_seconds: float = 6.0,
+    ) -> None:
+        self._candidate_provider = candidate_provider
+        self._backend_factory = backend_factory
+        self.rescan_interval_seconds = max(0.25, rescan_interval_seconds)
+        self.recycle_stale_after_seconds = max(2.0, recycle_stale_after_seconds)
+        self._delegate: OpenCvVisionBackend | None = None
+        self._running = False
+        self._thread: threading.Thread | None = None
+        self._latest_observation = PresenceObservation(present=False)
+        self._last_scan = 0.0
+        self._delegate_started_at: float | None = None
+        self._health_detail = "Waiting for a camera"
+
+    @property
+    def provides_face_confidence(self) -> bool:
+        return True
+
+    @property
+    def active_source_label(self) -> str | None:
+        return self._delegate.source_label if self._delegate is not None else None
+
+    def capabilities(self) -> list[CapabilityDescriptor]:
+        healthy = self.health().status == ServiceStatus.HEALTHY
+        return [
+            CapabilityDescriptor(
+                key="vision.face_presence",
+                description="detectar presencia de rostros y su posición aproximada en la cámara",
+                available=healthy,
+                source="vision",
+            )
+        ]
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._supervise_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=1.5)
+        self._drop_delegate()
+        self._health_detail = "Stopped"
+
+    def health(self) -> VisionHealth:
+        thread_alive = self._thread.is_alive() if self._thread is not None else None
+        delegate = self._delegate
+        if delegate is not None:
+            health = delegate.health()
+            return VisionHealth(
+                status=health.status,
+                detail=f"Auto camera {delegate.source_label}: {health.detail}",
+                stream_has_frames=health.stream_has_frames,
+                frames_processed=health.frames_processed,
+                frame_read_failures=health.frame_read_failures,
+                last_valid_frame_at=health.last_valid_frame_at,
+                last_valid_frame_age_seconds=health.last_valid_frame_age_seconds,
+                capture_thread_alive=thread_alive and bool(health.capture_thread_alive),
+                last_inference_ms=health.last_inference_ms,
+            )
+        return VisionHealth(
+            status=ServiceStatus.DEGRADED if self._running else ServiceStatus.DISABLED,
+            detail=self._health_detail,
+            stream_has_frames=False,
+            capture_thread_alive=thread_alive,
+        )
+
+    def get_latest_presence(self) -> PresenceObservation:
+        delegate = self._delegate
+        if delegate is not None:
+            self._latest_observation = delegate.get_latest_presence()
+        return self._latest_observation
+
+    def _supervise_loop(self) -> None:
+        while self._running:
+            self._supervise_once()
+            time.sleep(0.2)
+
+    def _supervise_once(self) -> None:
+        """Run one discovery/health cycle; kept deterministic for tests."""
+        delegate = self._delegate
+        if delegate is None:
+            self._try_attach()
+            return
+
+        self._latest_observation = delegate.get_latest_presence()
+        health = delegate.health()
+        should_recycle = health.status == ServiceStatus.UNHEALTHY
+        if (
+            not should_recycle
+            and health.status == ServiceStatus.DEGRADED
+            and self._delegate_started_at is not None
+            and time.monotonic() - self._delegate_started_at
+            >= self.recycle_stale_after_seconds
+            and not health.stream_has_frames
+        ):
+            should_recycle = True
+        if should_recycle:
+            logger.info(
+                "Auto vision releasing %s: %s",
+                delegate.source_label,
+                health.detail,
+            )
+            self._drop_delegate()
+            self._health_detail = "Camera unavailable; rescanning for another source"
+
+    def _try_attach(self) -> None:
+        now = time.monotonic()
+        if now - self._last_scan < self.rescan_interval_seconds:
+            return
+        self._last_scan = now
+        try:
+            candidates = self._candidate_provider()
+        except Exception as exc:  # noqa: BLE001
+            self._health_detail = f"Camera discovery failed: {type(exc).__name__}"
+            logger.debug("Auto vision discovery failed: %s", exc)
+            return
+        if not candidates:
+            self._health_detail = "No camera detected; waiting for hot-plug"
+            return
+        for source in candidates:
+            backend = self._backend_factory(source)
+            backend.start()
+            health = backend.health()
+            if health.status == ServiceStatus.HEALTHY or health.stream_has_frames:
+                self._delegate = backend
+                self._delegate_started_at = time.monotonic()
+                self._latest_observation = backend.get_latest_presence()
+                self._health_detail = f"Camera attached: {backend.source_label}"
+                logger.info("Auto vision attached: %s", backend.source_label)
+                return
+            backend.stop()
+        self._health_detail = "Detected camera source(s), but none produced valid frames"
+
+    def _drop_delegate(self) -> None:
+        delegate = self._delegate
+        self._delegate = None
+        self._delegate_started_at = None
+        self._latest_observation = PresenceObservation(present=False)
+        if delegate is not None:
+            try:
+                delegate.stop()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Error stopping auto vision delegate: %s", exc)

@@ -2,13 +2,16 @@
 
 import threading
 from pathlib import Path
+from typing import ClassVar
 
 from ailen.audio.alsa_backend import (
     AlsaAudioInputBackend,
     AlsaAudioOutputBackend,
     AlsaDeviceEnumerator,
+    AutoAlsaAudioInputBackend,
+    AutoAlsaAudioOutputBackend,
 )
-from ailen.audio.contracts import AudioSegment, SpeechRequest
+from ailen.audio.contracts import AudioBackendHealth, AudioDevice, AudioSegment, SpeechRequest
 from ailen.audio.piper_backend import PiperTtsBackend
 from ailen.audio.vosk_backend import VoskSttBackend
 from ailen.audio.whisper_backend import WhisperCppSttBackend
@@ -273,3 +276,149 @@ def test_alsa_output_stop_never_waits_for_active_aplay() -> None:
     backend.stop()
 
     assert process.killed is True
+
+
+
+def test_auto_audio_input_waits_for_hotplug_and_reopens_on_inventory_change(monkeypatch) -> None:
+    class FakeEnumerator:
+        def __init__(self) -> None:
+            self.hardware: list[AudioDevice] = []
+            self.default_route = "mic-a"
+
+        def list_hardware_devices(self, is_input: bool) -> list[AudioDevice]:
+            assert is_input is True
+            return list(self.hardware)
+
+        def get_default_route(self, is_input: bool) -> str | None:
+            assert is_input is True
+            return self.default_route
+
+        def list_devices(self) -> list[AudioDevice]:
+            return [AudioDevice("pipewire", "PipeWire", is_input=True, is_output=False)]
+
+    class FakeInputBackend:
+        instances: ClassVar[list["FakeInputBackend"]] = []
+
+        def __init__(self, device: str, sample_rate: int, channels: int, frame_ms: float) -> None:
+            self.device = device
+            self.sample_rate = sample_rate
+            self.channels = channels
+            self.frame_ms = frame_ms
+            self.started = False
+            self.stopped = False
+            self.__class__.instances.append(self)
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def read_frame(self, timeout_seconds: float = 0.1) -> bytes | None:
+            del timeout_seconds
+            return b"\x01\x00" * 320
+
+        def health(self) -> AudioBackendHealth:
+            return AudioBackendHealth(
+                ServiceStatus.DISABLED if self.stopped else ServiceStatus.HEALTHY,
+                "fake capture",
+            )
+
+    enumerator = FakeEnumerator()
+    monkeypatch.setattr("ailen.audio.alsa_backend.AlsaAudioInputBackend", FakeInputBackend)
+    backend = AutoAlsaAudioInputBackend(rescan_interval_seconds=0.25)
+    backend._enumerator = enumerator  # type: ignore[assignment]
+
+    backend.start()
+    assert backend.active_device is None
+    assert backend.health().status == ServiceStatus.DEGRADED
+
+    enumerator.hardware = [
+        AudioDevice("plughw:CARD=USB,DEV=0", "USB mic", is_input=True, is_output=False)
+    ]
+    backend._rescan(force=True)
+    assert backend.active_device == "pipewire"
+    assert backend.read_frame() == b"\x01\x00" * 320
+    first = FakeInputBackend.instances[-1]
+
+    enumerator.default_route = "mic-b"
+    backend._rescan(force=True)
+    assert first.stopped is True
+    rerouted = FakeInputBackend.instances[-1]
+    assert rerouted is not first
+
+    enumerator.hardware.append(
+        AudioDevice("plughw:CARD=USB2,DEV=0", "Second mic", is_input=True, is_output=False)
+    )
+    backend._rescan(force=True)
+    assert rerouted.stopped is True
+    assert backend.active_device == "pipewire"
+    assert FakeInputBackend.instances[-1] is not rerouted
+
+    enumerator.hardware = []
+    backend._rescan(force=True)
+    assert backend.active_device is None
+    assert backend.health().status == ServiceStatus.DEGRADED
+    assert "hot-plug" in backend.health().detail
+
+
+def test_auto_audio_output_follows_playback_inventory_changes(monkeypatch) -> None:
+    class FakeEnumerator:
+        def __init__(self) -> None:
+            self.hardware: list[AudioDevice] = []
+            self.default_route = "speaker-a"
+
+        def list_hardware_devices(self, is_input: bool) -> list[AudioDevice]:
+            assert is_input is False
+            return list(self.hardware)
+
+        def get_default_route(self, is_input: bool) -> str | None:
+            assert is_input is False
+            return self.default_route
+
+        def list_devices(self) -> list[AudioDevice]:
+            return [AudioDevice("pipewire", "PipeWire", is_input=False, is_output=True)]
+
+    class FakeOutputBackend:
+        instances: ClassVar[list["FakeOutputBackend"]] = []
+
+        def __init__(self, device: str) -> None:
+            self.device = device
+            self.stopped = False
+            self.played = 0
+            self.__class__.instances.append(self)
+
+        def play(self, audio_data: bytes, sample_rate=16000, channels=1, cancel_event=None) -> None:  # type: ignore[no-untyped-def]
+            del sample_rate, channels, cancel_event
+            if audio_data:
+                self.played += 1
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def health(self) -> AudioBackendHealth:
+            return AudioBackendHealth(ServiceStatus.HEALTHY, "fake playback")
+
+    enumerator = FakeEnumerator()
+    monkeypatch.setattr("ailen.audio.alsa_backend.AlsaAudioOutputBackend", FakeOutputBackend)
+    backend = AutoAlsaAudioOutputBackend(rescan_interval_seconds=0.25)
+    backend._enumerator = enumerator  # type: ignore[assignment]
+
+    backend.play(b"\x01\x00")
+    assert backend.active_device is None
+
+    enumerator.hardware = [
+        AudioDevice("plughw:CARD=Speaker,DEV=0", "speaker", is_input=False, is_output=True)
+    ]
+    backend.play(b"\x01\x00")
+    first = FakeOutputBackend.instances[-1]
+    assert backend.active_device == "pipewire"
+    assert first.played == 1
+
+    enumerator.hardware.append(
+        AudioDevice("plughw:CARD=Headset,DEV=0", "headset", is_input=False, is_output=True)
+    )
+    backend._rescan(force=True)
+    assert first.stopped is True
+    assert backend.active_device == "pipewire"
+    assert FakeOutputBackend.instances[-1] is not first
