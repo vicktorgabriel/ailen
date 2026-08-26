@@ -207,6 +207,51 @@ def test_alsa_input_requests_frame_sized_pipewire_periods(monkeypatch) -> None:
     backend.stop()
 
 
+
+
+def test_pipewire_output_uses_pw_play_for_raw_pcm(monkeypatch) -> None:
+    captured_cmd: list[str] = []
+
+    class CompletedProcess:
+        returncode = 0
+
+        def communicate(self, input=None, timeout=None):  # type: ignore[no-untyped-def]
+            del input, timeout
+            return b"", b""
+
+        def poll(self):  # type: ignore[no-untyped-def]
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    def fake_which(name: str) -> str | None:
+        return "/usr/bin/pw-play" if name == "pw-play" else None
+
+    def fake_popen(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        captured_cmd.extend(cmd)
+        return CompletedProcess()
+
+    monkeypatch.setattr("ailen.audio.alsa_backend.shutil.which", fake_which)
+    monkeypatch.setattr("ailen.audio.alsa_backend.subprocess.Popen", fake_popen)
+
+    backend = AlsaAudioOutputBackend(device="pipewire")
+    backend.play(b"\x01\x00" * 160, sample_rate=16000, channels=1)
+
+    assert captured_cmd == [
+        "/usr/bin/pw-play",
+        "--raw",
+        "--format", "s16",
+        "--rate", "16000",
+        "--channels", "1",
+        "--latency", "50ms",
+        "-",
+    ]
+    assert backend.health().status == ServiceStatus.HEALTHY
+    assert "pw-play" in backend.health().detail
+
+
 def test_alsa_output_preserves_stop_requested_during_process_spawn(monkeypatch) -> None:
     spawn_started = threading.Event()
     allow_spawn_to_return = threading.Event()
@@ -240,7 +285,10 @@ def test_alsa_output_preserves_stop_requested_during_process_spawn(monkeypatch) 
         assert allow_spawn_to_return.wait(timeout=1.0)
         return process
 
-    monkeypatch.setattr("ailen.audio.alsa_backend.shutil.which", lambda _name: "/usr/bin/aplay")
+    monkeypatch.setattr(
+        "ailen.audio.alsa_backend.shutil.which",
+        lambda name: "/usr/bin/pw-play" if name == "pw-play" else "/usr/bin/aplay",
+    )
     monkeypatch.setattr("ailen.audio.alsa_backend.subprocess.Popen", fake_popen)
     backend = AlsaAudioOutputBackend(device="pipewire")
     playback = threading.Thread(target=backend.play, args=(b"\x00\x00" * 160,))
@@ -433,6 +481,10 @@ def test_auto_audio_output_follows_playback_inventory_changes(monkeypatch) -> No
 
     enumerator = FakeEnumerator()
     monkeypatch.setattr("ailen.audio.alsa_backend.AlsaAudioOutputBackend", FakeOutputBackend)
+    monkeypatch.setattr(
+        "ailen.audio.alsa_backend.shutil.which",
+        lambda name: "/usr/bin/pw-play" if name == "pw-play" else None,
+    )
     backend = AutoAlsaAudioOutputBackend(rescan_interval_seconds=0.25)
     backend._enumerator = enumerator  # type: ignore[assignment]
 
@@ -444,7 +496,7 @@ def test_auto_audio_output_follows_playback_inventory_changes(monkeypatch) -> No
     ]
     backend.play(b"\x01\x00")
     first = FakeOutputBackend.instances[-1]
-    assert backend.active_device == "plughw:CARD=Speaker,DEV=0"
+    assert backend.active_device == "pipewire"
     assert first.played == 1
 
     enumerator.hardware.append(
@@ -452,5 +504,5 @@ def test_auto_audio_output_follows_playback_inventory_changes(monkeypatch) -> No
     )
     backend._rescan(force=True)
     assert first.stopped is True
-    assert backend.active_device == "plughw:CARD=Speaker,DEV=0"
+    assert backend.active_device == "pipewire"
     assert FakeOutputBackend.instances[-1] is not first

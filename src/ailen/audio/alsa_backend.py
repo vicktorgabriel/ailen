@@ -359,7 +359,7 @@ class AlsaAudioInputBackend(AudioInputBackend):
 
 
 class AlsaAudioOutputBackend(AudioOutputBackend):
-    """Cancelable ALSA playback backend using one managed ``aplay`` process."""
+    """Cancelable playback via PipeWire when requested, otherwise ALSA ``aplay``."""
 
     def __init__(self, device: str = "default") -> None:
         self.device = device
@@ -368,6 +368,41 @@ class AlsaAudioOutputBackend(AudioOutputBackend):
         self._process: subprocess.Popen[bytes] | None = None
         self._lock = threading.Lock()
         self._stop_requested = False
+
+    def _playback_command(
+        self,
+        *,
+        is_wav: bool,
+        sample_rate: int,
+        channels: int,
+    ) -> tuple[list[str] | None, str]:
+        """Build the canonical shared/server or direct playback command."""
+        if self.device == "pipewire":
+            binary = shutil.which("pw-play")
+            if not binary:
+                return None, "pw-play"
+            if is_wav:
+                return [binary, "-"], "pw-play"
+            return [
+                binary,
+                "--raw",
+                "--format", "s16",
+                "--rate", str(sample_rate),
+                "--channels", str(channels),
+                "--latency", "50ms",
+                "-",
+            ], "pw-play"
+
+        binary = shutil.which("aplay")
+        if not binary:
+            return None, "aplay"
+        if is_wav:
+            return [binary, "-q", "-D", self.device, "-t", "wav"], "aplay"
+        return [
+            binary, "-q", "-D", self.device,
+            "-r", str(sample_rate), "-c", str(channels),
+            "-f", "S16_LE", "-t", "raw",
+        ], "aplay"
 
     def play(
         self,
@@ -379,21 +414,17 @@ class AlsaAudioOutputBackend(AudioOutputBackend):
         """Play PCM/WAV audio and allow ``stop()`` to cancel it concurrently."""
         if not audio_data or (cancel_event is not None and cancel_event.is_set()):
             return
-        binary = shutil.which("aplay")
-        if not binary:
-            self._health_status = ServiceStatus.DISABLED
-            self._health_detail = "aplay binary not found (alsa-utils not installed)"
-            return
 
         is_wav = audio_data.startswith(b"RIFF") and b"WAVE" in audio_data[:12]
-        if is_wav:
-            cmd = [binary, "-q", "-D", self.device, "-t", "wav"]
-        else:
-            cmd = [
-                binary, "-q", "-D", self.device,
-                "-r", str(sample_rate), "-c", str(channels),
-                "-f", "S16_LE", "-t", "raw",
-            ]
+        cmd, backend_name = self._playback_command(
+            is_wav=is_wav,
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+        if cmd is None:
+            self._health_status = ServiceStatus.DISABLED
+            self._health_detail = f"{backend_name} binary not found"
+            return
 
         expected_seconds = 0.0
         if not is_wav and sample_rate > 0 and channels > 0:
@@ -401,9 +432,6 @@ class AlsaAudioOutputBackend(AudioOutputBackend):
         timeout = min(180.0, max(30.0, expected_seconds + 15.0))
         process: subprocess.Popen[bytes] | None = None
         try:
-            # Reset the cancellation token before spawning. A concurrent stop()
-            # during Popen must remain visible after the process is registered;
-            # resetting it afterwards loses exactly that interruption race.
             with self._lock:
                 if cancel_event is not None and cancel_event.is_set():
                     return
@@ -418,40 +446,46 @@ class AlsaAudioOutputBackend(AudioOutputBackend):
                 self._process = process
                 stop_requested = self._stop_requested
             logger.info(
-                "audio_timing stage=aplay_process_registered timestamp_monotonic=%.6f "
-                "device=%s stop_requested=%s",
+                "audio_timing stage=playback_process_registered timestamp_monotonic=%.6f "
+                "backend=%s device=%s stop_requested=%s",
                 time.monotonic(),
+                backend_name,
                 self.device,
                 stop_requested,
             )
             if stop_requested and process.poll() is None:
                 process.kill()
             self._health_status = ServiceStatus.HEALTHY
-            self._health_detail = f"Playing on {self.device}"
+            self._health_detail = f"Playing via {backend_name} on {self.device}"
             _stdout, stderr = process.communicate(input=audio_data, timeout=timeout)
             with self._lock:
                 interrupted = self._stop_requested
             if process.returncode != 0 and not interrupted:
                 detail = (stderr or b"").decode("utf-8", errors="replace").strip()
                 self._health_status = ServiceStatus.UNHEALTHY
-                self._health_detail = f"aplay exited with code {process.returncode}"
-                logger.warning("aplay exited with code %d: %s", process.returncode, detail)
+                self._health_detail = f"{backend_name} exited with code {process.returncode}"
+                logger.warning(
+                    "%s exited with code %d: %s",
+                    backend_name,
+                    process.returncode,
+                    detail,
+                )
             elif interrupted:
                 self._health_status = ServiceStatus.HEALTHY
                 self._health_detail = "Playback interrupted"
             else:
                 self._health_status = ServiceStatus.HEALTHY
-                self._health_detail = f"Playback completed on {self.device}"
+                self._health_detail = f"Playback completed via {backend_name} on {self.device}"
         except subprocess.TimeoutExpired:
             if process is not None:
                 process.kill()
                 process.communicate()
             self._health_status = ServiceStatus.UNHEALTHY
-            self._health_detail = "aplay playback timed out"
+            self._health_detail = f"{backend_name} playback timed out"
         except Exception as exc:  # noqa: BLE001
             self._health_status = ServiceStatus.UNHEALTHY
-            self._health_detail = f"aplay error: {exc}"
-            logger.warning("aplay playback error: %s", exc)
+            self._health_detail = f"{backend_name} error: {exc}"
+            logger.warning("%s playback error: %s", backend_name, exc)
         finally:
             with self._lock:
                 if self._process is process:
@@ -467,9 +501,9 @@ class AlsaAudioOutputBackend(AudioOutputBackend):
             try:
                 process.kill()
             except OSError as exc:
-                logger.debug("Could not stop aplay process: %s", exc)
+                logger.debug("Could not stop playback process: %s", exc)
         logger.info(
-            "audio_timing stage=aplay_stop timestamp_monotonic=%.6f duration_ms=%.1f process_active=%s",
+            "audio_timing stage=playback_stop timestamp_monotonic=%.6f duration_ms=%.1f process_active=%s",
             started,
             (time.monotonic() - started) * 1000.0,
             process is not None,
@@ -478,11 +512,16 @@ class AlsaAudioOutputBackend(AudioOutputBackend):
     def health(self) -> AudioBackendHealth:
         """Return output backend health."""
         if self._health_status == ServiceStatus.UNKNOWN:
-            if shutil.which("aplay"):
+            binary = "pw-play" if self.device == "pipewire" else "aplay"
+            if shutil.which(binary):
                 return AudioBackendHealth(
-                    status=ServiceStatus.HEALTHY, detail=f"aplay available on {self.device}"
+                    status=ServiceStatus.HEALTHY,
+                    detail=f"{binary} available on {self.device}",
                 )
-            return AudioBackendHealth(status=ServiceStatus.DISABLED, detail="aplay not installed")
+            return AudioBackendHealth(
+                status=ServiceStatus.DISABLED,
+                detail=f"{binary} not installed",
+            )
         return AudioBackendHealth(status=self._health_status, detail=self._health_detail)
 
 
@@ -707,12 +746,19 @@ class AutoAlsaAudioOutputBackend(AudioOutputBackend):
 
         default_alsa = self._enumerator.get_default_alsa_endpoint(is_input=False)
         routing = self._enumerator.list_devices()
-        if default_alsa:
-            endpoint = default_alsa
-        elif any(device.is_output and device.id == "pipewire" for device in routing):
+        shared_pipewire = bool(default_route and shutil.which("pw-play")) or any(
+            device.is_output and device.id == "pipewire" for device in routing
+        )
+        if shared_pipewire:
             endpoint = "pipewire"
-        elif any(device.is_output and device.id == "default" for device in routing):
-            endpoint = "default"
+        elif any(device.is_output and device.id in {"pulse", "default"} for device in routing):
+            endpoint = next(
+                device.id
+                for device in routing
+                if device.is_output and device.id in {"pulse", "default"}
+            )
+        elif default_alsa:
+            endpoint = default_alsa
         else:
             endpoint = hardware[0].id
         self._delegate = AlsaAudioOutputBackend(device=endpoint)
