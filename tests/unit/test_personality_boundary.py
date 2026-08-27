@@ -101,3 +101,34 @@ def test_personality_service_tolerates_asr_dropped_words_but_rejects_conflict() 
 
     assert service.apply_explicit_feedback("creo que sea más formal más informal") is None
     assert service.current().formality == 0.5
+
+
+def test_personality_passive_style_learning_is_slow_and_bounded() -> None:
+    service = PersonalityService(
+        identity_id="test-passive",
+        defaults=PersonalityTraits(formality=0.25, verbosity=0.30, humor=0.45),
+    )
+    service.observe_user_style("Che, dale, quedó genial jaja")
+    current = service.current()
+    assert 0.0 <= current.formality < 0.25
+    assert 0.45 < current.humor <= 0.70
+
+    for _ in range(100):
+        service.observe_user_style("che dale jaja")
+    bounded = service.current()
+    assert bounded.formality >= 0.0
+    assert bounded.humor <= 0.70  # default + 0.25
+
+
+def test_personality_learns_shorter_voice_style_from_interruptions() -> None:
+    service = PersonalityService(
+        identity_id="test-interrupt",
+        defaults=PersonalityTraits(verbosity=0.30),
+    )
+    before = service.current().verbosity
+    service.observe_interruption()
+    after = service.current().verbosity
+    assert after < before
+    for _ in range(100):
+        service.observe_interruption()
+    assert service.current().verbosity >= 0.05  # default - 0.25

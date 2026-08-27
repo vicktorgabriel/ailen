@@ -96,3 +96,53 @@ def test_conversation_private_lan_requires_explicit_trust() -> None:
     trusted_resp, trusted_plan = trusted.handle_user_input("Dato privado")
     assert trusted_plan.primary_backend == "lan_brain"
     assert trusted_resp.text == "respuesta lan"
+
+
+def test_voice_streaming_waits_for_complete_phrase_after_short_sentence() -> None:
+    from ailen.ai.contracts import (
+        AiResponse,
+        BackendCapabilities,
+        BackendHealth,
+        StreamingAiBackend,
+    )
+    from ailen.domain.enums import ServiceStatus
+
+    class StreamingBackend(StreamingAiBackend):
+        def health(self):  # type: ignore[no-untyped-def]
+            return BackendHealth(ServiceStatus.HEALTHY, "ok")
+
+        def capabilities(self):  # type: ignore[no-untyped-def]
+            return BackendCapabilities(supports_streaming=True, is_local=True)
+
+        def generate_stream(self, request, on_text_delta):  # type: ignore[no-untyped-def]
+            emitted = ""
+            for delta in ("¿Qué te pasó?", " ¿Fue", " un día largo?"):
+                emitted += delta
+                if on_text_delta(delta) is False:
+                    return AiResponse(
+                        text=emitted,
+                        provider="test",
+                        model="stream",
+                        finish_reason="client_stop",
+                    )
+            return AiResponse(text=emitted, provider="test", model="stream")
+
+    face_ctrl = NullFaceController()
+    audio_coord = AudioInteractionCoordinator(
+        audio_output=FakeAudioOutputBackend(),
+        tts=FakeTtsBackend(),
+        face_controller=face_ctrl,
+    )
+    router = RuleBasedRouter()
+    coordinator = ConversationCoordinator(
+        context_builder=AiContextBuilder(default_identity_name="Ailén"),
+        router=router,
+        orchestrator=AiOrchestrator(backends={"local": StreamingBackend()}),
+        audio_coordinator=audio_coord,
+        identity_name="Ailén",
+    )
+    response, _ = coordinator.handle_user_input(
+        "Estoy cansado",
+        input_modality="voice",
+    )
+    assert response.text == "¿Qué te pasó? ¿Fue un día largo?"

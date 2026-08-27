@@ -253,30 +253,49 @@ class AlsaAudioInputBackend(AudioInputBackend):
         if self._running:
             return
 
-        if not shutil.which("arecord"):
-            self._health_status = ServiceStatus.DISABLED
-            self._health_detail = "arecord binary not found (alsa-utils not installed)"
-            logger.info("arecord binary not found; ALSA audio input disabled.")
-            return
-
-        cmd = [
-            "arecord",
-            "-q",
-            "-D",
-            self.device,
-            "-r",
-            str(self.sample_rate),
-            "-c",
-            str(self.channels),
-            "-f",
-            "S16_LE",
-            "-F",
-            str(max(1_000, round(self.frame_ms * 1_000.0))),
-            "-B",
-            str(max(4_000, round(self.frame_ms * 4_000.0))),
-            "-t",
-            "raw",
-        ]
+        backend_name = "arecord"
+        if self.device == "pipewire":
+            binary = shutil.which("pw-record")
+            if not binary:
+                self._health_status = ServiceStatus.DISABLED
+                self._health_detail = "pw-record binary not found"
+                logger.info("pw-record binary not found; PipeWire audio input disabled.")
+                return
+            backend_name = "pw-record"
+            cmd = [
+                binary,
+                "--raw",
+                "--format", "s16",
+                "--rate", str(self.sample_rate),
+                "--channels", str(self.channels),
+                "--latency", f"{max(20, round(self.frame_ms * 2))}ms",
+                "-",
+            ]
+        else:
+            binary = shutil.which("arecord")
+            if not binary:
+                self._health_status = ServiceStatus.DISABLED
+                self._health_detail = "arecord binary not found (alsa-utils not installed)"
+                logger.info("arecord binary not found; ALSA audio input disabled.")
+                return
+            cmd = [
+                binary,
+                "-q",
+                "-D",
+                self.device,
+                "-r",
+                str(self.sample_rate),
+                "-c",
+                str(self.channels),
+                "-f",
+                "S16_LE",
+                "-F",
+                str(max(1_000, round(self.frame_ms * 1_000.0))),
+                "-B",
+                str(max(4_000, round(self.frame_ms * 4_000.0))),
+                "-t",
+                "raw",
+            ]
 
         try:
             self._process = subprocess.Popen(
@@ -298,17 +317,19 @@ class AlsaAudioInputBackend(AudioInputBackend):
                 self._running = False
                 self._health_status = ServiceStatus.UNHEALTHY
                 self._health_detail = (
-                    f"arecord failed for {self.device} (code {return_code})"
+                    f"{backend_name} failed for {self.device} (code {return_code})"
                     + (f": {detail}" if detail else "")
                 )
                 return
             self._running = True
             self._health_status = ServiceStatus.HEALTHY
-            self._health_detail = f"Recording from {self.device} @ {self.sample_rate}Hz"
+            self._health_detail = (
+                f"Recording via {backend_name} from {self.device} @ {self.sample_rate}Hz"
+            )
         except Exception as e:
             self._health_status = ServiceStatus.UNHEALTHY
-            self._health_detail = f"Failed to start arecord: {e}"
-            logger.exception("Failed to start arecord process")
+            self._health_detail = f"Failed to start {backend_name}: {e}"
+            logger.exception("Failed to start %s process", backend_name)
 
     def stop(self) -> None:
         """Stop capture process and close pipes."""
@@ -346,7 +367,7 @@ class AlsaAudioInputBackend(AudioInputBackend):
                 return_code = self._process.poll()
                 if return_code is not None:
                     self._health_status = ServiceStatus.UNHEALTHY
-                    self._health_detail = f"arecord exited with code {return_code}"
+                    self._health_detail = f"capture process exited with code {return_code}"
                 return None
             return data
         except Exception as e:  # noqa: BLE001
@@ -620,7 +641,7 @@ class AutoAlsaAudioInputBackend(AudioInputBackend):
             )
             return
 
-        endpoint = self._select_input_endpoint(hardware)
+        endpoint = self._select_input_endpoint(hardware, default_route=default_route)
         delegate = AlsaAudioInputBackend(
             device=endpoint,
             sample_rate=self.sample_rate,
@@ -640,12 +661,21 @@ class AutoAlsaAudioInputBackend(AudioInputBackend):
             f"Detected capture endpoint {endpoint} but could not open it: {health.detail}",
         )
 
-    def _select_input_endpoint(self, hardware: list[AudioDevice]) -> str:
+    def _select_input_endpoint(
+        self,
+        hardware: list[AudioDevice],
+        default_route: str | None = None,
+    ) -> str:
+        # Prefer the shared PipeWire server when it owns the default source.
+        # This keeps desktop capture non-exclusive and lets PipeWire perform
+        # high-quality resampling from the microphone's native format.
+        if default_route and shutil.which("pw-record"):
+            return "pipewire"
         default_alsa = self._enumerator.get_default_alsa_endpoint(is_input=True)
         if default_alsa:
             return default_alsa
         routing = self._enumerator.list_devices()
-        if any(device.is_input and device.id == "pipewire" for device in routing):
+        if any(device.is_input and device.id == "pipewire" for device in routing) and shutil.which("pw-record"):
             return "pipewire"
         if any(device.is_input and device.id == "default" for device in routing):
             return "default"

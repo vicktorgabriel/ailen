@@ -125,3 +125,36 @@ def test_router_offline_degraded_when_no_backends() -> None:
 
     assert plan.primary_backend == ROUTE_DEGRADED
     assert plan.reason_code == "ALL_BACKENDS_UNAVAILABLE"
+
+
+def test_router_explicit_trusted_lan_preference_overrides_local_first() -> None:
+    plan = RuleBasedRouter().route(
+        RouteRequest(
+            intent="chat",
+            profile=DeviceProfile.LOCAL,
+            privacy_level=PrivacyLevel.PRIVATE,
+            local_backend_available=True,
+            lan_brain_available=True,
+            lan_brain_trusted=True,
+            preferred_backend="lan_brain",
+        )
+    )
+    assert plan.primary_backend == ROUTE_LAN_BRAIN
+    assert plan.fallback_backends == [ROUTE_LOCAL]
+    assert plan.reason_code == "CONFIGURED_LAN_BRAIN_PREFERRED"
+
+
+def test_router_untrusted_lan_preference_falls_back_to_private_local() -> None:
+    plan = RuleBasedRouter().route(
+        RouteRequest(
+            intent="chat",
+            profile=DeviceProfile.HYBRID,
+            privacy_level=PrivacyLevel.PRIVATE,
+            local_backend_available=True,
+            lan_brain_available=True,
+            lan_brain_trusted=False,
+            preferred_backend="lan_brain",
+        )
+    )
+    assert plan.primary_backend == ROUTE_LOCAL
+    assert ROUTE_LAN_BRAIN not in plan.fallback_backends

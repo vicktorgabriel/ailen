@@ -5,9 +5,10 @@ telemetry logging, and budget/health verification.
 """
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
-from ailen.ai.contracts import AiBackend, AiRequest, AiResponse
+from ailen.ai.contracts import AiBackend, AiRequest, AiResponse, StreamingAiBackend
 from ailen.ai.router import ROUTE_DEGRADED, ROUTE_RULE_ONLY, RoutePlan, RuleBasedRouter
 from ailen.core.events import EventBus
 from ailen.domain.enums import EventType, ServiceStatus
@@ -134,6 +135,48 @@ class AiOrchestrator:
             {"attempts": attempt_errors, "reason": plan.reason_code},
         )
         return self._build_degraded_response(f"ALL_FAILED: {attempt_errors}"), plan
+
+    def execute_stream_until(
+        self,
+        request: AiRequest,
+        plan: RoutePlan,
+        on_text_delta: Callable[[str], bool | None],
+        session_id: str | None = None,
+    ) -> tuple[AiResponse, RoutePlan]:
+        """Execute a route incrementally when the selected backend supports streaming."""
+        candidates = [plan.primary_backend] + list(plan.fallback_backends)
+        for candidate_name in candidates:
+            backend = self.backends.get(candidate_name)
+            if backend is None:
+                continue
+            health = backend.health()
+            if health.status not in {ServiceStatus.HEALTHY, ServiceStatus.DEGRADED}:
+                continue
+            try:
+                if isinstance(backend, StreamingAiBackend):
+                    response = backend.generate_stream(request, on_text_delta)
+                else:
+                    response = backend.generate(request)
+                    if response.text:
+                        on_text_delta(response.text)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Streaming backend %s failed: %s", candidate_name, exc)
+                continue
+            if response.text and response.finish_reason not in {
+                "error", "unreachable", "timeout", "malformed_response"
+            }:
+                self._publish_event(
+                    EventType.INFERENCE_COMPLETED,
+                    {
+                        "provider": response.provider,
+                        "model": response.model,
+                        "latency_ms": response.latency_ms,
+                        "finish_reason": response.finish_reason,
+                        "streaming": True,
+                    },
+                )
+                return response, plan
+        return self._build_degraded_response("STREAM_ALL_FAILED"), plan
 
     def _build_degraded_response(self, detail: str) -> AiResponse:
         """Create a safe, user-friendly degraded response."""

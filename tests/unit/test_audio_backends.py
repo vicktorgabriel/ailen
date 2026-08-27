@@ -126,6 +126,25 @@ def test_piper_tts_backend_is_unavailable_without_model() -> None:
     assert output.duration_ms == 0.0
 
 
+def test_piper_threaded_loader_path_is_used_when_configured(monkeypatch, tmp_path: Path) -> None:
+    model_path = tmp_path / "voice.onnx"
+    config_path = tmp_path / "voice.onnx.json"
+    model_path.write_bytes(b"model")
+    config_path.write_text("{}", encoding="utf-8")
+    sentinel = object()
+    monkeypatch.setattr("ailen.audio.piper_backend.piper_runtime_available", lambda: True)
+    backend = PiperTtsBackend(
+        model_path=str(model_path),
+        config_path=str(config_path),
+        threads=4,
+    )
+    monkeypatch.setattr(backend, "_load_threaded_voice", lambda: sentinel)
+
+    assert backend.warmup() is True
+    assert backend._voice is sentinel
+    assert backend.threads == 4
+
+
 def test_piper_tts_backend_requires_python_runtime(monkeypatch, tmp_path: Path) -> None:
     model_path = tmp_path / "voice.onnx"
     model_path.write_bytes(b"model")
@@ -173,7 +192,7 @@ def test_alsa_maps_pipewire_default_source_to_physical_endpoint(monkeypatch) -> 
     assert enumerator.get_default_alsa_endpoint(is_input=True) == "plughw:CARD=2,DEV=0"
 
 
-def test_alsa_input_requests_frame_sized_pipewire_periods(monkeypatch) -> None:
+def test_alsa_input_requests_frame_sized_alsa_periods(monkeypatch) -> None:
     captured_cmd: list[str] = []
 
     class RunningProcess:
@@ -199,7 +218,7 @@ def test_alsa_input_requests_frame_sized_pipewire_periods(monkeypatch) -> None:
     monkeypatch.setattr("ailen.audio.alsa_backend.subprocess.Popen", fake_popen)
     monkeypatch.setattr("ailen.audio.alsa_backend.time.sleep", lambda _seconds: None)
 
-    backend = AlsaAudioInputBackend(device="pipewire", frame_ms=20.0)
+    backend = AlsaAudioInputBackend(device="plughw:CARD=USB,DEV=0", frame_ms=20.0)
     backend.start()
 
     assert captured_cmd[captured_cmd.index("-F") + 1] == "20000"
@@ -207,6 +226,52 @@ def test_alsa_input_requests_frame_sized_pipewire_periods(monkeypatch) -> None:
     backend.stop()
 
 
+
+
+def test_pipewire_input_uses_pw_record_for_raw_pcm(monkeypatch) -> None:
+    captured_cmd: list[str] = []
+
+    class RunningProcess:
+        stdout = object()
+        stderr = None
+
+        def poll(self):  # type: ignore[no-untyped-def]
+            return None
+
+        def terminate(self) -> None:
+            return None
+
+        def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+            del timeout
+            return 0
+
+    def fake_which(name: str) -> str | None:
+        return "/usr/bin/pw-record" if name == "pw-record" else None
+
+    def fake_popen(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        captured_cmd.extend(cmd)
+        return RunningProcess()
+
+    monkeypatch.setattr("ailen.audio.alsa_backend.shutil.which", fake_which)
+    monkeypatch.setattr("ailen.audio.alsa_backend.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("ailen.audio.alsa_backend.time.sleep", lambda _seconds: None)
+
+    backend = AlsaAudioInputBackend(device="pipewire", sample_rate=16000, channels=1, frame_ms=20.0)
+    backend.start()
+
+    assert captured_cmd == [
+        "/usr/bin/pw-record",
+        "--raw",
+        "--format", "s16",
+        "--rate", "16000",
+        "--channels", "1",
+        "--latency", "40ms",
+        "-",
+    ]
+    assert backend.health().status == ServiceStatus.HEALTHY
+    assert "pw-record" in backend.health().detail
+    backend.stop()
 
 
 def test_pipewire_output_uses_pw_play_for_raw_pcm(monkeypatch) -> None:
@@ -402,6 +467,7 @@ def test_auto_audio_input_waits_for_hotplug_and_reopens_on_inventory_change(monk
 
     enumerator = FakeEnumerator()
     monkeypatch.setattr("ailen.audio.alsa_backend.AlsaAudioInputBackend", FakeInputBackend)
+    monkeypatch.setattr("ailen.audio.alsa_backend.shutil.which", lambda _name: None)
     backend = AutoAlsaAudioInputBackend(rescan_interval_seconds=0.25)
     backend._enumerator = enumerator  # type: ignore[assignment]
 
@@ -436,6 +502,16 @@ def test_auto_audio_input_waits_for_hotplug_and_reopens_on_inventory_change(monk
     assert backend.active_device is None
     assert backend.health().status == ServiceStatus.DEGRADED
     assert "hot-plug" in backend.health().detail
+
+
+def test_auto_audio_input_prefers_shared_pipewire_default(monkeypatch) -> None:
+    backend = AutoAlsaAudioInputBackend()
+    hardware = [AudioDevice("plughw:CARD=USB,DEV=0", "USB mic", is_input=True)]
+    monkeypatch.setattr(
+        "ailen.audio.alsa_backend.shutil.which",
+        lambda name: "/usr/bin/pw-record" if name == "pw-record" else None,
+    )
+    assert backend._select_input_endpoint(hardware, default_route="usb-mic") == "pipewire"
 
 
 def test_auto_audio_output_follows_playback_inventory_changes(monkeypatch) -> None:
@@ -506,3 +582,32 @@ def test_auto_audio_output_follows_playback_inventory_changes(monkeypatch) -> No
     assert first.stopped is True
     assert backend.active_device == "pipewire"
     assert FakeOutputBackend.instances[-1] is not first
+
+
+def test_vosk_exposes_average_word_confidence(monkeypatch, tmp_path: Path) -> None:
+    model_dir = tmp_path / "vosk"
+    model_dir.mkdir()
+
+    class Recognizer:
+        def __init__(self, _model, _rate):  # type: ignore[no-untyped-def]
+            self.words = False
+
+        def SetWords(self, enabled):  # type: ignore[no-untyped-def]
+            self.words = enabled
+
+        def AcceptWaveform(self, _data):  # type: ignore[no-untyped-def]
+            return True
+
+        def FinalResult(self) -> str:
+            assert self.words is True
+            return '{"text":"hola mundo","result":[{"word":"hola","conf":0.8},{"word":"mundo","conf":0.6}]}'
+
+    class Module:
+        KaldiRecognizer = Recognizer
+
+    backend = VoskSttBackend(model_path=str(model_dir))
+    backend._model = object()
+    backend._vosk_module = Module()
+    out = backend.transcribe(AudioSegment(data=b"\x00\x00" * 320))
+    assert out.text == "hola mundo"
+    assert out.confidence == 0.7

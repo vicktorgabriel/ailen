@@ -3,7 +3,7 @@
 import threading
 import time
 
-from ailen.audio.contracts import AudioSegment, SpeechOutput, SpeechRequest, Transcript
+from ailen.audio.contracts import AudioSegment, SpeechOutput, SpeechRequest, Transcript, VadResult
 from ailen.audio.coordinator import AudioInteractionCoordinator
 from ailen.audio.fake import (
     FakeAudioInputBackend,
@@ -249,9 +249,8 @@ def test_audio_coordinator_plays_streaming_tts_chunks_incrementally() -> None:
     assert [e.event_type for e in event_bus.history].count(EventType.SPEECH_STARTED) == 1
 
 
-def test_audio_coordinator_prefetches_only_next_tts_chunk_during_playback() -> None:
+def test_audio_coordinator_prefetches_multiple_tts_chunks_during_playback() -> None:
     playback_started = threading.Event()
-    second_ready = threading.Event()
     third_requested = threading.Event()
 
     class ChunkedTts:
@@ -265,7 +264,6 @@ def test_audio_coordinator_prefetches_only_next_tts_chunk_during_playback() -> N
             del request
             yield SpeechOutput(audio_data=b"first", duration_ms=100.0)
             assert playback_started.wait(timeout=1.0)
-            second_ready.set()
             yield SpeechOutput(audio_data=b"second", duration_ms=100.0)
             third_requested.set()
             yield SpeechOutput(audio_data=b"third", duration_ms=100.0)
@@ -280,8 +278,7 @@ def test_audio_coordinator_prefetches_only_next_tts_chunk_during_playback() -> N
         ) -> None:
             if audio_data == b"first":
                 playback_started.set()
-                assert second_ready.wait(timeout=1.0)
-                assert third_requested.is_set() is False
+                assert third_requested.wait(timeout=1.0)
             super().play(audio_data, sample_rate, channels, cancel_event)
 
     output = ObservedOutput()
@@ -537,3 +534,108 @@ def test_pending_interruption_drain_keeps_frames_after_first_segment() -> None:
     assert coordinator._pending_interruption_frames
     second_segment, _ = coordinator.process_frame(silence)
     assert second_segment is not None
+
+
+def test_barge_in_ignores_loud_non_voice_classified_noise() -> None:
+    class NonVoiceVad:
+        def process_frame(self, frame: bytes) -> VadResult:
+            del frame
+            return VadResult(is_speech=False, rms=0.2, energy=0.04, is_trigger=False)
+
+        def reset(self) -> None:
+            return None
+
+    output = FakeAudioOutputBackend()
+    gate = AudioTurnGate(settling_cooldown_seconds=0.0)
+    coordinator = AudioInteractionCoordinator(
+        audio_output=output,
+        turn_gate=gate,
+        interruption_enabled=True,
+        interruption_threshold_rms=0.05,
+        interruption_min_ms=60,
+        interruption_vad=NonVoiceVad(),
+        frame_ms=20.0,
+    )
+    gate.start_speaking()
+    coordinator._playback_started = True
+    loud_noise = generate_tone_pcm(440.0, 20.0, amplitude=0.8)
+
+    for _ in range(12):
+        coordinator.process_frame(loud_noise)
+
+    assert coordinator._speech_cancel.is_set() is False
+    assert output.stopped is False
+
+
+def test_audio_coordinator_uses_cleaned_frame_for_vad() -> None:
+    class SilenceProcessor:
+        def process(self, frame: bytes) -> bytes:
+            return b"\x00" * len(frame)
+
+        def reset(self) -> None:
+            return None
+
+    collector = UtteranceCollector(
+        vad=EnergyVad(threshold_rms=0.02, hangover_frames=0),
+        frame_ms=20.0,
+        min_speech_ms=40.0,
+        silence_timeout_ms=60.0,
+    )
+    coordinator = AudioInteractionCoordinator(
+        frame_processor=SilenceProcessor(),
+        utterance_collector=collector,
+    )
+    loud = generate_tone_pcm(440.0, 20.0, amplitude=0.5)
+    for _ in range(10):
+        coordinator.process_frame(loud)
+    assert collector.is_in_utterance is False
+
+
+def test_face_speech_level_follows_pcm_envelope_during_playback() -> None:
+    class FaceSpy(NullFaceController):
+        def __init__(self) -> None:
+            super().__init__()
+            self.levels: list[float] = []
+
+        def set_speech_level(self, level: float) -> None:
+            self.levels.append(level)
+            super().set_speech_level(level)
+
+    class RealtimeOutput(FakeAudioOutputBackend):
+        def play(
+            self,
+            audio_data: bytes,
+            sample_rate: int = 16000,
+            channels: int = 1,
+            cancel_event: threading.Event | None = None,
+        ) -> None:
+            del cancel_event
+            time.sleep(len(audio_data) / float(sample_rate * channels * 2))
+            self.played_chunks.append(audio_data)
+
+    class OneChunkTts:
+        def health(self):  # type: ignore[no-untyped-def]
+            return None
+
+        def synthesize(self, request: SpeechRequest) -> SpeechOutput:
+            del request
+            quiet = generate_silence_pcm(40.0, sample_rate=16000)
+            loud = generate_tone_pcm(300.0, 80.0, amplitude=0.4, sample_rate=16000)
+            return SpeechOutput(
+                audio_data=quiet + loud + quiet,
+                sample_rate=16000,
+                channels=1,
+                duration_ms=160.0,
+            )
+
+    face = FaceSpy()
+    coordinator = AudioInteractionCoordinator(
+        audio_output=RealtimeOutput(),
+        tts=OneChunkTts(),
+        face_controller=face,
+    )
+    coordinator.speak("hola")
+
+    assert len(face.levels) >= 3
+    assert max(face.levels) > 0.2
+    assert 0.0 in face.levels

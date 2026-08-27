@@ -3,8 +3,7 @@
 from typing import Any, ClassVar
 
 from ailen.domain.enums import ErrorCode, PrivacyLevel, SocialMode
-from ailen.face.animator import FaceAnimator
-from ailen.face.contracts import FaceController
+from ailen.face.contracts import FACE_EXPRESSIONS, FaceController
 from ailen.tools.contracts import ToolContext, ToolResult
 
 
@@ -21,7 +20,7 @@ class FaceExpressionTool:
             "expression": {
                 "type": "str",
                 "required": True,
-                "enum": list(FaceAnimator.SUPPORTED_EXPRESSIONS),
+                "enum": list(FACE_EXPRESSIONS),
             },
             "duration_seconds": {
                 "type": "float",

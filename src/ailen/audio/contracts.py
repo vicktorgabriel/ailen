@@ -90,6 +90,19 @@ class AudioDeviceEnumerator(Protocol):
 
 
 @runtime_checkable
+class AudioFrameProcessor(Protocol):
+    """Optional in-process PCM cleanup before VAD, barge-in, and STT."""
+
+    def process(self, frame: bytes) -> bytes:
+        """Return a cleaned frame with the same PCM format and duration."""
+        ...
+
+    def reset(self) -> None:
+        """Reset adaptive processor state."""
+        ...
+
+
+@runtime_checkable
 class AudioInputBackend(Protocol):
     """Audio capture backend contract."""
 

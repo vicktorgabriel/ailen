@@ -239,3 +239,27 @@ class TestConfig(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_invalid_lan_provider_rejected() -> None:
+    cfg = AILENConfig()
+    cfg.ai.lan.provider = "unknown"
+    assert any("ai.lan.provider" in error for error in validate_config(cfg))
+
+
+def test_invalid_ai_temperature_rejected() -> None:
+    cfg = AILENConfig()
+    cfg.ai.temperature = 2.1
+    assert any("ai.temperature" in error for error in validate_config(cfg))
+
+
+def test_invalid_local_context_tokens_rejected() -> None:
+    cfg = AILENConfig()
+    cfg.ai.local.context_tokens = 256
+    assert any("ai.local.context_tokens" in error for error in validate_config(cfg))
+
+
+def test_invalid_context_budget_rejected() -> None:
+    cfg = AILENConfig()
+    cfg.ai.context_char_budget = 100
+    assert any("ai.context_char_budget" in error for error in validate_config(cfg))

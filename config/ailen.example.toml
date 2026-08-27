@@ -52,13 +52,21 @@ min_confidence = 0.5
 [speech]
 stt_engine = "mock"            # mock, whisper_cpp, vosk, cloud
 stt_language = "es"
+stt_fallback_engine = "none"
+stt_fallback_model_path = ""
+stt_fallback_confidence_threshold = 0.72
 stt_model_path = ""            # path to vosk/whisper model directory or file
 tts_engine = "mock"            # mock, piper, coqui, cloud
 tts_voice = "es_ES-standard"   # e.g. es_ES-davefx-medium
 tts_model_path = ""            # path to piper .onnx model
+tts_rate = 1.0
+tts_threads = 0
 tts_config_path = ""           # path to piper .onnx.json
-vad_engine = "energy"          # energy, mock
-vad_threshold = 0.02           # normalized RMS [0.0..1.0]
+noise_suppression_engine = "none"
+noise_suppression_level = 2
+vad_engine = "energy"          # energy, webrtc, mock
+vad_threshold = 0.02
+vad_webrtc_mode = 2           # normalized RMS [0.0..1.0]
 silence_timeout_ms = 700       # silence duration to conclude utterance
 min_speech_ms = 250            # minimum voice duration to trigger utterance
 max_utterance_seconds = 15.0   # maximum utterance duration limit
@@ -72,6 +80,9 @@ interruption_leak_multiplier = 1.25
 provider = "mock"              # mock, local, lan_brain, cloud
 model = "default"
 max_tokens = 512
+temperature = 0.6
+context_recent_messages = 4
+context_char_budget = 2400
 timeout_seconds = 10.0
 daily_budget_usd = 1.0
 allow_cloud = true
@@ -81,6 +92,8 @@ enabled = false
 endpoint = "http://127.0.0.1:8080/v1"
 model = "local-model"
 timeout_seconds = 20.0
+context_tokens = 2048
+# keep_alive = "24h"  # optional: avoid cold starts on an always-on node
 
 [ai.lan]
 enabled = false
@@ -109,6 +122,7 @@ retention_days = 90
 auto_vacuum = true
 
 [personality]
+description = ""
 seed = "ailen-seed-01"
 evolution_enabled = true
 evolution_rate = 1.0

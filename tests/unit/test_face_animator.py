@@ -136,7 +136,9 @@ def test_face_animator_articulates_continuously_from_bounded_chunk_energy() -> N
     mouth_positions = {round(pose.mouth_open, 3) for pose in poses}
     head_positions = {round(pose.head_tilt, 3) for pose in poses}
     assert len(mouth_positions) >= 5
-    assert max(mouth_positions) - min(mouth_positions) > 0.20
+    # Fixed speech energy now carries only subtle articulation; the larger
+    # mouth dynamics come from the real PCM envelope fed by AudioCoordinator.
+    assert 0.03 < max(mouth_positions) - min(mouth_positions) < 0.15
     assert len(head_positions) >= 5
 
 

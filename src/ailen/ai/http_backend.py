@@ -112,7 +112,7 @@ class GenericOpenAiBackend(AiBackend):
             "model": self.model,
             "messages": formatted_messages,
             "max_tokens": request.max_output_tokens,
-            "temperature": 0.7,
+            "temperature": request.temperature,
         }
 
         # 2. Build HTTP request

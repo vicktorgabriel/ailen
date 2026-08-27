@@ -79,6 +79,7 @@ def test_lab_runner_single_flight_serialization() -> None:
     mock_conv.handle_user_input.assert_called_once_with(
         "Hola Ailén",
         session_id=runner._conversation_session_id,
+        input_modality="voice",
     )
 
 
@@ -238,3 +239,18 @@ def test_lab_runner_wires_vad_from_speech_config() -> None:
     assert collector.min_speech_ms == 160
     assert collector.silence_timeout_ms == 520
     assert collector._pre_roll_frame_count == 15
+
+
+def test_web_availability_does_not_require_cloud_ai() -> None:
+    cfg = AILENConfig()
+    cfg.network.outbound_web_enabled = True
+    cfg.ai.allow_cloud = False
+    cfg.ai.cloud.enabled = False
+    runner = LabRunner(config=cfg, dry_run=True, simulate=True)
+    runner.inspect_and_plan()
+    runner.init_components()
+
+    assert runner.conversation_coordinator is not None
+    assert runner.conversation_coordinator.internet_available is True
+    assert runner.conversation_coordinator.tool_network_allowed is True
+    assert runner.conversation_coordinator.cloud_allowed is False

@@ -36,6 +36,7 @@ from ailen.audio.pcm import (
 )
 from ailen.audio.piper_backend import PiperTtsBackend
 from ailen.audio.speech_text import normalize_text_for_speech, split_speech_into_sentences
+from ailen.audio.stt_cascade import CascadingSttBackend
 from ailen.audio.stt_quality import SttQualityAssessment, SttQualityEvaluator
 from ailen.audio.turn_gate import AudioTurnGate, GateState
 from ailen.audio.vad import EnergyVad, UtteranceCollector, VadProfile, get_vad_profile_timings
@@ -54,6 +55,7 @@ __all__ = [
     "AudioOutputBackend",
     "AudioSegment",
     "AudioTurnGate",
+    "CascadingSttBackend",
     "EnergyVad",
     "FakeAudioInputBackend",
     "FakeAudioOutputBackend",
@@ -81,5 +83,6 @@ __all__ = [
     "generate_tone_pcm",
     "get_vad_profile_timings",
     "normalize_text_for_speech",
+    "split_speech_for_streaming",
     "split_speech_into_sentences",
 ]

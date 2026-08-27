@@ -95,12 +95,20 @@ class SpeechConfig:
     stt_engine: str = "mock"  # "mock", "whisper_cpp", "vosk", "cloud"
     stt_language: str = "es"
     stt_model_path: str = ""
+    stt_fallback_engine: str = "none"  # "none", "whisper_cpp"
+    stt_fallback_model_path: str = ""
+    stt_fallback_confidence_threshold: float = 0.72
     tts_engine: str = "mock"  # "mock", "piper", "coqui", "cloud"
     tts_voice: str = "es_ES-standard"
     tts_model_path: str = ""
     tts_config_path: str = ""
-    vad_engine: str = "energy"  # "energy", "mock"
+    tts_rate: float = 1.0
+    tts_threads: int = 0
+    noise_suppression_engine: str = "none"  # "none", "webrtc"
+    noise_suppression_level: int = 2
+    vad_engine: str = "energy"  # "energy", "webrtc", "mock"
     vad_threshold: float = 0.02
+    vad_webrtc_mode: int = 2
     vad_hangover_ms: int = 120
     pre_roll_ms: int = 250
     silence_timeout_ms: int = 550
@@ -120,6 +128,10 @@ class AiLocalConfig:
     endpoint: str = "http://127.0.0.1:8080/v1"
     model: str = "local-model"
     timeout_seconds: float = 20.0
+    context_tokens: int = 2048
+    # Empty uses hardware/profile policy. Dedicated always-on nodes may keep the
+    # primary model resident (for example "24h") to avoid conversational cold starts.
+    keep_alive: str = ""
     # Optional small local model dedicated to bounded tool-intent parsing.
     # Empty means reuse the main local conversational backend.
     intent_model: str = ""
@@ -128,8 +140,9 @@ class AiLocalConfig:
 
 @dataclass
 class AiLanConfig:
-    """LAN Brain server configuration."""
+    """LAN Brain server configuration (laboratory/distributed deployments)."""
     enabled: bool = False
+    provider: str = "openai_compatible"  # "openai_compatible", "ollama_native"
     endpoint: str = "http://192.168.1.100:8080/v1"
     model: str = "lan-model"
     trusted: bool = False
@@ -162,6 +175,9 @@ class AiConfig:
     provider: str = "mock"  # "mock", "local", "lan_brain", "cloud"
     model: str = "default"
     max_tokens: int = 512
+    temperature: float = 0.6
+    context_recent_messages: int = 4
+    context_char_budget: int = 2400
     timeout_seconds: float = 10.0
     daily_budget_usd: float = 1.0
     allow_cloud: bool = True
@@ -183,6 +199,7 @@ class MemoryConfig:
 class PersonalityConfig:
     """Safe stylistic personality parameters, never authority or permissions."""
     seed: str = "ailen-seed-01"
+    description: str = ""
     evolution_enabled: bool = True
     evolution_rate: float = 1.0
     base_curiosity: float = 0.7
@@ -493,10 +510,24 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("audio.channels must be 1 (mono) or 2 (stereo)")
     if config.audio.frame_ms <= 0:
         errors.append("audio.frame_ms must be positive")
-    if config.speech.vad_engine not in {"energy", "mock"}:
-        errors.append("speech.vad_engine must be one of: energy, mock")
+    if config.speech.stt_fallback_engine not in {"none", "whisper_cpp"}:
+        errors.append("speech.stt_fallback_engine must be one of: none, whisper_cpp")
+    if not (0.0 <= config.speech.stt_fallback_confidence_threshold <= 1.0):
+        errors.append("speech.stt_fallback_confidence_threshold must be between 0.0 and 1.0")
+    if config.speech.noise_suppression_engine not in {"none", "webrtc"}:
+        errors.append("speech.noise_suppression_engine must be one of: none, webrtc")
+    if config.speech.noise_suppression_level not in {0, 1, 2, 3}:
+        errors.append("speech.noise_suppression_level must be between 0 and 3")
+    if not (0.5 <= config.speech.tts_rate <= 1.8):
+        errors.append("speech.tts_rate must be between 0.5 and 1.8")
+    if not (0 <= config.speech.tts_threads <= 32):
+        errors.append("speech.tts_threads must be between 0 and 32")
+    if config.speech.vad_engine not in {"energy", "webrtc", "mock"}:
+        errors.append("speech.vad_engine must be one of: energy, webrtc, mock")
     if not (0.0 <= config.speech.vad_threshold <= 1.0):
         errors.append("speech.vad_threshold must be between 0.0 and 1.0")
+    if config.speech.vad_webrtc_mode not in {0, 1, 2, 3}:
+        errors.append("speech.vad_webrtc_mode must be between 0 and 3")
     if config.speech.vad_hangover_ms < 0:
         errors.append("speech.vad_hangover_ms must be >= 0")
     if config.speech.pre_roll_ms < 0:
@@ -567,6 +598,8 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("vision.detector_score_threshold must be between 0.0 and 1.0")
     if config.vision.detector == "yunet" and not config.vision.detector_model_path.strip():
         errors.append("vision.detector_model_path is required when vision.detector=yunet")
+    if len(config.personality.description) > 1000:
+        errors.append("personality.description must be at most 1000 characters")
     personality_values = {
         "evolution_rate": config.personality.evolution_rate,
         "base_curiosity": config.personality.base_curiosity,
@@ -580,12 +613,24 @@ def validate_config(config: AILENConfig) -> list[str]:
     for name, value in personality_values.items():
         if not (0.0 <= value <= 1.0):
             errors.append(f"personality.{name} must be between 0.0 and 1.0")
+    if not (0.0 <= config.ai.temperature <= 2.0):
+        errors.append("ai.temperature must be between 0.0 and 2.0")
+    if not (1 <= config.ai.context_recent_messages <= 32):
+        errors.append("ai.context_recent_messages must be between 1 and 32")
+    if not (512 <= config.ai.context_char_budget <= 20000):
+        errors.append("ai.context_char_budget must be between 512 and 20000")
     if config.ai.timeout_seconds <= 0:
         errors.append("ai.timeout_seconds must be positive")
     if config.ai.daily_budget_usd < 0:
         errors.append("ai.daily_budget_usd must be >= 0")
     if config.ai.local.timeout_seconds <= 0:
         errors.append("ai.local.timeout_seconds must be positive")
+    if not (512 <= config.ai.local.context_tokens <= 32768):
+        errors.append("ai.local.context_tokens must be between 512 and 32768")
+    if config.ai.provider not in {"mock", "local", "lan_brain", "cloud"}:
+        errors.append("ai.provider must be one of: mock, local, lan_brain, cloud")
+    if config.ai.lan.provider not in {"openai_compatible", "ollama_native"}:
+        errors.append("ai.lan.provider must be one of: openai_compatible, ollama_native")
     if config.ai.lan.timeout_seconds <= 0:
         errors.append("ai.lan.timeout_seconds must be positive")
     if config.ai.cloud.timeout_seconds <= 0:

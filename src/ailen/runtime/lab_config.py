@@ -57,13 +57,21 @@ music_volume = 60
 [speech]
 stt_engine = "{stt_engine}"
 stt_language = "es"
+stt_fallback_engine = "none"
+stt_fallback_model_path = ""
+stt_fallback_confidence_threshold = 0.72
 stt_model_path = "{stt_path}"
 tts_engine = "piper"
 tts_voice = "{tts_voice}"
 tts_model_path = "{tts_model_path}"
 tts_config_path = "{tts_config_path}"
-vad_engine = "energy"
+tts_rate = 1.0
+tts_threads = 0
+noise_suppression_engine = "none"
+noise_suppression_level = 2
+vad_engine = "webrtc"
 vad_threshold = 0.02
+vad_webrtc_mode = 2
 vad_hangover_ms = 120
 pre_roll_ms = 250
 silence_timeout_ms = 550
@@ -107,6 +115,7 @@ endpoint = "{ai_endpoint}"
 model = "{ai_model}"
 trusted = true
 timeout_seconds = 60.0
+context_tokens = 2048
 
 [memory]
 sqlite_path = "runtime/lab/ailen_lab.db"
@@ -115,6 +124,7 @@ retention_days = 30
 auto_vacuum = true
 
 [personality]
+description = ""
 seed = "ailen-seed-01"
 evolution_enabled = true
 evolution_rate = 1.0

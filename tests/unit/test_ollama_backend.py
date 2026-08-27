@@ -91,3 +91,55 @@ def test_ollama_native_warmup_loads_without_prompt(monkeypatch) -> None:
         "stream": False,
         "keep_alive": "15m",
     }
+
+
+class _FakeStreamingResponse:
+    def __init__(self, payloads: list[dict], status: int = 200) -> None:
+        self._lines = [json.dumps(item).encode("utf-8") + b"\n" for item in payloads]
+        self.status = status
+
+    def __enter__(self):  # type: ignore[no-untyped-def]
+        return self
+
+    def __exit__(self, *args):  # type: ignore[no-untyped-def]
+        return False
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        return iter(self._lines)
+
+
+def test_ollama_native_stream_can_stop_after_first_complete_phrase(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return _FakeStreamingResponse([
+            {"model": "qwen3:1.7b", "message": {"content": "Qué bueno"}, "done": False},
+            {"model": "qwen3:1.7b", "message": {"content": ", che."}, "done": False},
+            {"model": "qwen3:1.7b", "message": {"content": " Ahora descansá."}, "done": False},
+        ])
+
+    monkeypatch.setattr("ailen.ai.ollama_backend.urllib.request.urlopen", fake_urlopen)
+    backend = OllamaNativeBackend(model="qwen3:1.7b", context_tokens=1536)
+    request = AiRequest(
+        request_id="voice-1",
+        messages=[ChatMessage(role="user", content="Terminé el trabajo")],
+        max_output_tokens=48,
+        timeout_seconds=15.0,
+    )
+    accumulated = ""
+
+    def on_delta(delta: str) -> bool:
+        nonlocal accumulated
+        accumulated += delta
+        return not accumulated.endswith(".")
+
+    response = backend.generate_stream(request, on_delta)
+
+    assert captured["payload"]["stream"] is True
+    assert captured["payload"]["think"] is False
+    assert captured["payload"]["options"]["num_ctx"] == 1536
+    assert captured["timeout"] == 15.0
+    assert response.text == "Qué bueno, che."
+    assert response.finish_reason == "client_stop"

@@ -72,7 +72,7 @@ def test_energy_vad_hangover_does_not_confirm_a_new_utterance() -> None:
     assert collector.is_in_utterance is False
 
 
-def test_energy_vad_hangover_bridges_real_voice_evidence_without_counting_gap() -> None:
+def test_energy_vad_start_evidence_resets_across_a_real_gap() -> None:
     vad = EnergyVad(threshold_rms=0.02, hangover_frames=2)
     collector = UtteranceCollector(
         vad=vad,
@@ -85,12 +85,16 @@ def test_energy_vad_hangover_bridges_real_voice_evidence_without_counting_gap() 
 
     collector.process_frame(voice)
     collector.process_frame(voice)
-    collector.process_frame(silence)  # bridged by hangover, but does not add evidence
+    collector.process_frame(silence)
     collector.process_frame(voice)
     _segment, is_active = collector.process_frame(voice)
 
+    assert is_active is False
+    assert collector.is_in_utterance is False
+
+    collector.process_frame(voice)
+    _segment, is_active = collector.process_frame(voice)
     assert is_active is True
-    assert collector.is_in_utterance is True
 
 
 def test_utterance_collector_completes_utterance_on_silence_timeout() -> None:
@@ -154,3 +158,15 @@ def test_utterance_collector_maximum_utterance_limit() -> None:
 
     assert seg is not None
     assert collector.is_in_utterance is False
+
+
+def test_webrtc_vad_applies_rms_floor_after_classifier(monkeypatch) -> None:
+    from ailen.audio.vad import WebRtcVad
+
+    vad = WebRtcVad(sample_rate=16000, frame_ms=20.0, mode=2, hangover_frames=0, min_rms=0.05)
+    monkeypatch.setattr(vad._vad, "is_speech", lambda _frame, _rate: True)
+    quiet = generate_tone_pcm(freq_hz=440.0, duration_ms=20.0, amplitude=0.02, sample_rate=16000)
+    loud = generate_tone_pcm(freq_hz=440.0, duration_ms=20.0, amplitude=0.2, sample_rate=16000)
+
+    assert vad.process_frame(quiet).is_trigger is False
+    assert vad.process_frame(loud).is_trigger is True

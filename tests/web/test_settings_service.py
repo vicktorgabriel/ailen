@@ -91,6 +91,25 @@ class TestSettingsGet(SettingsTestCase):
         self.assertTrue(by_key["speech.tts_engine"].options)
         self.assertTrue(by_key["updates.channel"].options)
 
+    def test_nested_ai_fields_are_read_and_updated(self):
+        service = self._service(BASE_TOML)
+        values = {f.key: f.value for f in service.get_fields()}
+        self.assertEqual(values["ai.local.model"], "local-model")
+        result = service.update({
+            "ai.local.enabled": "true",
+            "ai.local.endpoint": "http://127.0.0.1:11434/v1",
+            "ai.local.model": "qwen-test:q4",
+        })
+        self.assertTrue(result.ok, result.errors)
+        text = self.cfg_path.read_text(encoding="utf-8")
+        self.assertIn('[ai.local]', text)
+        self.assertIn('model = "qwen-test:q4"', text)
+
+    def test_api_secret_fields_are_not_web_editable(self):
+        keys = {spec.key for spec in FIELD_SPECS}
+        self.assertNotIn("ai.cloud.api_key_env", keys)
+        self.assertNotIn("ai.cloud.api_key_file", keys)
+
 
 class TestSettingsUpdate(SettingsTestCase):
     def test_valid_update_persists(self):

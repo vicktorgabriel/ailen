@@ -32,6 +32,7 @@ class RouteRequest:
     cloud_allowed: bool = False
     budget_exceeded: bool = False
     latency_preference: str = "normal"  # "low", "normal", "relaxed"
+    preferred_backend: str = ""  # explicit deployment preference: local/lan_brain/cloud
 
 
 @dataclass
@@ -173,6 +174,15 @@ class RuleBasedRouter:
         can_use_lan = request.lan_brain_available and lan_permitted
         can_use_local = request.local_backend_available
 
+        preferred_plan = self._route_preferred_backend(
+            request,
+            can_use_local=can_use_local,
+            can_use_lan=can_use_lan,
+            can_use_cloud=can_use_cloud,
+        )
+        if preferred_plan is not None:
+            return preferred_plan
+
         # 4. Route by DeviceProfile
         if request.profile == DeviceProfile.SATELLITE:
             return self._route_satellite(request, can_use_lan, can_use_cloud, cloud_permitted)
@@ -193,6 +203,38 @@ class RuleBasedRouter:
             can_use_lan,
             can_use_cloud,
             cloud_permitted,
+        )
+
+    def _route_preferred_backend(
+        self,
+        request: RouteRequest,
+        *,
+        can_use_local: bool,
+        can_use_lan: bool,
+        can_use_cloud: bool,
+    ) -> RoutePlan | None:
+        """Honor an explicit deployment backend preference when it is currently usable."""
+        preferred = request.preferred_backend.strip().lower()
+        available = {
+            ROUTE_LOCAL: can_use_local,
+            ROUTE_LAN_BRAIN: can_use_lan,
+            ROUTE_CLOUD: can_use_cloud,
+        }
+        if preferred not in available or not available[preferred]:
+            return None
+
+        ordered = [preferred]
+        for candidate in (ROUTE_LOCAL, ROUTE_LAN_BRAIN, ROUTE_CLOUD):
+            if candidate != preferred and available[candidate]:
+                ordered.append(candidate)
+        return RoutePlan(
+            primary_backend=ordered[0],
+            fallback_backends=ordered[1:],
+            reason_code=f"CONFIGURED_{preferred.upper()}_PREFERRED",
+            context_budget=4096 if preferred != ROUTE_LOCAL else 2048,
+            request_timeout=15.0 if preferred == ROUTE_LAN_BRAIN else 10.0,
+            privacy_decision="ALLOWED",
+            estimated_remote_allowance=preferred == ROUTE_CLOUD,
         )
 
     # -------------------------------------------------------------------------

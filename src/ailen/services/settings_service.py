@@ -40,6 +40,7 @@ class _FieldSpec:
     min_value: float | None = None
     max_value: float | None = None
     max_length: int = 200
+    allow_empty: bool = False
 
 
 _PROFILE_OPTIONS = tuple((p.value, p.value) for p in DeviceProfile)
@@ -109,6 +110,117 @@ FIELD_SPECS: tuple[_FieldSpec, ...] = (
                "Saludo automático al detectar presencia", "bool"),
     _FieldSpec("social.greeting_cooldown_seconds", "Comportamiento",
                "Cooldown de saludo (segundos)", "float", min_value=0),
+    # IA híbrida: el equipo siempre puede conservar un modelo local y,
+    # opcionalmente, preferir un proveedor externo. Las credenciales NO se
+    # administran desde esta allowlist.
+    _FieldSpec(
+        "ai.provider", "IA híbrida", "Backend conversacional preferido", "select",
+        options=(("local", "Local"), ("cloud", "API externa"), ("lan_brain", "LAN Brain (laboratorio)")),
+        help_text="Si el preferido no está disponible, el router usa los backends permitidos como fallback.",
+    ),
+    _FieldSpec("ai.max_tokens", "IA híbrida", "Máximo de tokens por respuesta", "int", min_value=32, max_value=2048),
+    _FieldSpec(
+        "ai.temperature", "IA híbrida", "Espontaneidad / temperatura", "float",
+        min_value=0, max_value=2,
+        help_text="Más alto = respuestas más variadas; no cambia permisos ni herramientas.",
+    ),
+    _FieldSpec(
+        "ai.context_recent_messages", "IA híbrida", "Mensajes recientes en contexto", "int",
+        min_value=1, max_value=32,
+        help_text="La memoria persiste en SQLite; esto sólo limita el historial enviado en cada inferencia.",
+    ),
+    _FieldSpec(
+        "ai.context_char_budget", "IA híbrida", "Presupuesto de contexto (caracteres)", "int",
+        min_value=512, max_value=20000,
+    ),
+    _FieldSpec("ai.allow_cloud", "IA híbrida", "Permitir uso de API externa", "bool"),
+    _FieldSpec("ai.local.enabled", "IA híbrida", "LLM local habilitado", "bool"),
+    _FieldSpec("ai.local.endpoint", "IA híbrida", "Endpoint del LLM local", "text", max_length=240),
+    _FieldSpec("ai.local.model", "IA híbrida", "Modelo local cuantizado", "text", max_length=160),
+    _FieldSpec(
+        "ai.local.context_tokens", "IA híbrida", "Contexto local Ollama (tokens)", "int",
+        min_value=512, max_value=32768,
+        help_text="Un contexto menor reduce RAM en equipos limitados; la memoria completa sigue en SQLite.",
+    ),
+    _FieldSpec(
+        "ai.lan.provider", "IA híbrida", "Transporte LAN Brain (laboratorio)", "select",
+        options=(("openai_compatible", "OpenAI-compatible"), ("ollama_native", "Ollama nativo")),
+        help_text="Sólo para laboratorios o nodos LAN confiables; no es requisito del producto final.",
+    ),
+    _FieldSpec(
+        "ai.cloud.enabled", "IA híbrida", "Proveedor externo habilitado", "bool",
+        help_text="La clave/API se carga por el almacén seguro o variable configurada; nunca se muestra aquí.",
+    ),
+    _FieldSpec(
+        "ai.cloud.provider", "IA híbrida", "Tipo de proveedor externo", "text",
+        help_text="Actualmente se admite cualquier endpoint OpenAI-compatible.", max_length=80, allow_empty=True,
+    ),
+    _FieldSpec("ai.cloud.endpoint", "IA híbrida", "Endpoint API externa", "text", max_length=300, allow_empty=True),
+    _FieldSpec("ai.cloud.model", "IA híbrida", "Modelo API externa", "text", max_length=180, allow_empty=True),
+    _FieldSpec("ai.cloud.daily_budget_usd", "IA híbrida", "Presupuesto diario USD", "float", min_value=0),
+    _FieldSpec("ai.cloud.monthly_budget_usd", "IA híbrida", "Presupuesto mensual USD", "float", min_value=0),
+    _FieldSpec(
+        "ai.cloud.input_cost_per_million", "IA híbrida", "Costo entrada / millón tokens", "float",
+        min_value=0, allow_empty=True,
+    ),
+    _FieldSpec(
+        "ai.cloud.output_cost_per_million", "IA híbrida", "Costo salida / millón tokens", "float",
+        min_value=0, allow_empty=True,
+    ),
+
+    # Escucha y voz avanzada.
+    _FieldSpec(
+        "speech.stt_fallback_engine", "Escucha y voz", "STT de rescate", "select",
+        options=(("none", "Sin rescate"), ("whisper_cpp", "Whisper.cpp local")),
+        help_text="Se usa sólo cuando el STT primario devuelve baja confianza o vacío.",
+    ),
+    _FieldSpec(
+        "speech.stt_fallback_confidence_threshold", "Escucha y voz",
+        "Umbral de confianza para STT de rescate", "float", min_value=0, max_value=1,
+    ),
+    _FieldSpec("speech.tts_rate", "Escucha y voz", "Velocidad de voz", "float", min_value=0.5, max_value=1.8),
+    _FieldSpec("speech.tts_threads", "Escucha y voz", "Hilos CPU para TTS (0=auto)", "int", min_value=0, max_value=32),
+    _FieldSpec(
+        "speech.noise_suppression_engine", "Escucha y voz", "Supresión de ruido", "select",
+        options=(("none", "Desactivada"), ("webrtc", "WebRTC")),
+    ),
+    _FieldSpec("speech.noise_suppression_level", "Escucha y voz", "Nivel de supresión de ruido", "int", min_value=0, max_value=3),
+    _FieldSpec(
+        "speech.vad_engine", "Escucha y voz", "Detector de voz", "select",
+        options=(("energy", "Energía"), ("webrtc", "WebRTC")),
+    ),
+    _FieldSpec("speech.vad_threshold", "Escucha y voz", "Piso de energía de voz", "float", min_value=0, max_value=1),
+    _FieldSpec("speech.vad_webrtc_mode", "Escucha y voz", "Agresividad WebRTC VAD", "int", min_value=0, max_value=3),
+    _FieldSpec("speech.min_speech_ms", "Escucha y voz", "Voz continua para abrir turno (ms)", "int", min_value=20, max_value=2000),
+    _FieldSpec("speech.silence_timeout_ms", "Escucha y voz", "Silencio para cerrar turno (ms)", "int", min_value=100, max_value=5000),
+    _FieldSpec("speech.interruption_enabled", "Escucha y voz", "Permitir interrumpir a Ailén mientras habla", "bool"),
+    _FieldSpec("speech.interruption_threshold_rms", "Escucha y voz", "Piso de energía para interrupción", "float", min_value=0.001, max_value=1),
+    _FieldSpec("speech.interruption_min_ms", "Escucha y voz", "Voz continua para interrumpir (ms)", "int", min_value=40, max_value=3000),
+
+    # Personalidad: parámetros acotados de estilo, nunca permisos.
+    _FieldSpec(
+        "personality.description", "Personalidad", "Descripción del personaje", "text",
+        help_text="Rasgos narrativos y forma de reaccionar. No concede permisos ni capacidades.",
+        max_length=1000, allow_empty=True,
+    ),
+    _FieldSpec("personality.base_curiosity", "Personalidad", "Curiosidad", "float", min_value=0, max_value=1),
+    _FieldSpec("personality.base_sociability", "Personalidad", "Sociabilidad / iniciativa", "float", min_value=0, max_value=1),
+    _FieldSpec("personality.base_formality", "Personalidad", "Formalidad", "float", min_value=0, max_value=1),
+    _FieldSpec("personality.base_humor", "Personalidad", "Humor", "float", min_value=0, max_value=1),
+    _FieldSpec("personality.base_verbosity", "Personalidad", "Verbosity", "float", min_value=0, max_value=1),
+    _FieldSpec("personality.base_patience", "Personalidad", "Paciencia", "float", min_value=0, max_value=1),
+    _FieldSpec("personality.base_expressiveness", "Personalidad", "Expresividad", "float", min_value=0, max_value=1),
+
+    # Sensores / percepción.
+    _FieldSpec(
+        "vision.camera_source", "Sensores", "Fuente de cámara", "select",
+        options=(("auto", "Automática"), ("usb", "USB"), ("rtsp", "RTSP")),
+    ),
+    _FieldSpec(
+        "vision.detector", "Sensores", "Detector visual", "select",
+        options=(("haar", "Haar"), ("yunet", "YuNet")),
+    ),
+
     # Actualizaciones
     _FieldSpec(
         "updates.channel", "Actualizaciones", "Canal de actualización", "select",
@@ -197,13 +309,20 @@ class SettingsService:
     # -- helpers -------------------------------------------------------------
 
     @staticmethod
-    def _split(key: str) -> tuple[str, str]:
-        section, _, attr = key.partition(".")
-        return section, attr
+    def _resolve_parent(cfg: AILENConfig, key: str) -> tuple[Any, str]:
+        parts = key.split(".")
+        if len(parts) < 2 or any(not part for part in parts):
+            raise ValueError(f"Invalid setting path: {key!r}")
+        target: Any = cfg
+        for part in parts[:-1]:
+            target = getattr(target, part)
+        return target, parts[-1]
 
     def _read(self, cfg: AILENConfig, spec: _FieldSpec) -> str:
-        section, attr = self._split(spec.key)
-        value = getattr(getattr(cfg, section), attr)
+        target, attr = self._resolve_parent(cfg, spec.key)
+        value = getattr(target, attr)
+        if value is None:
+            return ""
         if spec.kind == "bool":
             return "true" if value else "false"
         if isinstance(value, DeviceProfile | SocialMode):
@@ -211,8 +330,7 @@ class SettingsService:
         return str(value)
 
     def _apply(self, cfg: AILENConfig, spec: _FieldSpec, value: Any) -> None:
-        section, attr = self._split(spec.key)
-        target = getattr(cfg, section)
+        target, attr = self._resolve_parent(cfg, spec.key)
         current = getattr(target, attr)
         if isinstance(current, DeviceProfile):
             setattr(target, attr, DeviceProfile(value))
@@ -224,7 +342,7 @@ class SettingsService:
     def _convert(self, spec: _FieldSpec, raw: str, errors: dict[str, str]) -> Any:
         raw = raw.strip()
         if spec.kind == "text":
-            if not raw:
+            if not raw and not spec.allow_empty:
                 errors[spec.key] = "No puede estar vacío."
             elif len(raw) > spec.max_length:
                 errors[spec.key] = f"Máximo {spec.max_length} caracteres."
@@ -234,6 +352,8 @@ class SettingsService:
             if raw not in allowed:
                 errors[spec.key] = "Opción inválida."
             return raw
+        if spec.allow_empty and not raw and spec.kind in {"int", "float"}:
+            return None
         if spec.kind == "int":
             try:
                 value: Any = int(raw)

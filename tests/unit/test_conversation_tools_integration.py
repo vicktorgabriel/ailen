@@ -565,3 +565,33 @@ def test_live_weather_without_provider_never_reaches_llm() -> None:
     assert not fake_ai.generate.called
     assert "búsqueda web no está configurado" in response.text
     assert plan.reason_code == "RULE_ONLY_TOOL"
+
+
+def test_conversation_affect_metadata_is_stripped_and_applied() -> None:
+    assert ConversationCoordinator._extract_conversational_expression(
+        "Qué bueno verte así. [[face:happy]]"
+    ) == ("Qué bueno verte así.", "happy")
+    assert ConversationCoordinator._extract_conversational_expression(
+        "Hola. [[face:wink]]"
+    ) == ("Hola.", None)
+    assert ConversationCoordinator._extract_conversational_expression(
+        "Sin metadata"
+    ) == ("Sin metadata", None)
+
+
+def test_conversation_expression_prefix_is_stripped_for_early_voice_reaction() -> None:
+    assert ConversationCoordinator._extract_conversational_expression(
+        "[[face:happy]] Qué bueno, salió bien."
+    ) == ("Qué bueno, salió bien.", "happy")
+    assert ConversationCoordinator._extract_conversational_expression(
+        "[[face:not_real]] Hola."
+    ) == ("Hola.", None)
+
+
+def test_conversation_expression_accepts_compact_model_prefix_but_keeps_whitelist() -> None:
+    assert ConversationCoordinator._extract_conversational_expression(
+        "[[confused]] No entendí bien."
+    ) == ("No entendí bien.", "confused")
+    assert ConversationCoordinator._extract_conversational_expression(
+        "[[exhausted]] Hola."
+    ) == ("Hola.", None)

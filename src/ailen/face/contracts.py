@@ -7,6 +7,25 @@ from typing import Protocol, runtime_checkable
 
 from ailen.domain.enums import AssistantState
 
+FACE_EXPRESSIONS: tuple[str, ...] = (
+    "neutral",
+    "happy",
+    "curious",
+    "surprised",
+    "confused",
+    "wink",
+    "focused",
+    "sad",
+    "skeptical",
+    "excited",
+    "playful",
+)
+
+# Autonomous conversational affect excludes deliberate social gestures such as wink.
+CONVERSATIONAL_EXPRESSIONS: tuple[str, ...] = tuple(
+    expression for expression in FACE_EXPRESSIONS if expression != "wink"
+)
+
 
 @runtime_checkable
 class FaceController(Protocol):

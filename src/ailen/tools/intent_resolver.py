@@ -87,6 +87,13 @@ class IntentResolver:
         if status_res:
             return status_res
 
+        # 9. Natural freshness questions. Local tools above get first refusal;
+        # only an actual question asking for time-sensitive public information
+        # is sent to web, so casual phrases such as "hoy estoy cansado" remain chat.
+        fresh_web_res = self._match_fresh_web_question(cleaned, text)
+        if fresh_web_res:
+            return fresh_web_res
+
         # Default: General conversational chat handled by AI Router
         return IntentResolution(intent="chat", raw_text=text, requires_llm=True, confidence=0.5)
 
@@ -524,6 +531,49 @@ class IntentResolver:
                 raw_text=raw_text,
             )
         return None
+
+    @staticmethod
+    def _match_fresh_web_question(clean: str, raw_text: str) -> IntentResolution | None:
+        """Route natural questions that explicitly require fresh public data to web."""
+        question_markers = (
+            "qué ", "que ", "cómo ", "como ", "cuál ", "cual ", "cuánto ", "cuanto ",
+            "dónde ", "donde ", "quién ", "quien ", "hay ", "pasó ", "paso ",
+        )
+        is_question = raw_text.lstrip().startswith("¿") or raw_text.rstrip().endswith("?")
+        is_question = is_question or any(clean.startswith(marker) for marker in question_markers)
+        if not is_question:
+            return None
+
+        freshness_markers = (
+            " hoy", "hoy ", " ahora", "ahora ", "actualmente", " actual", "actual ",
+            "último", "ultimo", "última", "ultima", "reciente", "esta semana",
+            "este mes", "cotización", "cotizacion", "precio de hoy", "precio actual",
+            "en este momento",
+        )
+        if not any(marker in f" {clean} " for marker in freshness_markers):
+            return None
+
+        tool_args: dict[str, Any] = {"query": raw_text.strip()}
+        news_markers = (
+            "qué pasó", "que paso", "noticias", "novedades", "últimas noticias",
+            "ultimas noticias", "qué ocurrió", "que ocurrio",
+        )
+        if any(marker in clean for marker in news_markers):
+            tool_args["category"] = "news"
+            if "hoy" in clean or "ahora" in clean:
+                tool_args["freshness"] = "day"
+            elif "esta semana" in clean:
+                tool_args["freshness"] = "week"
+            elif "este mes" in clean:
+                tool_args["freshness"] = "month"
+        return IntentResolution(
+            intent="web_search",
+            tool_name="web_search",
+            tool_args=tool_args,
+            requires_llm=True,
+            confidence=1.0,
+            raw_text=raw_text,
+        )
 
     def _match_web_search(self, clean: str, raw_text: str) -> IntentResolution | None:
         search_prefixes = (

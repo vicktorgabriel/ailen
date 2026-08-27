@@ -93,15 +93,27 @@ class VoskSttBackend(SttBackend):
 
         try:
             rec = self._vosk_module.KaldiRecognizer(self._model, segment.sample_rate)
+            rec.SetWords(True)
             rec.AcceptWaveform(segment.data)
             res = json.loads(rec.FinalResult())
             text = res.get("text", "").strip()
+            word_items = res.get("result", [])
+            word_confidences = [
+                float(item["conf"])
+                for item in word_items
+                if isinstance(item, dict) and isinstance(item.get("conf"), (int, float))
+            ]
+            confidence = (
+                sum(word_confidences) / len(word_confidences)
+                if word_confidences
+                else None
+            )
 
             latency_ms = (time.monotonic() - start_t) * 1000.0
             return Transcript(
                 text=text,
                 language="es",
-                confidence=None,
+                confidence=confidence,
                 latency_ms=latency_ms,
             )
         except Exception as e:  # noqa: BLE001

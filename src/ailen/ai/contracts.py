@@ -4,6 +4,7 @@ Interfaces alineadas con docs/architecture/MODULE_CONTRACTS.md sección 5.
 El Core nunca conoce marcas/modelos concretos; el Router elige el backend.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -47,6 +48,7 @@ class AiRequest:
     mode: SocialMode = SocialMode.WORKSHOP
     allowed_tools: list[str] = field(default_factory=list)
     max_output_tokens: int = 512
+    temperature: float = 0.4
     timeout_seconds: float = 10.0
     privacy_level: PrivacyLevel = PrivacyLevel.PRIVATE
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -79,6 +81,19 @@ class BackendHealth:
     """Health of an AI backend."""
     status: ServiceStatus = ServiceStatus.UNKNOWN
     detail: str = ""
+
+
+@runtime_checkable
+class StreamingAiBackend(Protocol):
+    """Optional token-streaming AI backend used for low-latency voice turns."""
+
+    def generate_stream(
+        self,
+        request: AiRequest,
+        on_text_delta: Callable[[str], bool | None],
+    ) -> AiResponse:
+        """Generate incrementally; callback may return False to stop early."""
+        ...
 
 
 @runtime_checkable

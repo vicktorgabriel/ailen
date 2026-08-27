@@ -24,6 +24,7 @@ from ailen.audio.speech_text import normalize_text_for_speech
 from ailen.core.capabilities import CapabilityRegistry
 from ailen.core.personality import PersonalityService
 from ailen.domain.enums import DeviceProfile, PrivacyLevel, SocialMode
+from ailen.face.contracts import CONVERSATIONAL_EXPRESSIONS, FaceController
 from ailen.memory.repository import MemoryRepository
 from ailen.tools.contracts import ToolContext
 from ailen.tools.executor import ToolExecutor
@@ -42,6 +43,7 @@ class ConversationCoordinator:
         router: RuleBasedRouter,
         orchestrator: AiOrchestrator,
         audio_coordinator: AudioInteractionCoordinator | None = None,
+        face_controller: FaceController | None = None,
         tool_executor: ToolExecutor | None = None,
         intent_resolver: IntentResolver | None = None,
         semantic_intent_resolver: SemanticToolIntentResolver | None = None,
@@ -54,16 +56,19 @@ class ConversationCoordinator:
         tool_network_allowed: bool = False,
         cloud_allowed: bool = False,
         lan_brain_trusted: bool = False,
+        preferred_backend: str = "",
         budget_policy: BudgetPolicy | None = None,
         runtime_context_provider: Callable[[], dict[str, Any]] | None = None,
         repository: MemoryRepository | None = None,
         personality_service: PersonalityService | None = None,
+        persona_description: str = "",
         capability_registry: CapabilityRegistry | None = None,
     ) -> None:
         self.context_builder = context_builder
         self.router = router
         self.orchestrator = orchestrator
         self.audio_coordinator = audio_coordinator
+        self.face_controller = face_controller
         self.tool_executor = tool_executor
         self.intent_resolver = intent_resolver or IntentResolver()
         self.semantic_intent_resolver = semantic_intent_resolver
@@ -76,10 +81,12 @@ class ConversationCoordinator:
         self.tool_network_allowed = tool_network_allowed
         self.cloud_allowed = cloud_allowed
         self.lan_brain_trusted = lan_brain_trusted
+        self.preferred_backend = preferred_backend
         self.budget_policy = budget_policy
         self.runtime_context_provider = runtime_context_provider
         self.repository = repository
         self.personality_service = personality_service
+        self.persona_description = persona_description.strip()[:1000]
         self.capability_registry = capability_registry
 
     def handle_user_input(
@@ -88,6 +95,7 @@ class ConversationCoordinator:
         session_id: str | None = None,
         intent: str = "chat",
         trace_id: str | None = None,
+        input_modality: str = "text",
     ) -> tuple[AiResponse, RoutePlan]:
         """Process user text through intent resolver, tools or AI router, and speech output."""
         turn_id = trace_id or f"turn-{uuid.uuid4().hex[:10]}"
@@ -122,6 +130,11 @@ class ConversationCoordinator:
                 self._persist_turn(session_id, user_text, response)
                 self._log_timing(turn_id, "turn_total", turn_started)
                 return response, plan
+
+        if self.personality_service is not None and self.mode in {
+            SocialMode.HOME, SocialMode.WORKSHOP, SocialMode.PRIVATE
+        }:
+            self.personality_service.observe_user_style(text)
 
         # 0. Core capability questions are answered from the live registry.
         capability_response = self._resolve_capabilities_question(text)
@@ -353,6 +366,7 @@ class ConversationCoordinator:
             local_backend_available="local" in self.orchestrator.backends or "fake" in self.orchestrator.backends,
             cloud_allowed=self.cloud_allowed,
             budget_exceeded=budget_exceeded,
+            preferred_backend=self.preferred_backend,
         )
 
         plan = self.router.route(route_req)
@@ -383,12 +397,19 @@ class ConversationCoordinator:
             lan_trusted=self.lan_brain_trusted,
             metadata={
                 "voice_output": self.audio_coordinator is not None,
+                "input_modality": input_modality,
                 "runtime_context": runtime_context,
                 "untrusted_web_context": web_tool_context,
                 "personality_style": (
                     self.personality_service.prompt_style()
                     if self.personality_service is not None
                     else ""
+                ),
+                "persona_description": self.persona_description,
+                "conversational_expressions": (
+                    list(CONVERSATIONAL_EXPRESSIONS)
+                    if self.face_controller is not None
+                    else []
                 ),
                 "capabilities": capabilities,
             },
@@ -401,9 +422,32 @@ class ConversationCoordinator:
             message_count=len(ai_req.messages),
         )
 
-        # 5. Execute inference via orchestrator
+        # 5. Execute inference. Voice turns stop at the first useful complete
+        # sentence so TTS can start while a small local model is still cheap.
         stage_started = time.monotonic()
-        response, plan = self.orchestrator.execute(ai_req, plan=plan, session_id=session_id)
+        streaming_voice = self.audio_coordinator is not None and input_modality == "voice"
+        if streaming_voice:
+            streamed_text = ""
+
+            def accept_voice_delta(delta: str) -> bool:
+                nonlocal streamed_text
+                streamed_text += delta
+                visible = re.sub(r"\[\[(?:face:)?[a-z_]+\]\]", "", streamed_text, flags=re.IGNORECASE)
+                visible = visible.strip()
+                if len(visible) >= 24 and visible.endswith((".", "!", "?")):
+                    return False
+                return len(visible) < 180
+
+            response, plan = self.orchestrator.execute_stream_until(
+                ai_req,
+                plan=plan,
+                on_text_delta=accept_voice_delta,
+                session_id=session_id,
+            )
+            if response.finish_reason == "client_stop":
+                response.finish_reason = "stop"
+        else:
+            response, plan = self.orchestrator.execute(ai_req, plan=plan, session_id=session_id)
         self._log_timing(
             turn_id,
             "main_llm",
@@ -418,7 +462,19 @@ class ConversationCoordinator:
             generation_ms=response.usage.generation_ms,
             load_ms=response.usage.load_ms,
         )
+        response.text, expression = self._extract_conversational_expression(response.text)
         response.text = self._strip_generic_followup(response.text)
+        if expression is not None and self.face_controller is not None:
+            try:
+                self.face_controller.set_expression(expression, duration_seconds=7.5)
+                logger.info(
+                    "conversation_affect expression=%s provider=%s model=%s",
+                    expression,
+                    response.provider,
+                    response.model,
+                )
+            except ValueError:
+                logger.debug("Ignoring invalid conversational expression: %s", expression)
         if self.audio_coordinator is not None and response.finish_reason == "length":
             response.text = self._close_truncated_voice_response(response.text)
 
@@ -609,6 +665,29 @@ class ConversationCoordinator:
         return None
 
     @staticmethod
+    def _extract_conversational_expression(text: str) -> tuple[str, str | None]:
+        """Strip one optional model affect marker and validate it against Face vocabulary."""
+        cleaned = text.strip()
+        prefix = re.match(r"^\s*\[\[(?:face:)?([a-z_]+)\]\]\s*", cleaned, flags=re.IGNORECASE)
+        if prefix:
+            expression = prefix.group(1).lower()
+            visible = cleaned[prefix.end():].strip()
+            return (
+                visible,
+                expression if expression in CONVERSATIONAL_EXPRESSIONS else None,
+            )
+
+        trailer = re.search(r"\s*\[\[(?:face:)?([a-z_]+)\]\]\s*$", cleaned, flags=re.IGNORECASE)
+        if not trailer:
+            return cleaned, None
+        expression = trailer.group(1).lower()
+        visible = cleaned[: trailer.start()].rstrip()
+        return (
+            visible,
+            expression if expression in CONVERSATIONAL_EXPRESSIONS else None,
+        )
+
+    @staticmethod
     def _strip_generic_followup(text: str) -> str:
         """Remove repetitive canned closing questions when useful content precedes them."""
         cleaned = text.strip()
@@ -710,6 +789,11 @@ class ConversationCoordinator:
                 spoken_text = normalize_text_for_speech(text)
                 if spoken_text:
                     self.audio_coordinator.speak(spoken_text, voice_id=self.tts_voice_id)
+                    if (
+                        self.audio_coordinator.last_speech_interrupted
+                        and self.personality_service is not None
+                    ):
+                        self.personality_service.observe_interruption()
             except Exception as e:  # noqa: BLE001
                 logger.warning("Error outputting audio speech: %s", e)
             finally:

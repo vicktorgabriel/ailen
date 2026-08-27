@@ -36,6 +36,7 @@ from ailen.audio.fake import (
     FakeTtsBackend,
 )
 from ailen.audio.piper_backend import PiperTtsBackend, piper_runtime_available
+from ailen.audio.stt_cascade import CascadingSttBackend
 from ailen.audio.vosk_backend import VoskSttBackend
 from ailen.audio.whisper_backend import WhisperCppSttBackend
 from ailen.core.config import AILENConfig
@@ -574,6 +575,25 @@ class LabComponentFactory:
             vosk_backend = VoskSttBackend(model_path=model_path_str)
             vosk_health = vosk_backend.health()
             if vosk_health.status == ServiceStatus.HEALTHY:
+                if self.config.speech.stt_fallback_engine == "whisper_cpp":
+                    fallback_path = self.config.speech.stt_fallback_model_path.strip()
+                    fallback_backend = WhisperCppSttBackend(model_path=fallback_path)
+                    fallback_health = fallback_backend.health()
+                    if fallback_health.status == ServiceStatus.HEALTHY:
+                        cascade = CascadingSttBackend(
+                            primary=vosk_backend,
+                            fallback=fallback_backend,
+                            confidence_threshold=self.config.speech.stt_fallback_confidence_threshold,
+                        )
+                        return cascade, ComponentStatus(
+                            name="STT",
+                            backend="Vosk + whisper.cpp fallback",
+                            state="READY",
+                            detail=(
+                                f"Vosk primary '{model_path_str}', fallback '{fallback_path}' "
+                                f"below confidence {self.config.speech.stt_fallback_confidence_threshold:.2f}"
+                            ),
+                        )
                 return vosk_backend, ComponentStatus(
                     name="STT", backend="Vosk", state="READY", detail=f"Vosk model '{model_path_str}' loaded"
                 )
@@ -645,6 +665,7 @@ class LabComponentFactory:
             piper_backend = PiperTtsBackend(
                 model_path=model_path_str,
                 config_path=self.config.speech.tts_config_path,
+                threads=self.config.speech.tts_threads,
             )
             piper_health = piper_backend.health()
             if piper_health.status == ServiceStatus.HEALTHY:
@@ -714,8 +735,11 @@ class LabComponentFactory:
 
             if resolved_model:
                 if rt.runtime_type == RuntimeType.OLLAMA:
-                    keep_alive = ModelResidencyPolicy.get_default_keep_alive(
-                        inference_profile or InferenceProfile.BALANCED
+                    keep_alive = (
+                        self.config.ai.local.keep_alive.strip()
+                        or ModelResidencyPolicy.get_default_keep_alive(
+                            inference_profile or InferenceProfile.BALANCED
+                        )
                     )
                     backends["local"] = OllamaNativeBackend(
                         endpoint=rt.endpoint,
@@ -723,6 +747,7 @@ class LabComponentFactory:
                         timeout_seconds=self.config.ai.local.timeout_seconds,
                         think=False,
                         keep_alive=keep_alive,
+                        context_tokens=self.config.ai.local.context_tokens,
                     )
                     local_problem = (
                         f"Ollama native API at {rt.endpoint} using '{resolved_model}' "
@@ -746,13 +771,28 @@ class LabComponentFactory:
         # Optional trusted/untrusted LAN Brain. Routing/privacy policy decides
         # whether its trust level permits a given request.
         if self.config.ai.lan.enabled:
-            lan_backend = LanBrainAiBackend(
-                endpoint=self.config.ai.lan.endpoint,
-                model=self.config.ai.lan.model,
-                timeout_seconds=self.config.ai.lan.timeout_seconds,
-                trusted=self.config.ai.lan.trusted,
-            )
-            if lan_backend.health().status == ServiceStatus.HEALTHY:
+            lan_backend: AiBackend | None
+            if self.config.ai.lan.provider == "ollama_native":
+                if not self.config.ai.lan.trusted:
+                    logger.warning("Refusing native remote Ollama LAN backend because ai.lan.trusted=false")
+                    lan_backend = None
+                else:
+                    lan_backend = OllamaNativeBackend(
+                        endpoint=self.config.ai.lan.endpoint,
+                        model=self.config.ai.lan.model,
+                        timeout_seconds=self.config.ai.lan.timeout_seconds,
+                        think=False,
+                        keep_alive="30m",
+                        allow_remote=True,
+                    )
+            else:
+                lan_backend = LanBrainAiBackend(
+                    endpoint=self.config.ai.lan.endpoint,
+                    model=self.config.ai.lan.model,
+                    timeout_seconds=self.config.ai.lan.timeout_seconds,
+                    trusted=self.config.ai.lan.trusted,
+                )
+            if lan_backend is not None and lan_backend.health().status == ServiceStatus.HEALTHY:
                 backends["lan_brain"] = lan_backend
 
         # Cloud uses the same SecretResolver/config contract audited in R3A; no

@@ -121,7 +121,7 @@ class PersonalityFeedback:
 
 
 class PersonalityService:
-    """Persistent bounded personality profile with explicit-feedback learning only."""
+    """Persistent bounded personality profile with slow, safe style adaptation."""
 
     def __init__(
         self,
@@ -208,6 +208,51 @@ class PersonalityService:
                 return self.adjust(trait=trait, delta=delta, reason=text.strip())
         return None
 
+    def observe_user_style(self, text: str) -> None:
+        """Slowly mirror harmless conversational style while preserving the preset identity."""
+        if not self.enabled or not text.strip():
+            return
+        import unicodedata
+
+        clean = " ".join(text.lower().strip().split())
+        clean = "".join(
+            ch for ch in unicodedata.normalize("NFD", clean)
+            if unicodedata.category(ch) != "Mn"
+        )
+        words = set(clean.split())
+        if words.intersection({"che", "vos", "dale", "joya", "buenisimo", "genial"}):
+            self._nudge_from_observation("formality", -0.006, "observed informal conversation")
+        if any(marker in clean for marker in ("jaja", "jeje", "jajaja", "me hiciste reir")):
+            self._nudge_from_observation("humor", 0.008, "observed playful conversation")
+        if any(marker in clean for marker in ("por favor", "podrias", "podrias explicarme")):
+            self._nudge_from_observation("patience", 0.003, "observed deliberate conversation")
+
+    def observe_interruption(self) -> None:
+        """Treat repeated barge-in as a strong preference for shorter spoken replies."""
+        if not self.enabled:
+            return
+        self._nudge_from_observation("verbosity", -0.025, "spoken response interrupted")
+
+    def _nudge_from_observation(self, trait: str, delta: float, reason: str) -> None:
+        current = self.current()
+        default_value = getattr(self.defaults, trait)
+        lower = max(0.0, default_value - 0.25)
+        upper = min(1.0, default_value + 0.25)
+        next_value = max(lower, min(upper, getattr(current, trait) + delta * self.evolution_rate))
+        if abs(next_value - getattr(current, trait)) < 1e-9:
+            return
+        self._memory_traits[trait] = next_value
+        if self.repository is not None:
+            try:
+                self.repository.set_personality_trait(
+                    identity_id=self.identity_id,
+                    trait_name=trait,
+                    trait_value=next_value,
+                    reason=reason,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not persist observed personality adaptation: %s", exc)
+
     def prompt_style(self) -> str:
         """Translate numeric traits into compact behavioral guidance for the LLM."""
         traits = self.current()
@@ -230,7 +275,7 @@ class PersonalityService:
         if traits.humor >= 0.65:
             guidance.append("humor ligero ocasional, nunca forzado.")
         if traits.curiosity >= 0.65:
-            guidance.append("Mostrá curiosidad e interés genuino sin preguntar por rutina.")
+            guidance.append("Mostrá curiosidad en el tono; no conviertas comentarios casuales en preguntas.")
         if traits.initiative >= 0.65:
             guidance.append("Proponé el siguiente paso sólo si tiene utilidad concreta.")
         if traits.patience >= 0.65:

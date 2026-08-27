@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable
 
 from ailen.domain.enums import AssistantState
+from ailen.face.contracts import FACE_EXPRESSIONS
 from ailen.face.models import FacePose
 
 
@@ -25,19 +26,7 @@ class FaceAnimator:
     - Deterministic testing support via injectable clock and PRNG seed.
     """
 
-    SUPPORTED_EXPRESSIONS = (
-        "neutral",
-        "happy",
-        "curious",
-        "surprised",
-        "confused",
-        "wink",
-        "focused",
-        "sad",
-        "skeptical",
-        "excited",
-        "playful",
-    )
+    SUPPORTED_EXPRESSIONS = FACE_EXPRESSIONS
 
     def __init__(
         self,
@@ -291,9 +280,14 @@ class FaceAnimator:
                 speech_elapsed * math.tau * 7.3 + 0.8
             )
             articulation = 0.72 * syllable + 0.28 * consonant
-            energy = 0.55 + 0.45 * self._speech_level
-            mouth_open = 0.10 + 0.68 * energy * articulation
-            mouth_width += 0.08 * math.sin(speech_elapsed * math.tau * 2.3 + 0.4)
+            # The coordinator now updates speech_level from the real playback PCM
+            # envelope. Keep only a subtle carrier here so phonetic motion remains
+            # lively without overriding real pauses and energy changes.
+            carrier = 0.78 + 0.22 * articulation
+            mouth_open = 0.04 + 0.86 * self._speech_level * carrier
+            mouth_width += 0.05 * self._speech_level * math.sin(
+                speech_elapsed * math.tau * 2.3 + 0.4
+            )
             head_tilt += 0.045 * math.sin(speech_elapsed * math.tau * 0.75)
             base_eye_open += 0.025 * math.sin(speech_elapsed * math.tau * 1.2)
             pupil_size += 0.018 * math.sin(speech_elapsed * math.tau * 1.7)

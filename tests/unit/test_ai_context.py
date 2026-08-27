@@ -164,3 +164,69 @@ def test_ai_context_includes_declarative_runtime_capabilities() -> None:
     assert "face.expression" in req.system_context
     assert "Sólo afirmes que podés ejecutar acciones incluidas en esa lista" in req.system_context
     assert "web en vivo=no" not in req.system_context
+
+
+def test_voice_turn_includes_bounded_sensor_and_persona_context() -> None:
+    builder = AiContextBuilder()
+    req = builder.build_request(
+        "hola",
+        destination="local",
+        metadata={
+            "input_modality": "voice",
+            "voice_output": True,
+            "persona_description": "Sos curiosa y espontánea.",
+            "runtime_context": {
+                "microphone_active": True,
+                "speech_output_active": True,
+                "camera_active": False,
+            },
+        },
+    )
+    assert "micrófono" in req.system_context
+    assert "entrada de voz activa" in req.system_context
+    assert "Sos curiosa y espontánea" in req.system_context
+    assert "tono emocional" in req.system_context
+
+
+def test_voice_context_declares_bounded_conversational_expression_contract() -> None:
+    req = AiContextBuilder().build_request(
+        "hola",
+        metadata={
+            "voice_output": True,
+            "conversational_expressions": ["neutral", "happy", "curious"],
+        },
+    )
+    assert "[[face:expresion]]" in req.system_context
+    assert "neutral, happy, curious" in req.system_context
+
+
+def test_context_builder_sets_configured_temperature() -> None:
+    req = AiContextBuilder(temperature=0.73).build_request("hola")
+    assert req.temperature == 0.73
+
+
+def test_compact_voice_context_stays_bounded_for_small_models() -> None:
+    req = AiContextBuilder(max_char_budget=2200).build_request(
+        "hola",
+        destination="local",
+        metadata={
+            "voice_output": True,
+            "input_modality": "voice",
+            "persona_description": "Cálida, curiosa y espontánea.",
+            "personality_style": "Tono informal y breve.",
+            "conversational_expressions": ["neutral", "happy", "curious"],
+            "runtime_context": {
+                "microphone_active": True,
+                "speech_output_active": True,
+                "camera_active": False,
+            },
+        },
+    )
+    assert len(req.system_context) < 1600
+
+
+def test_ai_context_keeps_assistant_identity_distinct_from_user() -> None:
+    builder = AiContextBuilder(default_identity_name="Ailén")
+    request = builder.build_request("Hola", identity_name="Ailén")
+    assert "Tu nombre es Ailén" in request.system_context
+    assert "no llames Ailén al usuario" in request.system_context

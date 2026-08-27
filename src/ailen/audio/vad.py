@@ -4,6 +4,7 @@ Provides energy/RMS-based voice detection and temporal utterance grouping
 without requiring heavy external machine learning dependencies.
 """
 
+import importlib.util
 from collections import deque
 from enum import Enum
 
@@ -70,6 +71,61 @@ class EnergyVad(VoiceActivityDetector):
 
     def reset(self) -> None:
         """Reset hangover counters."""
+        self._hangover_counter = 0
+
+
+class WebRtcVad(VoiceActivityDetector):
+    """WebRTC voice classifier with a short output hangover for fluent speech."""
+
+    def __init__(
+        self,
+        sample_rate: int = 16000,
+        frame_ms: float = 20.0,
+        mode: int = 2,
+        hangover_frames: int = 4,
+        min_rms: float = 0.0,
+    ) -> None:
+        if sample_rate not in {8000, 16000, 32000, 48000}:
+            raise ValueError("WebRTC VAD requires 8/16/32/48 kHz audio")
+        if int(frame_ms) not in {10, 20, 30} or frame_ms != int(frame_ms):
+            raise ValueError("WebRTC VAD requires 10, 20, or 30 ms frames")
+        if mode not in {0, 1, 2, 3}:
+            raise ValueError("WebRTC VAD mode must be 0..3")
+        if importlib.util.find_spec("webrtcvad") is None:
+            raise RuntimeError("webrtcvad-wheels is not installed")
+
+        import webrtcvad  # type: ignore[import-untyped]
+
+        self.sample_rate = sample_rate
+        self.frame_ms = int(frame_ms)
+        self.mode = mode
+        self.hangover_frames = max(0, hangover_frames)
+        self.min_rms = max(0.0, min(1.0, min_rms))
+        self._vad = webrtcvad.Vad(mode)
+        self._hangover_counter = 0
+
+    def process_frame(self, frame: bytes) -> VadResult:
+        rms = compute_pcm_rms(frame)
+        energy = rms * rms
+        is_trigger = bool(self._vad.is_speech(frame, self.sample_rate)) and rms >= self.min_rms
+
+        if is_trigger:
+            self._hangover_counter = self.hangover_frames
+            is_speech = True
+        elif self._hangover_counter > 0:
+            self._hangover_counter -= 1
+            is_speech = True
+        else:
+            is_speech = False
+
+        return VadResult(
+            is_speech=is_speech,
+            rms=rms,
+            energy=energy,
+            is_trigger=is_trigger,
+        )
+
+    def reset(self) -> None:
         self._hangover_counter = 0
 
 
@@ -161,7 +217,10 @@ class UtteranceCollector:
                     self._is_in_utterance = True
                     self._consecutive_silence_frames = 0
                     self._collected_frames = list(self._pre_roll_buffer)
-            elif not vad_res.is_speech:
+            else:
+                # Start evidence must be consecutive classifier positives.
+                # Hangover bridges an existing utterance but cannot assemble
+                # disconnected workshop noises into a new one.
                 self._speech_evidence_frames = 0
 
             return None, self._is_in_utterance

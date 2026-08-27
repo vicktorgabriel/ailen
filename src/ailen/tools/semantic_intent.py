@@ -132,6 +132,7 @@ class SemanticToolIntentResolver:
             messages=[ChatMessage(role="user", content=prompt)],
             mode=mode,
             max_output_tokens=80,
+            temperature=0.1,
             timeout_seconds=self.request_timeout_seconds,
             privacy_level=privacy_level,
             metadata={"purpose": "semantic_tool_intent"},

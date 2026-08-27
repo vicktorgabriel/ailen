@@ -289,3 +289,38 @@ def test_weather_queries_route_to_web_search() -> None:
         assert result.tool_name == "web_search"
         assert result.intent == "web_search"
         assert result.tool_args["query"] == text
+
+
+def test_natural_fresh_questions_route_to_web_without_explicit_search_command() -> None:
+    resolver = IntentResolver()
+    cases = (
+        "¿Cómo está el dólar hoy?",
+        "¿Qué pasó hoy con OpenAI?",
+        "¿Cuál es el precio actual de Bitcoin?",
+        "¿Hay novedades esta semana de Python?",
+    )
+    for text in cases:
+        result = resolver.resolve(text)
+        assert result.intent == "web_search", text
+        assert result.tool_name == "web_search", text
+        assert result.confidence == 1.0
+
+
+def test_freshness_words_in_casual_chat_do_not_trigger_web() -> None:
+    resolver = IntentResolver()
+    for text in (
+        "Hoy estoy cansado",
+        "Ahora me voy al taller",
+        "Esta semana fue larga",
+        "Lo último que hice salió bien",
+    ):
+        result = resolver.resolve(text)
+        assert result.intent == "chat", text
+        assert result.tool_name is None, text
+
+
+def test_local_clock_still_precedes_fresh_web_fallback() -> None:
+    resolver = IntentResolver()
+    result = resolver.resolve("¿Qué día es hoy?")
+    assert result.intent == "clock"
+    assert result.tool_name == "clock"

@@ -40,6 +40,12 @@ vision = [
 stt-vosk = [
     "vosk>=0.3.45",
 ]
+vad-webrtc = [
+    "webrtcvad-wheels>=2.0.14,<3",
+]
+noise-webrtc = [
+    "webrtc-noise-gain>=1.2,<2",
+]
 web = [
     "ddgs>=9.14,<10",
 ]

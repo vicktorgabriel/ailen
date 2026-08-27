@@ -23,10 +23,12 @@ from ailen.audio.contracts import (
     AudioOutputBackend,
     SttBackend,
     TtsBackend,
+    VoiceActivityDetector,
 )
 from ailen.audio.coordinator import AudioInteractionCoordinator
+from ailen.audio.noise import WebRtcNoiseProcessor
 from ailen.audio.stt_quality import SttQualityEvaluator
-from ailen.audio.vad import EnergyVad, UtteranceCollector
+from ailen.audio.vad import EnergyVad, UtteranceCollector, WebRtcVad
 from ailen.core.capabilities import CapabilityDescriptor, CapabilityProvider, CapabilityRegistry
 from ailen.core.config import AILENConfig
 from ailen.core.conversation import ConversationCoordinator
@@ -365,17 +367,44 @@ class LabRunner:
         # speech chain is available. Passing None here would trigger the generic
         # coordinator's Fake defaults, which is forbidden outside --simulate.
         if self.audio_in and self.audio_out and self.stt_backend and self.tts_backend:
-            if self.config.speech.vad_engine != "energy":
-                raise RuntimeError(
-                    f"Live Lab requires speech.vad_engine=energy, got {self.config.speech.vad_engine!r}"
-                )
             frame_ms = self.config.audio.frame_ms
             hangover_frames = max(0, round(self.config.speech.vad_hangover_ms / frame_ms))
-            collector = UtteranceCollector(
-                vad=EnergyVad(
+            listening_vad: VoiceActivityDetector
+            if self.config.speech.vad_engine == "webrtc":
+                listening_vad = WebRtcVad(
+                    sample_rate=self.config.audio.sample_rate,
+                    frame_ms=frame_ms,
+                    mode=self.config.speech.vad_webrtc_mode,
+                    hangover_frames=hangover_frames,
+                    min_rms=self.config.speech.vad_threshold,
+                )
+                interruption_vad = WebRtcVad(
+                    sample_rate=self.config.audio.sample_rate,
+                    frame_ms=frame_ms,
+                    mode=min(3, self.config.speech.vad_webrtc_mode + 1),
+                    hangover_frames=0,
+                )
+            elif self.config.speech.vad_engine == "energy":
+                listening_vad = EnergyVad(
                     threshold_rms=self.config.speech.vad_threshold,
                     hangover_frames=hangover_frames,
-                ),
+                )
+                interruption_vad = None
+            else:
+                raise RuntimeError(
+                    f"Live Lab requires speech.vad_engine=energy/webrtc, got {self.config.speech.vad_engine!r}"
+                )
+            frame_processor = None
+            if self.config.speech.noise_suppression_engine == "webrtc":
+                frame_processor = WebRtcNoiseProcessor(
+                    sample_rate=self.config.audio.sample_rate,
+                    channels=self.config.audio.channels,
+                    noise_suppression=self.config.speech.noise_suppression_level,
+                    auto_gain=0,
+                )
+
+            collector = UtteranceCollector(
+                vad=listening_vad,
                 sample_rate=self.config.audio.sample_rate,
                 channels=self.config.audio.channels,
                 frame_ms=frame_ms,
@@ -387,6 +416,7 @@ class LabRunner:
             self.audio_coordinator = AudioInteractionCoordinator(
                 audio_input=self.audio_in,
                 audio_output=self.audio_out,
+                frame_processor=frame_processor,
                 stt=self.stt_backend,
                 tts=self.tts_backend,
                 utterance_collector=collector,
@@ -399,6 +429,8 @@ class LabRunner:
                 interruption_min_ms=self.config.speech.interruption_min_ms,
                 interruption_calibration_ms=self.config.speech.interruption_calibration_ms,
                 interruption_leak_multiplier=self.config.speech.interruption_leak_multiplier,
+                interruption_vad=interruption_vad,
+                default_speech_rate=self.config.speech.tts_rate,
                 frame_ms=frame_ms,
             )
 
@@ -460,7 +492,10 @@ class LabRunner:
             context_builder = AiContextBuilder(
                 repository=self.memory_repo,
                 request_timeout_seconds=self.config.ai.local.timeout_seconds,
+                max_recent_messages=self.config.ai.context_recent_messages,
+                max_char_budget=self.config.ai.context_char_budget,
                 max_output_tokens=min(self.config.ai.max_tokens, 128),
+                temperature=self.config.ai.temperature,
             )
             router = RuleBasedRouter()
             orchestrator = AiOrchestrator(
@@ -488,20 +523,23 @@ class LabRunner:
                 orchestrator=orchestrator,
                 semantic_intent_resolver=semantic_intent_resolver,
                 audio_coordinator=self.audio_coordinator,
+                face_controller=self.face_controller,
                 tool_executor=self.tool_executor,
                 profile=self.detected_profile,
                 mode=self.config.social.default_mode,
                 privacy_level=PrivacyLevel.PRIVATE,
                 identity_name=self.config.identity.display_name,
                 tts_voice_id=self.config.speech.tts_voice,
-                internet_available="cloud" in self.ai_backends,
+                internet_available=self.config.network.outbound_web_enabled,
                 tool_network_allowed=self.config.network.outbound_web_enabled,
                 cloud_allowed=self.config.ai.cloud.enabled and self.config.ai.allow_cloud,
                 lan_brain_trusted=self.config.ai.lan.trusted,
+                preferred_backend=self.config.ai.provider,
                 budget_policy=budget_policy,
                 runtime_context_provider=self._runtime_context_snapshot,
                 repository=self.memory_repo,
                 personality_service=self.personality_service,
+                persona_description=self.config.personality.description,
                 capability_registry=self.capability_registry,
             )
 
@@ -597,7 +635,27 @@ class LabRunner:
             and getattr(self.vision_backend, "provides_face_confidence", False)
         )
         face_display_active = self.face_controller.__class__.__name__ == "TkinterFaceController"
+        microphone_active = False
+        speech_output_active = False
+        if self.audio_in is not None:
+            try:
+                microphone_active = self.audio_in.health().status in {
+                    ServiceStatus.HEALTHY,
+                    ServiceStatus.DEGRADED,
+                }
+            except Exception:  # noqa: BLE001
+                microphone_active = False
+        if self.audio_out is not None:
+            try:
+                speech_output_active = self.audio_out.health().status in {
+                    ServiceStatus.HEALTHY,
+                    ServiceStatus.DEGRADED,
+                }
+            except Exception:  # noqa: BLE001
+                speech_output_active = False
         return {
+            "microphone_active": microphone_active,
+            "speech_output_active": speech_output_active,
             "camera_active": camera_active,
             "face_display_active": face_display_active,
             "presence_detected": bool(camera_active and stable.present),
@@ -780,6 +838,7 @@ class LabRunner:
             input_kwargs: dict[str, Any] = {"session_id": self._conversation_session_id}
             if trace_id is not None:
                 input_kwargs["trace_id"] = trace_id
+            input_kwargs["input_modality"] = "voice"
             resp, _plan = self.conversation_coordinator.handle_user_input(text, **input_kwargs)
 
             in_tok = resp.usage.input_tokens if resp.usage else None
