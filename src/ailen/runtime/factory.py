@@ -23,6 +23,7 @@ from ailen.audio.alsa_backend import (
     AutoAlsaAudioInputBackend,
     AutoAlsaAudioOutputBackend,
 )
+from ailen.audio.chatterbox_backend import ChatterboxHttpTtsBackend
 from ailen.audio.contracts import (
     AudioInputBackend,
     AudioOutputBackend,
@@ -641,39 +642,62 @@ class LabComponentFactory:
                 name="TTS", backend="FakeTts (Simulated)", state="SIMULATED", detail="Simulated TTS active"
             )
 
-        engine = self.config.speech.tts_engine.lower()
-        if engine == "piper":
+        def build_piper_backend() -> tuple[PiperTtsBackend | None, str]:
             if not piper_runtime_available():
-                return None, ComponentStatus(
-                    name="TTS",
-                    backend="Piper",
-                    state="UNAVAILABLE",
-                    detail="piper-tts Python package is not installed",
-                    remediation="Install the project speech dependency that provides piper-tts",
-                )
-
+                return None, "piper-tts Python package is not installed"
             model_path_str = self.config.speech.tts_model_path.strip()
             if not model_path_str or not Path(model_path_str).is_file():
-                return None, ComponentStatus(
-                    name="TTS",
-                    backend="Piper",
-                    state="MISSING_MODEL",
-                    detail=f"Piper voice model .onnx not found: '{model_path_str or 'not configured'}'",
-                    remediation="Set speech.tts_model_path in ailen.toml to valid .onnx voice model",
-                )
-
-            piper_backend = PiperTtsBackend(
+                return None, f"Piper voice model .onnx not found: '{model_path_str or 'not configured'}'"
+            backend = PiperTtsBackend(
                 model_path=model_path_str,
                 config_path=self.config.speech.tts_config_path,
                 threads=self.config.speech.tts_threads,
             )
-            piper_health = piper_backend.health()
-            if piper_health.status == ServiceStatus.HEALTHY:
-                return piper_backend, ComponentStatus(
-                    name="TTS", backend="Piper", state="READY", detail=f"Piper voice model '{model_path_str}' loaded"
-                )
+            health = backend.health()
+            if health.status != ServiceStatus.HEALTHY:
+                return None, f"Piper health check failed: {health.detail}"
+            return backend, f"Piper voice model '{model_path_str}' ready"
+
+        engine = self.config.speech.tts_engine.lower()
+        if engine == "piper":
+            piper_backend, detail = build_piper_backend()
+            if piper_backend is not None:
+                return piper_backend, ComponentStatus(name="TTS", backend="Piper", state="READY", detail=detail)
             return None, ComponentStatus(
-                name="TTS", backend="Piper", state="UNAVAILABLE", detail=f"Piper health check failed: {piper_health.detail}"
+                name="TTS",
+                backend="Piper",
+                state="UNAVAILABLE",
+                detail=detail,
+                remediation="Install piper-tts and configure speech.tts_model_path",
+            )
+
+        if engine == "chatterbox":
+            fallback: TtsBackend | None = None
+            fallback_detail = ""
+            if self.config.speech.tts_fallback_engine.lower() == "piper":
+                fallback, fallback_detail = build_piper_backend()
+            backend = ChatterboxHttpTtsBackend(
+                endpoint=self.config.speech.chatterbox_endpoint,
+                timeout_seconds=self.config.speech.chatterbox_timeout_seconds,
+                fallback=fallback,
+                base_pitch_semitones=self.config.speech.chatterbox_pitch_semitones,
+                rate_scale=self.config.speech.chatterbox_rate_scale,
+            )
+            health = backend.health()
+            if health.status in {ServiceStatus.HEALTHY, ServiceStatus.DEGRADED}:
+                return backend, ComponentStatus(
+                    name="TTS",
+                    backend="Chatterbox HTTP",
+                    state="READY" if health.status == ServiceStatus.HEALTHY else "DEGRADED",
+                    detail=health.detail,
+                )
+            suffix = f"; fallback: {fallback_detail}" if fallback_detail else ""
+            return None, ComponentStatus(
+                name="TTS",
+                backend="Chatterbox HTTP",
+                state="UNAVAILABLE",
+                detail=f"{health.detail}{suffix}",
+                remediation="Start the Chatterbox service or configure speech.tts_fallback_engine = 'piper'",
             )
 
         return None, ComponentStatus(

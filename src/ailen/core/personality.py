@@ -137,6 +137,7 @@ class PersonalityService:
         self.enabled = enabled
         self.evolution_rate = max(0.0, min(1.0, float(evolution_rate)))
         self._memory_traits: dict[str, float] = {}
+        self._interruption_observations = 0
 
     def current(self) -> PersonalityTraits:
         """Return defaults overlaid by safe persisted values."""
@@ -219,26 +220,32 @@ class PersonalityService:
             ch for ch in unicodedata.normalize("NFD", clean)
             if unicodedata.category(ch) != "Mn"
         )
-        words = set(clean.split())
-        if words.intersection({"che", "vos", "dale", "joya", "buenisimo", "genial"}):
-            self._nudge_from_observation("formality", -0.006, "observed informal conversation")
+        # Do not learn a regional filler from a single utterance. Automatic
+        # evolution is deliberately weak; explicit feedback remains authoritative.
         if any(marker in clean for marker in ("jaja", "jeje", "jajaja", "me hiciste reir")):
-            self._nudge_from_observation("humor", 0.008, "observed playful conversation")
+            self._nudge_from_observation("humor", 0.004, "observed playful conversation")
         if any(marker in clean for marker in ("por favor", "podrias", "podrias explicarme")):
-            self._nudge_from_observation("patience", 0.003, "observed deliberate conversation")
+            self._nudge_from_observation("patience", 0.002, "observed deliberate conversation")
 
     def observe_interruption(self) -> None:
-        """Treat repeated barge-in as a strong preference for shorter spoken replies."""
+        """Adapt only after repeated interruptions, avoiding one noisy event changing identity."""
         if not self.enabled:
             return
-        self._nudge_from_observation("verbosity", -0.025, "spoken response interrupted")
+        self._interruption_observations += 1
+        if self._interruption_observations < 3:
+            return
+        self._interruption_observations = 0
+        self._nudge_from_observation("verbosity", -0.010, "repeated spoken response interruptions")
 
     def _nudge_from_observation(self, trait: str, delta: float, reason: str) -> None:
         current = self.current()
         default_value = getattr(self.defaults, trait)
         lower = max(0.0, default_value - 0.25)
         upper = min(1.0, default_value + 0.25)
-        next_value = max(lower, min(upper, getattr(current, trait) + delta * self.evolution_rate))
+        next_value = round(
+            max(lower, min(upper, getattr(current, trait) + delta * self.evolution_rate)),
+            6,
+        )
         if abs(next_value - getattr(current, trait)) < 1e-9:
             return
         self._memory_traits[trait] = next_value
@@ -254,35 +261,33 @@ class PersonalityService:
                 logger.warning("Could not persist observed personality adaptation: %s", exc)
 
     def prompt_style(self) -> str:
-        """Translate numeric traits into compact behavioral guidance for the LLM."""
+        """Encode evolving traits compactly so history keeps most of the context budget."""
         traits = self.current()
-        guidance: list[str] = []
-        guidance.append(
-            "Tono informal, natural y cercano."
+        tone = (
+            "informal y rioplatense"
             if traits.formality <= 0.35
-            else "Tono cuidado, no rígido."
+            else "natural y cuidado"
             if traits.formality <= 0.7
-            else "Tono formal y preciso."
+            else "formal y preciso"
         )
-        if traits.verbosity <= 0.25:
-            guidance.append(
-                "Sé breve pero fluida: una o dos frases para charla; ampliá sólo si hace falta."
-            )
-        elif traits.verbosity <= 0.4:
-            guidance.append("Priorizá respuestas breves y conversacionales.")
-        else:
-            guidance.append("Desarrollá la respuesta cuando aporte valor.")
-        if traits.humor >= 0.65:
-            guidance.append("humor ligero ocasional, nunca forzado.")
+        length = (
+            "respuestas breves y fluidas"
+            if traits.verbosity <= 0.3
+            else "conversacional"
+            if traits.verbosity <= 0.5
+            else "detallada cuando aporte"
+        )
+        parts = [f"Estilo: {tone}; {length}"]
+        if traits.humor >= 0.55:
+            parts.append("humor sólo si encaja")
         if traits.curiosity >= 0.65:
-            guidance.append("Mostrá curiosidad en el tono; no conviertas comentarios casuales en preguntas.")
+            parts.append("curiosidad sin preguntar por rutina")
         if traits.initiative >= 0.65:
-            guidance.append("Proponé el siguiente paso sólo si tiene utilidad concreta.")
-        if traits.patience >= 0.65:
-            guidance.append("Ante ambigüedad, pedí una aclaración concreta.")
+            parts.append("proponé el siguiente paso sólo si sirve")
         if traits.expressiveness >= 0.65:
-            guidance.append("Soná expresiva, sin teatralidad.")
-        return " ".join(guidance)
+            parts.append("emoción visible según el turno")
+        parts.append("variá aperturas y mantené continuidad")
+        return "; ".join(parts) + "."
 
     @staticmethod
     def _feedback_message(trait: str, delta: float) -> str:

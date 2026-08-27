@@ -488,12 +488,13 @@ class AudioInteractionCoordinator:
         stt_ended = self._clock()
         logger.info(
             "audio_timing utterance_id=%s stage=stt_end timestamp_monotonic=%.6f "
-            "duration_ms=%.1f backend_latency_ms=%.1f transcript_chars=%d",
+            "duration_ms=%.1f backend_latency_ms=%.1f transcript_chars=%d confidence=%s",
             utterance_id,
             stt_ended,
             (stt_ended - stt_started) * 1000.0,
             transcript.latency_ms,
             len(transcript.text),
+            "unknown" if transcript.confidence is None else f"{transcript.confidence:.3f}",
         )
 
         with self._lock:
@@ -536,6 +537,8 @@ class AudioInteractionCoordinator:
         voice_id: str = "es_ES-standard",
         rate: float | None = None,
         volume: float = 1.0,
+        emotion: str = "neutral",
+        expressiveness: float = 0.6,
     ) -> SpeechOutput:
         """Synthesize and play speech while blocking input and animating mouth.
 
@@ -567,7 +570,14 @@ class AudioInteractionCoordinator:
         prev_state = self.state_manager.current_state if self.state_manager else AssistantState.IDLE
         restore_state = prev_state
         speech_rate = self.default_speech_rate if rate is None else rate
-        req = SpeechRequest(text=text, voice_id=voice_id, rate=speech_rate, volume=volume)
+        req = SpeechRequest(
+            text=text,
+            voice_id=voice_id,
+            rate=speech_rate,
+            volume=volume,
+            emotion=emotion,
+            expressiveness=max(0.0, min(1.0, expressiveness)),
+        )
         output = SpeechOutput(duration_ms=0.0)
         success = False
         speech_started = False
@@ -680,8 +690,10 @@ class AudioInteractionCoordinator:
                 first_audio_latency_ms = 0.0
                 sample_rate = 22050
                 channels = 1
+                stream_format: tuple[int, int] | None = None
+                combined_compatible = True
                 previous_playback_ended: float | None = None
-                ready_chunks: queue.Queue[object] = queue.Queue(maxsize=4)
+                ready_chunks: queue.Queue[object] = queue.Queue(maxsize=1)
                 synthesis_stop = threading.Event()
                 stream_end = object()
 
@@ -766,14 +778,19 @@ class AudioInteractionCoordinator:
                         previous_playback_ended = self._clock()
                         if self._speech_cancel.is_set():
                             break
-                        combined.extend(chunk.audio_data)
+                        chunk_format = (chunk.sample_rate, chunk.channels)
+                        if stream_format is None:
+                            stream_format = chunk_format
+                            sample_rate, channels = chunk_format
+                        elif chunk_format != stream_format:
+                            combined_compatible = False
+                        if combined_compatible:
+                            combined.extend(chunk.audio_data)
                         total_duration_ms += chunk.duration_ms
-                        sample_rate = chunk.sample_rate
-                        channels = chunk.channels
                 finally:
                     synthesis_stop.set()
                 output = SpeechOutput(
-                    audio_data=bytes(combined) if combined else None,
+                    audio_data=bytes(combined) if combined and combined_compatible else None,
                     sample_rate=sample_rate,
                     channels=channels,
                     duration_ms=total_duration_ms,
@@ -783,7 +800,7 @@ class AudioInteractionCoordinator:
                 output = self.tts.synthesize(req)
                 if not self._speech_cancel.is_set():
                     play_chunk(output, 1, None)
-            success = bool(output.audio_data)
+            success = speech_started or bool(output.audio_data)
         except Exception as exc:
             logger.exception("TTS/playback failed")
             self._publish_audio_error("tts_or_playback", exc)

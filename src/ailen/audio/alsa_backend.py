@@ -264,7 +264,6 @@ class AlsaAudioInputBackend(AudioInputBackend):
             backend_name = "pw-record"
             cmd = [
                 binary,
-                "--raw",
                 "--format", "s16",
                 "--rate", str(self.sample_rate),
                 "--channels", str(self.channels),
@@ -406,7 +405,6 @@ class AlsaAudioOutputBackend(AudioOutputBackend):
                 return [binary, "-"], "pw-play"
             return [
                 binary,
-                "--raw",
                 "--format", "s16",
                 "--rate", str(sample_rate),
                 "--channels", str(channels),

@@ -94,7 +94,7 @@ class WebRtcVad(VoiceActivityDetector):
         if importlib.util.find_spec("webrtcvad") is None:
             raise RuntimeError("webrtcvad-wheels is not installed")
 
-        import webrtcvad  # type: ignore[import-untyped]
+        webrtcvad = importlib.import_module("webrtcvad")
 
         self.sample_rate = sample_rate
         self.frame_ms = int(frame_ms)

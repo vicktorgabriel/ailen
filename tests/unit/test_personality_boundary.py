@@ -110,7 +110,7 @@ def test_personality_passive_style_learning_is_slow_and_bounded() -> None:
     )
     service.observe_user_style("Che, dale, quedó genial jaja")
     current = service.current()
-    assert 0.0 <= current.formality < 0.25
+    assert current.formality == 0.25
     assert 0.45 < current.humor <= 0.70
 
     for _ in range(100):
@@ -126,6 +126,9 @@ def test_personality_learns_shorter_voice_style_from_interruptions() -> None:
         defaults=PersonalityTraits(verbosity=0.30),
     )
     before = service.current().verbosity
+    service.observe_interruption()
+    service.observe_interruption()
+    assert service.current().verbosity == before
     service.observe_interruption()
     after = service.current().verbosity
     assert after < before

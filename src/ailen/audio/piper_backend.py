@@ -110,11 +110,45 @@ class PiperTtsBackend(TtsBackend):
 
     @staticmethod
     def _make_synthesis_config(request: SpeechRequest) -> Any:
+        """Translate bounded affect into subtle Piper prosody changes.
+
+        Values stay close to the common Piper Spanish defaults (noise_scale≈0.667,
+        noise_w≈0.8). The goal is audible mood, not voice distortion.
+        """
         from piper.config import SynthesisConfig  # type: ignore[import-untyped]
 
+        emotion = request.emotion.strip().lower()
+        expressiveness = max(0.0, min(1.0, request.expressiveness))
+        # rate multiplier, noise_scale target, noise_w target, volume multiplier
+        profiles: dict[str, tuple[float, float, float, float]] = {
+            "neutral": (1.00, 0.667, 0.80, 1.00),
+            "happy": (1.04, 0.71, 0.84, 1.02),
+            "curious": (1.02, 0.70, 0.84, 1.00),
+            "surprised": (1.07, 0.74, 0.88, 1.03),
+            "confused": (0.96, 0.68, 0.82, 0.99),
+            "focused": (0.97, 0.61, 0.73, 0.99),
+            "sad": (0.90, 0.57, 0.68, 0.96),
+            "skeptical": (0.95, 0.63, 0.76, 0.99),
+            "excited": (1.10, 0.76, 0.91, 1.05),
+            "playful": (1.06, 0.73, 0.88, 1.03),
+        }
+        target_rate, target_noise, target_noise_w, target_volume = profiles.get(
+            emotion, profiles["neutral"]
+        )
+
+        # Blend toward neutral according to personality expressiveness so the
+        # same affect vocabulary works from subtle to animated personalities.
+        rate_mult = 1.0 + (target_rate - 1.0) * expressiveness
+        noise_scale = 0.667 + (target_noise - 0.667) * expressiveness
+        noise_w_scale = 0.80 + (target_noise_w - 0.80) * expressiveness
+        volume_mult = 1.0 + (target_volume - 1.0) * expressiveness
+        effective_rate = max(0.55, min(1.6, request.rate * rate_mult))
+
         return SynthesisConfig(
-            length_scale=(1.0 / max(0.2, min(3.0, request.rate))) if request.rate != 1.0 else None,
-            volume=max(0.0, min(2.0, request.volume)),
+            length_scale=1.0 / effective_rate,
+            noise_scale=max(0.45, min(0.90, noise_scale)),
+            noise_w_scale=max(0.55, min(1.05, noise_w_scale)),
+            volume=max(0.0, min(2.0, request.volume * volume_mult)),
         )
 
     def synthesize_chunks(self, request: SpeechRequest) -> Iterable[SpeechOutput]:

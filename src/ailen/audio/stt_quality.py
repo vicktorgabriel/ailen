@@ -21,6 +21,7 @@ class SttQualityAssessment:
     is_fragment: bool
     heuristic_quality: float  # [0.0..1.0] purely heuristic readability score (NEVER labeled as model confidence)
     should_reprompt: bool
+    should_drop_silently: bool
     reprompt_reason: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -34,6 +35,7 @@ class SttQualityAssessment:
             "is_fragment": self.is_fragment,
             "heuristic_quality": self.heuristic_quality,
             "should_reprompt": self.should_reprompt,
+            "should_drop_silently": self.should_drop_silently,
             "reprompt_reason": self.reprompt_reason,
         }
 
@@ -47,8 +49,12 @@ class SttQualityEvaluator:
         self.min_words = min_words
         self.min_chars = min_chars
 
-    def evaluate(self, transcript: str) -> SttQualityAssessment:
-        """Analyze transcript and determine if it requires reprompting."""
+    def evaluate(
+        self,
+        transcript: str,
+        confidence: float | None = None,
+    ) -> SttQualityAssessment:
+        """Analyze transcript using readability plus real engine confidence when available."""
         raw = transcript or ""
         clean = raw.strip()
 
@@ -64,12 +70,42 @@ class SttQualityEvaluator:
                 is_fragment=True,
                 heuristic_quality=0.0,
                 should_reprompt=True,
+                should_drop_silently=False,
                 reprompt_reason="EMPTY_TRANSCRIPT",
             )
 
         words = [w for w in re.split(r"\s+", clean) if w]
         char_len = len(clean)
         normalized = clean.lower().strip(" ¿?¡!.,;:")
+
+        normalized_confidence = (
+            max(0.0, min(1.0, float(confidence)))
+            if isinstance(confidence, (int, float))
+            else None
+        )
+
+        # Very low-confidence recognition is usually acoustic garbage. For a
+        # tiny one-token transcript, drop it silently rather than making AILEN
+        # speak a reprompt at workshop noise. Genuine short speech still passes
+        # when the recognizer is confident (for example "sí", "no", "hola").
+        if normalized_confidence is not None:
+            tiny_single = len(words) == 1 and char_len <= 5
+            if normalized_confidence < 0.40 or (
+                tiny_single and normalized_confidence < 0.65
+            ):
+                return SttQualityAssessment(
+                    raw_text=raw,
+                    cleaned_text=clean,
+                    word_count=len(words),
+                    char_count=char_len,
+                    is_empty=False,
+                    is_too_short=tiny_single,
+                    is_fragment=True,
+                    heuristic_quality=normalized_confidence,
+                    should_reprompt=False,
+                    should_drop_silently=True,
+                    reprompt_reason="LOW_CONFIDENCE_NOISE",
+                )
 
         # Common one-word fillers/fragments from Vosk should not be handed to
         # the conversational model, which otherwise tends to complete them from
@@ -86,6 +122,7 @@ class SttQualityEvaluator:
                 raw_text=raw, cleaned_text=clean, word_count=1, char_count=char_len,
                 is_empty=False, is_too_short=False, is_fragment=True,
                 heuristic_quality=0.25, should_reprompt=True,
+                should_drop_silently=False,
                 reprompt_reason="AMBIGUOUS_SINGLE_WORD_FRAGMENT",
             )
 
@@ -106,6 +143,7 @@ class SttQualityEvaluator:
                 is_fragment=True,
                 heuristic_quality=0.0,
                 should_reprompt=True,
+                should_drop_silently=False,
                 reprompt_reason="NO_ALPHANUMERIC_CONTENT",
             )
 
@@ -120,6 +158,7 @@ class SttQualityEvaluator:
                 is_fragment=True,
                 heuristic_quality=0.2,
                 should_reprompt=True,
+                should_drop_silently=False,
                 reprompt_reason="TRANSCRIPT_TOO_SHORT",
             )
 
@@ -137,5 +176,6 @@ class SttQualityEvaluator:
             is_fragment=False,
             heuristic_quality=quality_score,
             should_reprompt=False,
+            should_drop_silently=False,
             reprompt_reason="VALID_SPEECH",
         )

@@ -422,21 +422,28 @@ class ConversationCoordinator:
             message_count=len(ai_req.messages),
         )
 
-        # 5. Execute inference. Voice turns stop at the first useful complete
-        # sentence so TTS can start while a small local model is still cheap.
+        # 5. Execute inference. Streaming voice turns keep the model running to
+        # completion; stopping after the first sentence made replies repetitive
+        # and destroyed conversational continuity. Phrase-level TTS concurrency
+        # can consume this stream without cancelling the producer.
         stage_started = time.monotonic()
         streaming_voice = self.audio_coordinator is not None and input_modality == "voice"
         if streaming_voice:
             streamed_text = ""
+            first_phrase_logged = False
 
             def accept_voice_delta(delta: str) -> bool:
-                nonlocal streamed_text
+                nonlocal streamed_text, first_phrase_logged
                 streamed_text += delta
-                visible = re.sub(r"\[\[(?:face:)?[a-z_]+\]\]", "", streamed_text, flags=re.IGNORECASE)
-                visible = visible.strip()
-                if len(visible) >= 24 and visible.endswith((".", "!", "?")):
-                    return False
-                return len(visible) < 180
+                visible = re.sub(r"\[\[(?:face:)?[a-z_]+\]\]", "", streamed_text, flags=re.IGNORECASE).strip()
+                if (
+                    not first_phrase_logged
+                    and len(visible) >= 12
+                    and visible.endswith((".", "!", "?"))
+                ):
+                    first_phrase_logged = True
+                    self._log_timing(turn_id, "first_phrase_ready", stage_started, chars=len(visible))
+                return True
 
             response, plan = self.orchestrator.execute_stream_until(
                 ai_req,
@@ -444,8 +451,6 @@ class ConversationCoordinator:
                 on_text_delta=accept_voice_delta,
                 session_id=session_id,
             )
-            if response.finish_reason == "client_stop":
-                response.finish_reason = "stop"
         else:
             response, plan = self.orchestrator.execute(ai_req, plan=plan, session_id=session_id)
         self._log_timing(
@@ -478,8 +483,8 @@ class ConversationCoordinator:
         if self.audio_coordinator is not None and response.finish_reason == "length":
             response.text = self._close_truncated_voice_response(response.text)
 
-        # 6. Speak response through AudioInteractionCoordinator if present
-        self._speak_if_enabled(response.text, turn_id=turn_id)
+        # 6. Speak using the same validated affect that drives the face.
+        self._speak_if_enabled(response.text, turn_id=turn_id, emotion=expression)
         self._persist_turn(session_id, user_text, response)
         self._log_timing(turn_id, "turn_total", turn_started)
 
@@ -781,14 +786,30 @@ class ConversationCoordinator:
             json.dumps(metadata, ensure_ascii=False, sort_keys=True),
         )
 
-    def _speak_if_enabled(self, text: str, *, turn_id: str | None = None) -> None:
-        """Helper to speak text via audio coordinator with speech normalization."""
+    def _speak_if_enabled(
+        self,
+        text: str,
+        *,
+        turn_id: str | None = None,
+        emotion: str | None = None,
+    ) -> None:
+        """Speak normalized text with bounded personality-driven affect."""
         if self.audio_coordinator and text.strip():
             stage_started = time.monotonic()
             try:
                 spoken_text = normalize_text_for_speech(text)
                 if spoken_text:
-                    self.audio_coordinator.speak(spoken_text, voice_id=self.tts_voice_id)
+                    expressiveness = (
+                        self.personality_service.current().expressiveness
+                        if self.personality_service is not None
+                        else 0.6
+                    )
+                    self.audio_coordinator.speak(
+                        spoken_text,
+                        voice_id=self.tts_voice_id,
+                        emotion=emotion or "neutral",
+                        expressiveness=expressiveness,
+                    )
                     if (
                         self.audio_coordinator.last_speech_interrupted
                         and self.personality_service is not None

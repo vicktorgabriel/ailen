@@ -59,33 +59,31 @@ class AiContextBuilder:
             (
                 f"Sos {name}, asistente físico local. Modo: {mode.value}. "
                 f"Tu nombre es {name}; no llames {name} al usuario salvo que Core indique que también se llama así. "
-                "Respondé en español rioplatense natural y directo. Usá voseo argentino, no castellano peninsular. "
-                "El modelo conversacional NO ejecuta acciones: nunca afirmes que cambiaste volumen ni otra acción "
-                "sin un resultado explícito de Core. No afirmes datos externos que pueden haber cambiado sin "
-                "evidencia web de este turno."
+                "Respondé en español rioplatense natural. Usá voseo argentino y no castellano peninsular. "
+                "El modelo conversacional NO ejecuta acciones: nunca afirmes que cambiaste volumen ni otra acción sin resultado de Core. "
+                "No afirmes datos externos que pueden haber cambiado sin evidencia web de este turno."
             )
         ]
 
         if request_metadata.get("voice_output"):
             system_parts.append(
-                "Salida oral: reaccioná con naturalidad en una o dos frases cortas y completas; sin Markdown, listas ni emojis. "
-                "No repitas ni parafrasees la consulta. Evitá interrogatorios. Si el usuario sólo comenta algo, "
-                "no respondas con una pregunta salvo que sea necesaria. Nunca uses cierres de soporte como 'fue un placer ayudarte', "
-                "'¿en qué puedo ayudarte?' o similares."
+                "Salida oral: reaccioná con naturalidad en una o dos frases breves y completas; sin Markdown, listas ni emojis. "
+                "No repitas ni parafrasees la consulta. Evitá interrogatorios. Variá apertura y cadencia; no uses muletillas automáticas. "
+                "Nunca uses cierres de soporte por rutina. Sin capacidad Core confirmada, no prometas acciones físicas."
             )
 
         personality_style = request_metadata.get("personality_style")
         if isinstance(personality_style, str) and personality_style.strip():
-            system_parts.append(personality_style.strip()[:400])
+            system_parts.append(personality_style.strip())
 
         persona_description = request_metadata.get("persona_description")
         if isinstance(persona_description, str) and persona_description.strip():
-            system_parts.append("Personaje: " + persona_description.strip()[:500])
+            system_parts.append("Personaje: " + persona_description.strip())
 
         if request_metadata.get("input_modality") == "voice":
             system_parts.append(
-                "Entrada por micrófono/STT: corregí mentalmente errores obvios. Si el sentido no es claro, pedí repetir; "
-                "no inventes tono emocional, identidad vocal ni sonidos que Core no haya clasificado."
+                "Entrada por micrófono/STT: corregí errores obvios; si no se entiende, pedí repetir. "
+                "No inventes tono emocional, identidad vocal ni sonidos no clasificados por Core."
             )
 
         conversational_expressions = request_metadata.get("conversational_expressions")
@@ -99,9 +97,9 @@ class AiContextBuilder:
             ][:16]
             if allowed_expressions:
                 system_parts.append(
-                    "Cara, formato obligatorio: los primeros caracteres deben ser [[face:expresion]], incluyendo 'face:'. "
-                    "Usá sólo " + ", ".join(allowed_expressions)
-                    + "; neutral si no hay reacción clara. Después escribí lo que vas a decir. La etiqueta no se pronuncia."
+                    "Primero [[face:expresion]] (no se pronuncia). Permitidas: "
+                    + ", ".join(allowed_expressions)
+                    + ". Elegí la emoción que corresponda; neutral sólo si no hay reacción clara."
                 )
 
         capabilities = request_metadata.get("capabilities")
@@ -169,19 +167,33 @@ class AiContextBuilder:
         system_parts.append(
             "Usá historial y memorias como contexto en primera persona, sin mencionar reglas, metadatos ni sensores."
         )
-        system_context = " ".join(system_parts)
-
         messages: list[ChatMessage] = []
         retrieved_memories: list[str] = []
+        recent_assistant_openers: list[str] = []
 
-        # 1. Load conversation history from session
+        # 1. Load conversation history from session. Keep semantic continuity,
+        # but explicitly discourage copying the assistant's recent cadence.
         if self.repository and session_id:
             try:
                 db_msgs = self.repository.get_session_messages(session_id, limit=self.max_recent_messages)
                 for msg in db_msgs:
                     messages.append(ChatMessage(role=msg.role, content=msg.content))
+                    if msg.role == "assistant":
+                        clean = " ".join(msg.content.split())
+                        if clean:
+                            recent_assistant_openers.append(" ".join(clean.split()[:7]))
             except Exception:  # noqa: BLE001, S110
                 pass
+
+        if request_metadata.get("voice_output") and recent_assistant_openers:
+            recent = " | ".join(recent_assistant_openers[-3:])
+            system_parts.append(
+                "El historial sirve por significado, no como plantilla de estilo. "
+                f"No copies ni reutilices estas aperturas recientes: {recent}. "
+                "Elegí una reacción nueva que encaje con este turno."
+            )
+
+        system_context = " ".join(system_parts)
 
         # 2. Append current user message
         messages.append(ChatMessage(role="user", content=user_message))
@@ -258,4 +270,13 @@ class AiContextBuilder:
         # As a last resort truncate system context; never truncate the user's current message here.
         remaining_for_system = self.max_char_budget - sum(len(m.content) for m in request.messages)
         if remaining_for_system < len(request.system_context):
-            request.system_context = request.system_context[: max(0, remaining_for_system)]
+            limit = max(0, remaining_for_system)
+            if limit == 0:
+                request.system_context = ""
+            else:
+                clipped = request.system_context[:limit]
+                if limit < len(request.system_context):
+                    boundary = max(clipped.rfind(". "), clipped.rfind("; "), clipped.rfind(" "))
+                    if boundary >= max(0, limit - 160):
+                        clipped = clipped[: boundary + 1]
+                request.system_context = clipped.rstrip()

@@ -353,3 +353,25 @@ def test_transient_expression_survives_speaking_state_then_expires() -> None:
 
     clock.advance(2.1)
     assert animator.step().expression == "speaking"
+
+
+def test_face_speech_gesture_energy_depends_on_emotion() -> None:
+    def head_span(expression: str) -> float:
+        clock = ControlledClock(100.0)
+        animator = FaceAnimator(clock=clock, rng=random.Random(7))
+        animator.set_expression(expression)
+        animator.set_state(AssistantState.SPEAKING)
+        animator.set_speech_level(0.55)
+        values: list[float] = []
+        for _ in range(28):
+            values.append(animator.step().head_tilt)
+            clock.advance(0.04)
+        return max(values) - min(values)
+
+    excited_span = head_span("excited")
+    playful_span = head_span("playful")
+    sad_span = head_span("sad")
+    focused_span = head_span("focused")
+
+    assert excited_span > sad_span * 1.8
+    assert playful_span > focused_span * 1.5

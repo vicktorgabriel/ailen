@@ -48,3 +48,27 @@ def test_vague_single_word_fragment_reprompts() -> None:
 
     assert evaluator.evaluate("hora").should_reprompt is False
     assert evaluator.evaluate("notas").should_reprompt is False
+
+
+def test_low_confidence_tiny_transcript_is_dropped_silently() -> None:
+    evaluator = SttQualityEvaluator()
+    assessment = evaluator.evaluate("hola", confidence=0.31)
+    assert assessment.should_drop_silently
+    assert not assessment.should_reprompt
+    assert assessment.reprompt_reason == "LOW_CONFIDENCE_NOISE"
+
+
+def test_confident_short_conversation_remains_valid() -> None:
+    evaluator = SttQualityEvaluator()
+    for text in ("sí", "no", "hola", "dale"):
+        assessment = evaluator.evaluate(text, confidence=0.91)
+        assert not assessment.should_drop_silently, text
+        assert not assessment.should_reprompt, text
+
+
+def test_low_confidence_longer_speech_is_dropped_only_when_very_uncertain() -> None:
+    evaluator = SttQualityEvaluator()
+    assert evaluator.evaluate("hola como estas", confidence=0.25).should_drop_silently
+    usable = evaluator.evaluate("hola como estas", confidence=0.58)
+    assert not usable.should_drop_silently
+    assert not usable.should_reprompt

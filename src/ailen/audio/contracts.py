@@ -32,11 +32,13 @@ class Transcript:
 
 @dataclass
 class SpeechRequest:
-    """Normalized TTS input."""
+    """Normalized TTS input with optional bounded conversational affect."""
     text: str
     voice_id: str = "es_ES-standard"
     rate: float = 1.0
     volume: float = 1.0
+    emotion: str = "neutral"
+    expressiveness: float = 0.6
 
 
 @dataclass

@@ -716,8 +716,23 @@ class LabRunner:
         trace_id = str(payload.get("utterance_id", "")).strip() or None
         latency_raw = payload.get("latency_ms")
         latency_ms = float(latency_raw) if isinstance(latency_raw, (int, float)) else 0.0
+        confidence_raw = payload.get("confidence")
+        confidence = (
+            float(confidence_raw)
+            if isinstance(confidence_raw, (int, float))
+            else None
+        )
 
-        assessment = self.stt_quality_evaluator.evaluate(text)
+        assessment = self.stt_quality_evaluator.evaluate(text, confidence=confidence)
+        if assessment.should_drop_silently:
+            self.metrics.record_utterance(success=False, latency_ms=latency_ms)
+            logger.info(
+                "Dropping probable STT noise text=%r confidence=%s reason=%s",
+                text,
+                "unknown" if confidence is None else f"{confidence:.3f}",
+                assessment.reprompt_reason,
+            )
+            return
         if assessment.should_reprompt:
             self.metrics.record_utterance(success=False, latency_ms=latency_ms)
             print(f"\n[stt] Reprompt required ({assessment.reprompt_reason})")

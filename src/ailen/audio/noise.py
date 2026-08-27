@@ -1,5 +1,6 @@
 """Optional lightweight PCM cleanup processors for noisy physical environments."""
 
+import importlib
 from collections.abc import Callable
 from typing import Any
 
@@ -32,12 +33,12 @@ class WebRtcNoiseProcessor:
     @staticmethod
     def _load_factory() -> Callable[..., Any]:
         try:
-            from webrtc_noise_gain import AudioProcessor  # type: ignore[import-untyped]
-        except ImportError as exc:
+            module = importlib.import_module("webrtc_noise_gain")
+            return module.AudioProcessor
+        except (ImportError, AttributeError) as exc:
             raise RuntimeError(
                 "webrtc-noise-gain is required for WebRTC noise suppression"
             ) from exc
-        return AudioProcessor
 
     def _new_processor(self) -> Any:
         return self._processor_factory(

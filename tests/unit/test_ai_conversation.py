@@ -146,3 +146,33 @@ def test_voice_streaming_waits_for_complete_phrase_after_short_sentence() -> Non
         input_modality="voice",
     )
     assert response.text == "¿Qué te pasó? ¿Fue un día largo?"
+
+
+def test_speech_affect_is_forwarded_to_audio_coordinator() -> None:
+    from unittest.mock import MagicMock
+
+    from ailen.core.personality import PersonalityService, PersonalityTraits
+
+    audio = MagicMock()
+    audio.last_speech_interrupted = False
+    personality = PersonalityService(
+        identity_id="affect-test",
+        defaults=PersonalityTraits(expressiveness=0.9),
+    )
+    coordinator = ConversationCoordinator(
+        context_builder=AiContextBuilder(default_identity_name="Ailén"),
+        router=RuleBasedRouter(),
+        orchestrator=AiOrchestrator(backends={"local": FakeAiBackend()}),
+        audio_coordinator=audio,
+        personality_service=personality,
+        identity_name="Ailén",
+    )
+
+    coordinator._speak_if_enabled("Qué bueno.", emotion="happy")
+
+    audio.speak.assert_called_once_with(
+        "Qué bueno.",
+        voice_id="es_ES-standard",
+        emotion="happy",
+        expressiveness=0.9,
+    )

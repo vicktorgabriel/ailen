@@ -230,3 +230,30 @@ def test_ai_context_keeps_assistant_identity_distinct_from_user() -> None:
     request = builder.build_request("Hola", identity_name="Ailén")
     assert "Tu nombre es Ailén" in request.system_context
     assert "no llames Ailén al usuario" in request.system_context
+
+
+def test_voice_context_discourages_recent_assistant_openers() -> None:
+    with TemporaryDirectory() as tmpdir:
+        db_mgr = SQLiteManager(f"{tmpdir}/ctx.db")
+        MigrationRunner(db_mgr).run_migrations()
+        repo = MemoryRepository(db_mgr)
+        session = repo.create_session(mode=SocialMode.WORKSHOP)
+        repo.add_message(session.session_id, "user", "hola")
+        repo.add_message(session.session_id, "assistant", "Arranque repetido de la respuesta anterior.")
+
+        req = AiContextBuilder(repository=repo).build_request(
+            "otra cosa",
+            session_id=session.session_id,
+            metadata={"voice_output": True},
+        )
+
+        assert "no como plantilla de estilo" in req.system_context
+        assert "Arranque repetido de la respuesta anterior" in req.system_context
+
+
+def test_personality_style_is_not_cut_at_legacy_field_limit() -> None:
+    style = "x" * 430 + " FINAL_ESTILO"
+    req = AiContextBuilder(max_char_budget=4000).build_request(
+        "hola", metadata={"personality_style": style}
+    )
+    assert "FINAL_ESTILO" in req.system_context

@@ -284,13 +284,31 @@ class FaceAnimator:
             # envelope. Keep only a subtle carrier here so phonetic motion remains
             # lively without overriding real pauses and energy changes.
             carrier = 0.78 + 0.22 * articulation
+            gesture_energy = {
+                "sad": 0.45,
+                "focused": 0.62,
+                "skeptical": 0.78,
+                "confused": 0.88,
+                "neutral": 1.00,
+                "curious": 1.16,
+                "happy": 1.28,
+                "surprised": 1.38,
+                "playful": 1.48,
+                "excited": 1.62,
+            }.get(expression, 1.0)
             mouth_open = 0.04 + 0.86 * self._speech_level * carrier
-            mouth_width += 0.05 * self._speech_level * math.sin(
-                speech_elapsed * math.tau * 2.3 + 0.4
+            mouth_width += 0.05 * gesture_energy * self._speech_level * math.sin(
+                speech_elapsed * math.tau * (2.1 + 0.25 * gesture_energy) + 0.4
             )
-            head_tilt += 0.045 * math.sin(speech_elapsed * math.tau * 0.75)
-            base_eye_open += 0.025 * math.sin(speech_elapsed * math.tau * 1.2)
-            pupil_size += 0.018 * math.sin(speech_elapsed * math.tau * 1.7)
+            head_tilt += 0.045 * gesture_energy * math.sin(
+                speech_elapsed * math.tau * (0.62 + 0.12 * gesture_energy)
+            )
+            base_eye_open += 0.025 * gesture_energy * math.sin(
+                speech_elapsed * math.tau * (1.0 + 0.2 * gesture_energy)
+            )
+            pupil_size += 0.018 * gesture_energy * math.sin(
+                speech_elapsed * math.tau * (1.45 + 0.2 * gesture_energy)
+            )
 
         # Apply blink occlusion: eye_open decreases towards 0.0 as blink_progress increases
         eye_open = max(0.0, base_eye_open * (1.0 - blink_progress))

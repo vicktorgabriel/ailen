@@ -262,7 +262,6 @@ def test_pipewire_input_uses_pw_record_for_raw_pcm(monkeypatch) -> None:
 
     assert captured_cmd == [
         "/usr/bin/pw-record",
-        "--raw",
         "--format", "s16",
         "--rate", "16000",
         "--channels", "1",
@@ -306,7 +305,6 @@ def test_pipewire_output_uses_pw_play_for_raw_pcm(monkeypatch) -> None:
 
     assert captured_cmd == [
         "/usr/bin/pw-play",
-        "--raw",
         "--format", "s16",
         "--rate", "16000",
         "--channels", "1",
@@ -611,3 +609,42 @@ def test_vosk_exposes_average_word_confidence(monkeypatch, tmp_path: Path) -> No
     out = backend.transcribe(AudioSegment(data=b"\x00\x00" * 320))
     assert out.text == "hola mundo"
     assert out.confidence == 0.7
+
+
+def test_piper_affect_changes_prosody_without_distorting_bounds() -> None:
+    backend = PiperTtsBackend(model_path="/tmp/not-used.onnx")
+    neutral = backend._make_synthesis_config(
+        SpeechRequest(text="hola", rate=1.0, emotion="neutral", expressiveness=1.0)
+    )
+    excited = backend._make_synthesis_config(
+        SpeechRequest(text="hola", rate=1.0, emotion="excited", expressiveness=1.0)
+    )
+    sad = backend._make_synthesis_config(
+        SpeechRequest(text="hola", rate=1.0, emotion="sad", expressiveness=1.0)
+    )
+
+    assert excited.length_scale < neutral.length_scale < sad.length_scale
+    assert excited.noise_scale > neutral.noise_scale > sad.noise_scale
+    assert excited.noise_w_scale > neutral.noise_w_scale > sad.noise_w_scale
+    assert 0.45 <= sad.noise_scale <= 0.90
+    assert 0.55 <= excited.noise_w_scale <= 1.05
+
+
+def test_piper_affect_strength_respects_personality_expressiveness() -> None:
+    backend = PiperTtsBackend(model_path="/tmp/not-used.onnx")
+    subtle = backend._make_synthesis_config(
+        SpeechRequest(text="hola", emotion="excited", expressiveness=0.1)
+    )
+    animated = backend._make_synthesis_config(
+        SpeechRequest(text="hola", emotion="excited", expressiveness=0.9)
+    )
+    neutral = backend._make_synthesis_config(
+        SpeechRequest(text="hola", emotion="neutral", expressiveness=1.0)
+    )
+
+    assert abs(subtle.noise_scale - neutral.noise_scale) < abs(
+        animated.noise_scale - neutral.noise_scale
+    )
+    assert abs(subtle.length_scale - neutral.length_scale) < abs(
+        animated.length_scale - neutral.length_scale
+    )

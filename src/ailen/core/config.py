@@ -104,6 +104,11 @@ class SpeechConfig:
     tts_config_path: str = ""
     tts_rate: float = 1.0
     tts_threads: int = 0
+    tts_fallback_engine: str = "none"  # "none", "piper"
+    chatterbox_endpoint: str = "http://127.0.0.1:8765"
+    chatterbox_timeout_seconds: float = 6.0
+    chatterbox_pitch_semitones: float = 0.0
+    chatterbox_rate_scale: float = 1.0
     noise_suppression_engine: str = "none"  # "none", "webrtc"
     noise_suppression_level: int = 2
     vad_engine: str = "energy"  # "energy", "webrtc", "mock"
@@ -522,6 +527,14 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("speech.tts_rate must be between 0.5 and 1.8")
     if not (0 <= config.speech.tts_threads <= 32):
         errors.append("speech.tts_threads must be between 0 and 32")
+    if config.speech.tts_fallback_engine not in {"none", "piper"}:
+        errors.append("speech.tts_fallback_engine must be one of: none, piper")
+    if not (0.5 <= config.speech.chatterbox_timeout_seconds <= 60.0):
+        errors.append("speech.chatterbox_timeout_seconds must be between 0.5 and 60.0")
+    if not (-2.0 <= config.speech.chatterbox_pitch_semitones <= 2.0):
+        errors.append("speech.chatterbox_pitch_semitones must be between -2.0 and 2.0")
+    if not (0.85 <= config.speech.chatterbox_rate_scale <= 1.15):
+        errors.append("speech.chatterbox_rate_scale must be between 0.85 and 1.15")
     if config.speech.vad_engine not in {"energy", "webrtc", "mock"}:
         errors.append("speech.vad_engine must be one of: energy, webrtc, mock")
     if not (0.0 <= config.speech.vad_threshold <= 1.0):

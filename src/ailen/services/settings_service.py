@@ -179,6 +179,8 @@ FIELD_SPECS: tuple[_FieldSpec, ...] = (
         "Umbral de confianza para STT de rescate", "float", min_value=0, max_value=1,
     ),
     _FieldSpec("speech.tts_rate", "Escucha y voz", "Velocidad de voz", "float", min_value=0.5, max_value=1.8),
+    _FieldSpec("speech.chatterbox_rate_scale", "Escucha y voz", "Escala de velocidad expresiva", "float", min_value=0.85, max_value=1.15),
+    _FieldSpec("speech.chatterbox_pitch_semitones", "Escucha y voz", "Tono base Chatterbox (semitonos)", "float", min_value=-2.0, max_value=2.0),
     _FieldSpec("speech.tts_threads", "Escucha y voz", "Hilos CPU para TTS (0=auto)", "int", min_value=0, max_value=32),
     _FieldSpec(
         "speech.noise_suppression_engine", "Escucha y voz", "Supresión de ruido", "select",
