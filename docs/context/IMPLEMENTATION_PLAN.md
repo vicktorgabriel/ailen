@@ -2,6 +2,8 @@
 
 > Plan operativo para llevar el proyecto desde `0.1.0-dev.0` hasta el primer prototipo funcional. Este documento complementa `ROADMAP.md`: el roadmap define hitos; este archivo define el orden concreto de trabajo.
 
+> **Estado 2026-08-30:** las fases A-H de este documento describen el camino histórico y su baseline ya está implementado. La ejecución inmediata vive en `TASKS.md` (R4/R5 + R5B FacePack) y `ROADMAP.md`; el siguiente bloque estructural no cerrado es Appliance Debian/Updater. No reconstruir Foundation/Core a partir de este plan.
+
 ## 1. Objetivo inmediato
 
 Construir un prototipo end-to-end en la Banghó Zero G05 de 8 GB que pueda:

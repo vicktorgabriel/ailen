@@ -1,6 +1,6 @@
 # ADR-006 — Stack técnico inicial del prototipo
 
-**Estado:** Proposed  
+**Estado:** Accepted — baseline provisional 0.4.x
 **Fecha:** 2026-08-21
 
 ## Contexto
@@ -45,7 +45,9 @@ Mantener interfaz genérica y benchmarkear modelos pequeños cuantizados. El MVP
 
 ## Decisión
 
-Pendiente de benchmark/POC. No implementar un stack como definitivo sin actualizar este ADR.
+Para el ciclo `0.4.x` se acepta como **baseline provisional** el stack que ya fue validado en laboratorio y permanece desacoplado por contratos: Python 3.11+, SQLite, Web liviana stdlib + HTML/CSS/JS, Face lógico independiente del renderer, backends de audio/visión opcionales y proveedores de IA detrás de interfaces genéricas.
+
+Esta aceptación no convierte Tkinter/portrait, Vosk, YuNet ni ningún proveedor/modelo concreto en requisito definitivo del appliance. Banghó/SF20BA y el futuro FacePack deben medirse antes de promover un backend a baseline de producción. Cualquier cambio que aumente dependencias o acople Core a un proveedor requiere benchmark/ADR.
 
 ## Nota de implementación provisional (carril Web, 2026-08-21)
 
@@ -84,6 +86,24 @@ La decisión definitiva queda sujeta a benchmark en la Banghó y cierre de este 
    - Backend I/O por defecto en Debian 13 minimal: ALSA (`arecord` y `aplay` vía pipes de subprocess seguros con timeouts). Zero dependencias wheel en el Core.
    - Backends de prueba/simulación: `FakeAudioInputBackend` y `FakeAudioOutputBackend` para tests deterministas y entornos CI.
    - Documentación de investigación: `docs/research/AUDIO_IO_POC.md`.
+   - Una fuente PipeWire explícita usa `pipewire:<node-name>` y se transmite a
+     `pw-record --target`. `pipewire` sin sufijo usa el default nativo de
+     `pw-record`, incluso sin `pactl`, y no afirma conocer el nodo efectivo;
+     `default` conserva la ruta ALSA configurada. Los targets explícitos nunca
+     degradan silenciosamente al default.
+   - La cadena de nivel previa a VAD/STT es explícita y liviana: pre-gain digital
+     en dB, AGC acotado/suavizado con gate de ruido, limitador S16LE y luego
+     WebRTC NS opcional. Por debajo del gate el AGC no sube; sostiene pausas
+     breves y decae. El default es 0 dB y AGC apagado hasta calibración; no
+     depende de Easy Effects.
+     `audio.input_volume` fue retirado porque no controlaba el dispositivo.
+   - AGC/NS no son cancelación de eco. AEC y conversación full-duplex permanecen
+     pendientes de prueba física; el barge-in actual conserva su detector de
+     leakage y no debe presentarse como AEC.
+   - El panel y el calibrador no escriben ganancia ALSA global. En particular,
+     `Master` pertenece a salida y no es un control de captura. Una futura
+     modificación física exige identificar el control de captura, consentimiento
+     y readback; mientras tanto el diagnóstico es read-only.
 
 2. **VAD y Utterance Collection (Half-Duplex):**
    - VAD liviano en Python puro (`EnergyVad`) calculando RMS sobre frames de 20 ms sin dependencias ML. El benchmark DEV mide latencia lógica, no porcentaje de CPU en hardware objetivo.

@@ -1,5 +1,11 @@
 # Adaptive Inference & Memory Residency Architecture (2026)
 
+> **Estado:** investigación histórica. La política canónica vigente está en
+> ADR-010 y `docs/hardware/LOCAL_MODEL_QUALIFICATION.md`: 4/8 GB conservan
+> reservas estrictas; 16/32/64+ GB y GPU dedicada usan envelope dinámico y sólo
+> artefactos calificados por hardware/modelo/runtime. Las cifras fijas de las
+> tablas siguientes no son soporte ni límites actuales.
+
 ## 1. Context & Core Principles
 
 AILEN (*Asistente Inteligente Local, Evolutivo y Natural*) operates on heterogeneous hardware topologies:

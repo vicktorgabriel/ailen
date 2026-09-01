@@ -1,4 +1,203 @@
+### R4 — remotos nombrados, provisioning por hardware y captura medible (2026-09-01)
+
+- **Runtime local calificado, no inferido**: `HardwareQualificationStore`
+  conserva evidencia independiente por `(hardware_class, model_id, runtime)`.
+  `ProvisioningPlanner` ya no sustituye el runtime medido por el preferido de la
+  recomendación. CPU/CUDA y `gpu_layers` salen de esa misma evidencia; offload
+  parcial queda bloqueado hasta implementarlo y medirlo.
+- **Retiro de agentes CLI**: AGY/Antigravity y OpenCode dejan de ser proveedores
+  runtime. Las configuraciones antiguas migran a `auto` con warning y nunca
+  construyen esos clientes. La evidencia histórica de ~6,7 s TTFT e
+  invalid/429 se conserva como razón `RETIRED/REJECTED`.
+- **Provider Manager**: remotos independientes `remote:<id>` con secretos,
+  prioridades, health, presupuesto, catálogo y cooldown propios. Se implementan
+  OpenAI Responses SSE (`store=false`), Chat Completions SSE y Anthropic
+  Messages SSE; ningún adapter anuncia tools/reasoning no implementados.
+- **Presets no son soporte**: OpenAI, Anthropic, DeepSeek, Kimi y MiniMax sólo
+  aportan protocolo/endpoint/secret slot. Modelo, salud, TTFT, costo y
+  `voice_realtime_eligible` requieren catálogo/selección y prueba consentida;
+  no se hicieron requests pagas en esta pasada.
+- **Región y catálogo fail-closed**: Kimi global usa `api.moonshot.ai/v1` y
+  MiniMax internacional `api.minimax.io/v1`; ninguna variante china se activa
+  por defecto. Sólo OpenAI declara catálogo `live` probado contra `/v1/models`;
+  los demás presets quedan `manual` hasta implementar y verificar su consulta
+  oficial específica.
+- **Provisioning automático**: el modelo no pertenece al perfil Lab. El reporte
+  real de hardware más evidencia calificada por clase produce un plan declarativo
+  con runtime, contexto, offload, reservas, hash/licencia y consentimiento. Un
+  candidato nunca se instala en silencio y ASRock no califica 4/8 GB. Desde
+  16 GB no existe un techo fijo de 6 GB: 16/32/64+ reservan margen proporcional
+  y el mejor artefacto calificado que entra puede escalar con RAM/VRAM real.
+  El runtime elegido queda vinculado a su evidencia y no se sustituye por otro
+  runtime saludable durante el arranque.
+- **Activación estable y consentida**: `ProvisioningPlan` no queda como informe
+  descartable. Tras verificar el artefacto exacto, `prepare-ai
+  --activate-selection` puede escribir un manifiesto atómico `0600` ligado a
+  hardware/modelo/runtime/contexto/offload/hash. El runner lo consume sólo con
+  local habilitado y sin override, y falla cerrado ante drift o corrupción; no
+  replanifica ni cambia de modelo por turno.
+- **Captura honesta**: `audio.input_volume` decorativo se retira. La cadena es
+  source -> NS opcional -> gain dB -> AGC bounded con gate/hold/release -> limiter ->
+  VAD/STT; preserva S16LE. `pipewire:<node>` usa target explícito y `pipewire`
+  usa el default nativo sin depender de `pactl`. El calibrador mide
+  silencio/voz/SNR/clipping/WER en RAM, propone el gate desde silencio y no
+  guarda PCM ni cambia config sin confirmación.
+- **Observabilidad de audio causal**: `mic_raw` se mide antes de DSP, cada etapa
+  se mide después y `mic_clean` representa sólo la salida final. Un drenaje TTS
+  cancelado publica su evento antes de quedar en cero y antes de que el siguiente
+  turno entre al backend no concurrente.
+- **ASRock observado**: `default` resolvió a USB Composite/Jieli, no G600;
+  Easy Effects Source estaba a 42%/-22,87 dB. Son hechos de inventario, no una
+  recomendación de fuente. AGC/NS no equivalen a AEC.
+- **Comparación guiada, no controles globales**: sin `--device`, el harness
+  selecciona default/fuentes PipeWire físicas/Easy Effects de forma bounded y
+  deduplicada; un override usa sólo el target pedido. Persiste escalares por
+  etapa y el snapshot de rutas, nunca PCM. Web no toca `amixer Master`, no
+  promete AEC ni muestra una latencia Piper fija sin medición.
+- **Distancia y perfiles comparables**: la matriz física usa 30/75/100 cm,
+  silencio previo y perfiles `raw`, `noise_only` y `full`. Easy Effects es una
+  referencia de laboratorio `external_reference`, nunca requisito ni doble DSP.
+- **Campaña USB inconclusa**: `voice-20260901T084132Z-1cfb53` sólo reunió cinco
+  muestras a 75 cm. Jieli dio WER 1,0 raw y 0,5 procesado, con falsos triggers en
+  varias configuraciones; Easy Effects dio WER 0,5 en una única muestra. No se
+  promueve fuente, gain, AGC, VAD ni perfil a configuración activa.
+- **Micrófono de las unidades recicladas**: se prioriza el dispositivo
+  integrado/nativo de la placa. Debe calificarse por endpoint y unidad; no se
+  presupone bueno por ser interno. USB/G600/Easy Effects quedan opcionales para
+  diagnóstico o comparación y nunca se instalan como requisito.
+
+### R6 — Vertical 1 de updates firmados y recuperables (2026-08-31)
+
+- **Trust antes de acción**: bytes exactos del manifiesto JSON se verifican con
+  firma Ed25519/OpenSSL antes del parseo. Tamaño, SHA-256, plataforma, media type
+  y expansión de cada artefacto pertenecen al contenido firmado.
+- **Lifecycle recuperable**: downloader bounded/cancelable/reanudable, CAS
+  inmutable, journal atómico, aprobación efímera y un worker. Una interrupción
+  sólo se reanuda tras fetch, firma y aprobación nuevos con ETag/Range compatible.
+- **Activación**: extracción tar fail-closed, preparación atómica, switch,
+  probation y rollback se ejecutan detrás de contratos inyectados. SQLite no se
+  restaura ni baja de schema automáticamente; la compatibilidad rollback se
+  valida antes de mutar servicio.
+- **Frontera actual**: sólo `LAB_SIMULATION`, raíces inyectadas y controller
+  in-memory. El modo Appliance queda `UNAVAILABLE` hasta implementar
+  `ailen-updaterd`; no se invoca systemd ni se escriben `/opt`/`/var/lib` reales.
+- **Administración**: `/actualizaciones` y sus APIs usan auth, CSRF, allowlist
+  exacta y DTOs redacted. Web no ejecuta downloader/tar/shell ni controla paths.
+- **Evidencia**: aceptación firmada sin Internet demuestra éxito, rollback de
+  candidato unhealthy y resume tras interrupción. Pipeline de firma productivo,
+  bundle offline, power-loss y appliance físico siguen pendientes (ADR-013).
+- **Gate integrado**: 1019 tests, Ruff, mypy en 157 archivos fuente y diff-check
+  limpios. Wheel de 195 entradas/3.069.600 bytes incluye updater/Web y excluye
+  modelos, multimedia, FacePack, binarios nativos, keys y artefactos Lab.
+
+### R5B — calidad authored sobre composición H3 incompatible, FacePack 1.6 (2026-08-31)
+
+- **Evidencia física**: las secuencias H3 completas eran limpias, pero componer
+  ojos/cejas o boca de un clip sobre otra emoción producía doble contorno y
+  deformación de identidad. Más tracking/feather eliminó bordes, no la causa.
+- **Decisión de pack**: el desktop pack 0.7.0 usa full-frame para sus 28
+  microacciones y 10 speech sources. Speech conserva categoría/selección propia,
+  sustituye temporalmente sólo la imagen y al cesar retoma el affect de Core; no
+  se transforma en emoción ni risa.
+- **Capacidad futura**: FacePack 1.6/engine ABI 1.4 todavía acepta mouth/upper ROI
+  para assets realmente preparados como capas. No se declara composabilidad falsa
+  para los videos H3 existentes.
+- **Prueba física**: `blink_double` quedó limpio; los diez `talk_*` mejoraron
+  labios/dientes y el seam casi no se percibe a velocidad real.
+- **Costo ASRock**: pack 90.247.218 bytes/2.888 frames; RSS incremental 3,79 MiB,
+  speech 0,920 ms avg/1,485 ms p95 y 2,560% de un core. Runtime sigue sin MP4.
+
+### R5B — movimiento authored, tracking de capas y retornos FacePack 1.4 (2026-08-31)
+
+- **Causa visual confirmada**: normalizar cada frame full-frame inmovilizaba la
+  cara mientras el cuerpo H3 seguía moviéndose; el borde reflectado duplicaba la
+  figura en los laterales. Full-frame ahora usa un transform fijo del frame de
+  entrada y fondo oscuro constante, preservando el movimiento authored.
+- **Tracking real**: el formato 1.4 codifica por frame la transformación
+  canonical->cara actual. El engine aplica ojos/cejas/boca con traslación,
+  rotación y escala sobre la cabeza real. La boca usa ROI de reemplazo alineada;
+  el delta de luminancia anterior deformaba dientes y labios.
+- **Retorno sin doble rostro**: los clips que terminaban en pose recorren frames
+  curados reales en reversa. Payloads JPEG idénticos comparten offset, por lo que
+  2.867 frames lógicos ocupan 64.852.548 bytes. No hay crossfade ni frames H3
+  regenerados.
+- **Presentación**: ABI 1.4 agrega copia bilinear segura. A 720/1080 reduce bloques,
+  pero una fuente 480×480 no puede adquirir detalle nuevo. `copy_frame` es la
+  ruta concurrente canónica; el getter raw sólo conserva compatibilidad mediante
+  snapshot thread-local y destroy exige quiescencia del caller.
+- **Evidencia**: pack determinista SHA-256
+  `657abff40e76b37fb83ee0813683c48b99dfd592eec21096d93f4cc2df98ba29`;
+  765 tests verdes. El usuario confirmó el movimiento full-frame corregido;
+  falta observar físicamente el regreso y la boca tracked del showcase final.
+
+### R5B — expansión completa y composición delta FacePack 1.2 (2026-08-30)
+
+- **Corpus útil**: el pack desktop pasa de 23 a 79 secuencias y 2.522 frames,
+  con 39 emociones listables, 28 microacciones, 10 speech y 6 estados. Usa 76
+  fuentes; 2/27 quedan fuera por redundancia, 28/64/82 por review inseguro y
+  39/83–85 por descarte. La segunda revisión promovió 76 a `crying` utilizable.
+- **Capas reales**: ojos/cejas/gaze y boca se compilan como deltas ROI centrados,
+  normalizados offline por ojos/nariz. Speech usa luminancia/dead-zone para no
+  transferir piel, mandíbula o color de otro clip. La composición runtime es
+  base/emoción + upper-face delta + mouth delta, sin crossfade ni MP4.
+- **Metadata ejecutada**: anchors/transition, prioridad, `gaze_compatible`,
+  estilos de speech y retorno visual compatible tienen efecto real. Core sigue
+  siendo autoridad de `AssistantState`; `return_state` no lo modifica.
+- **ABI/default**: formato/ABI 1.2, exports `noexcept`, errores traducidos, mutex
+  por handle y strings thread-local. `facepack` es default. Fallo => headless;
+  `portrait` y `pixel` sólo se eligen manualmente.
+- **Evidencia**: pack determinista SHA-256
+  `04eecd4d72f3c8bef4c2a3d37d2df788156cf904ceef1bd0c80edec3164382c7`;
+  84.775.628 bytes. ASRock contendido: 0,691% de un core idle, 2,303% por capas,
+  0,745 ms update+copy promedio/1,237 ms p95. Suite completa: 742 tests; Ruff,
+  mypy 145+6, C++ warnings-as-errors, diff-check y wheel limpios. Validación
+  conversacional física y DLL Windows siguen abiertas.
+
+### R5B — auditoría post-Codex de FacePack (2026-08-30)
+
+- **Failover en caliente**: el controller de FacePack queda detrás de un wrapper estable que conserva la misma referencia para Core/Audio/Vision/Tools y desactiva el display facial ante fallos nativos fatales durante la sesión. Errores semánticos no fatales (`NOT_FOUND`, `BUSY`) no disparan fallback ni ocultan bugs.
+- **Timing natural**: `duration_seconds=0` significa timing propio del renderer. FacePack ya no estira automáticamente expresiones cortas a 5 o 7.5 segundos; el renderer portrait conserva su duración histórica cuando recibe 0.
+- **Metadata v1**: `return_state`, transiciones, prioridad y `gaze_compatible` permanecen metadata validada/advisory en este slice; Core sigue siendo autoridad del estado persistente. No se declara funcionalidad que el engine aún no ejecuta.
+- **Alcance en ese corte**: la auditoría visual cubría 85 fuentes y el pack era un vertical slice de 23 secuencias/603 frames/11 emociones. La sección superior registra la expansión posterior.
+- **Gate de ese corte**: 730 tests, Ruff, mypy (145 + 6 módulos), C++17 warnings clean, diff-check y wheel 0.4.0.dev0 sin multimedia/binarios nativos embebidos.
+
+### Consolidación 0.4.0-dev.0 y slice FacePack nativo (2026-08-30)
+
+- **Versión de desarrollo**: el estado del proyecto pasa de `0.1.0-dev.0` a `0.4.0-dev.0` para reflejar R1-R3C integrados y el trabajo actual en R4/R5. No implica release/tag: primero se requiere auditoría del working tree, suite completa y wheel limpio.
+- **H3 es corpus, no runtime**: los 85 MP4 se inspeccionaron visualmente y se conservan sin cambios como materia prima fuera del wheel. La clasificación completa vive en `h3_classification.json`; el engine nunca reproduce MP4.
+- **Engine separado del contenido**: ADR-012 adopta C++17 con C ABI (`libailen_face_engine.so` / `ailen_face_engine.dll`) y `.facepack` binario externo. Magic, ABI, offsets, límites y CRC fallan limpio. Agregar una emoción recompila sólo el pack; Pack A -> Pack B fue probado con la misma `.so`.
+- **Allowlist dinámica, autoridad en Core**: el controller filtra ids canónicos del pack y los entrega al schema de `FaceExpressionTool` y a la metadata afectiva. El LLM sólo elige dentro de esa lista; nunca controla assets/frames, y una emoción nueva no exige mantener una lista paralela del renderer.
+- **Estados y speech son capas distintas**: estados persistentes usan base + espera variable + microacción + retorno, no loops de clips. Speech usa una mouth ROI alineada offline y no reemplaza la emoción activa; `SPEAKING` conserva `happy`/la expresión vigente.
+- **Representación v1**: JPEG Q90 por frame fue 4.8x menor que el delta lossless muestreado, ofrece acceso aleatorio y requiere sólo libjpeg en runtime. FFmpeg/OpenCV/YuNet quedan restringidos al compilador offline.
+- **Fallbacks y promoción**: falta DLL Windows y hardware LOW. `facepack` es el default lógico; fallo deshabilita el display. `portrait` queda renderer legacy manual y `pixel` opción explícita para hardware/display excepcionalmente limitado.
+- **Health/preflight separado**: tener Tkinter no prueba que el engine esté disponible. El preflight carga ABI + pack y sólo entonces marca `Native FacePack` como `PASS`; fallas recuperables quedan en `WARN` y el display facial se deshabilita hasta reparar engine/pack.
+- **Benchmark ASRock**: pack 27.06 MB, RSS incremental 3.50 MiB, pack load 55.43 ms, update animado 0.59 ms avg / 1.25 ms p95. Engine 0.65%/1.84% de un core idle/animado; Tk real 2.30%/13.62% con speech a 30 FPS. No extrapolar.
+- **Cierre verificable**: 727 tests en verde, Ruff limpio, mypy limpio en 144 módulos AILEN + 6 de tools/facepack, diff-check limpio y wheel inspeccionado sin MP4, FacePack ni librerías nativas.
+
+### R4 — External Provider Runtime Manager & Autoservicio `/ia` (2026-08-29, histórico; sustituido el 2026-09-01)
+
+- **Abstracción `ExternalProviderRuntime` y `ExternalRuntimeManager`**: Desacopla la administración del ciclo de vida del cliente instalado (`detect()`, `version()`, `auth_status()`, `diagnostic()`, `list_models()`, `install()`, `update()`, `begin_login()`) de la generación de inferencia conversacional (`AiProvider`).
+- **Auditoría física y runtime Google Antigravity (`agy` v1.1.22)**: Detección automática en `~/.local/bin/agy`, parseo de versión, verificación de autenticación contra `agy models`, acciones de inicio/renovación de sesión y actualización del cliente con timeouts estrictos y comandos en allowlist sin shell libre.
+- **Autoservicio completo desde `/ia`**: Endpoints protegidos por CSRF (`/api/ai/runtime/status`, `/api/ai/runtime/login`, `/api/ai/runtime/update`, `/api/ai/runtime/install`, `/api/ai/models`, `/api/ai/test-provider`) que permiten auditar, renovar sesión y actualizar clientes directamente desde el panel web con mensajes de error limpios y comprensibles (sin tracebacks ni errnos crudos).
+- **Manejo de Rate Limits (HTTP 429)**: `GenericOpenAiBackend` y `OpenCodeProvider` mapean 429 a `finish_reason="rate_limited"` y estado `RATE_LIMITED` / `DEGRADED`, permitiendo al router degradar limpiamente en cascada sin colapsar AILÉN.
+- **Validación física end-to-end**: Confirmada ejecución en equipo host: `agy v1.1.22`, `gemini-3.7-flash-low`, latencia medida (~5.4-5.6s), turno conversacional completo con aislamiento estricto de memorias privadas (`PRIVATE Core` -> `SANITIZED_REMOTE` -> `Antigravity` -> `respuesta`).
+- **Suite de pruebas extendida**: 697 tests pasando en verde; Ruff y mypy (142 archivos) limpios.
+
+### R4 — Proveedores Externos Configurables, Almacén Seguro 0600 y Panel Web Admin de IA (2026-08-28, histórico; sustituido el 2026-09-01)
+
+- **Abstracción `AiProvider` desacoplada del LLM**: Estandariza metadatos, capacidades, health, y `test_connection()`. Google Antigravity (`agy`), OpenCode Zen y endpoints OpenAI-compatible son ciudadanos de primera clase junto a Ollama local.
+- **Google Antigravity en modo headless sandbox**: `AntigravityProvider` invoca `agy` con `--disable-slash-commands --sandbox` como modelo conversacional puro sin permisos de ejecución ni manipulación de archivos.
+- **Almacén seguro con permisos 0600**: `SecretResolver` persiste claves en `data/secrets/` con permisos `0600` (POSIX) mediante escritura atómica temporal y directorio `0700`. Archivos con permisos de grupo/mundo son rechazados. Ninguna clave entra a `ailen.toml` ni SQLite.
+- **Modo remoto en Tier 4 GB sin runtime local activo**: `ai.local.enabled = false`
+  es estado de primer nivel. Preflight y Lab Runner reconocen `AI Inference:
+  READY via <proveedor>` sin tocar Ollama. Esta decisión conserva un modo de
+  instalación válido; no elimina el requisito posterior de ofrecer un perfil
+  autónomo local medido para el producto 4/8 GB.
+- **Panel Web Admin de IA (`/ia`) y APIs AJAX**: Incluye tarjetas interactivas de proveedores, selector de prioridades de fallback, guardado de claves en almacén seguro (`POST /api/ai/set-secret`) y prueba de latencia (`POST /api/ai/test-provider`) protegidos por CSRF.
+- **Suite de pruebas extendida**: 670 tests pasando en verde, ruff y mypy limpios (141 archivos).
+
 ### R3C — Product Behaviors, Controlled Tools & Safe Web Boundary
+
 
 - **Timeout de herramientas no bloqueante**: `ToolExecutor` ejecuta cada tool en un worker pool sin context manager; ante timeout se devuelve control inmediatamente (`shutdown(wait=False, cancel_futures=True)`). Un tool colgado ya no congela la conversación hasta que su hilo muere.
 - **Gates explícitos de red y destructividad en tools**: tools con `requires_network=true` se deniegan con `NETWORK_UNAVAILABLE` cuando no hay conectividad (`ToolContext.internet_available`, cableado desde ConversationCoordinator). Tools `destructive=true` requieren `confirm=true` explícito y están prohibidos en SHOP/PUBLIC. Hoy ningún tool builtin es destructivo; el gate queda cerrado por defecto.
@@ -21,7 +220,12 @@
 ### R3B.4 — Adaptive Runtime, Model Residency & Voice Latency
 
 - **InferenceProfile desacoplado de DeviceProfile**: `DeviceProfile` define la topología (`SATELLITE`, `CLOUD`, `HYBRID`, `LOCAL`, `LAN_BRAIN`), mientras que `InferenceProfile` define la capacidad local recomendada (`RULE_ONLY`, `FAST`, `BALANCED`, `QUALITY`).
-- **CPU-only es ciudadano de primera clase**: `recommend_inference_profile()` maneja deterministamente 2 GB (RULE_ONLY/SATELLITE), 4 GB (RULE_ONLY conservador por defecto, FAST con opt-in), 8 GB (FAST CPU) y 16+ GB (BALANCED CPU), sin asumir la existencia de GPU a menos que esté físicamente medida.
+- **CPU-only es ciudadano de primera clase**: `recommend_inference_profile()`
+  maneja determinísticamente 2 GB (RULE_ONLY/SATELLITE), 4 GB (FAST sólo si el
+  envelope medido deja margen), 8 GB (FAST CPU) y 16/32/64+ GB con presupuesto
+  dinámico, sin
+  asumir GPU. El cambio posterior reemplaza el antiguo default RULE_ONLY de 4 GB;
+  sigue exigiendo benchmark objetivo antes de declarar soporte.
 - **Prohibición Estricta de Model Hopping**: Una sesión mantiene un modelo primario estable (`ModelResidencyPolicy`). Se prohíbe alternar modelos dinámicamente por consulta (ej. 3B -> 9B -> 3B) para prevenir cold-starts, latencias impredecibles y degradación de memoria. Cambios permitidos sólo en: `STARTUP`, `PROFILE_CHANGE`, `BACKEND_FAILOVER`, `ADMIN_OVERRIDE`, `NEW_SESSION`.
 - **Residencia de Modelos Configurable**: El tiempo de `keep_alive` para Ollama se deriva del perfil (`30m` en QUALITY, `15m` en BALANCED, `5m` en FAST, `0` en RULE_ONLY) y es configurable.
 - **Benchmark local veraz (`ailen lab benchmark-ai`)**: Ollama se mide por su API nativa con `think=false`; `FIRST` no se etiqueta como cold-start y TOK/s sólo se reporta si el runtime entrega duración/conteo de generación. Candidatos ausentes siguen `NOT_INSTALLED` sin descargas.
@@ -204,7 +408,9 @@
 ### IA
 
 - La identidad del asistente vive en AILEN Core, no en el LLM.
-- Se adopta arquitectura híbrida: reglas/tools locales + LLM local opcional + LAN Brain opcional + API cloud rápida.
+- Se adopta arquitectura híbrida: reglas/tools locales + capacidad LLM local
+  obligatoria del producto (activable por instalación) + LAN Brain opcional + API
+  cloud rápida.
 - Los modelos cloud están orientados a consultas breves, atención y síntesis; no se requiere razonamiento pesado por defecto.
 - El router debe considerar costo, latencia, disponibilidad, privacidad y hardware.
 
@@ -223,6 +429,15 @@
 - Detección de presencia POC: se utiliza clasificador Haar cascade de OpenCV a 5 FPS y 320px como dependencia opcional `[vision]`. Se prohíbe el reconocimiento de identidad, biometría y almacenamiento de imágenes.
 - Debounce temporal (`VisionDebouncer`): se separa la observación instantánea de cámara del estado estable de presencia usando `vision.presence_debounce_seconds` (2.0s), previniendo falsos positivos de un solo frame y dropouts momentáneos.
 - `InteractionCoordinator` integra la presencia debounced con `StateManager`, `SocialEngine` y actualiza la mirada (`gaze`) y expresiones en `FaceController`.
+
+## 2026-08-29 — Retrato raster animado como estilo visual por defecto (histórico, supersedido por R5B)
+
+- `face_style="portrait"` pasa a ser el estilo visual por defecto. El personaje se renderiza desde el retrato raster aprobado de AILEN en vez de intentar reproducirlo con geometría Tkinter.
+- El asset fuente conservado es exactamente el PNG generado/aprobado, SHA-256 `d47611560b3ccc38c34ec4b65241280654f75eb86d54f697b5de7deb96d18584`; los frames de mirada, parpadeo y boca se derivan localmente de ese mismo asset y se empaquetan con el wheel.
+- `FaceAnimator` y `FacePose` siguen siendo la autoridad de movimiento. El backend raster sólo proyecta sus valores sobre patches de ojos/boca y parallax, por lo que Vision, TTS y estados no se acoplan a la imagen.
+- En ese corte, `pixel` y `vector` permanecían como estilos legacy/fallback. La
+  política vigente está documentada arriba: FacePack default, fallo headless y
+  renderers legacy únicamente por selección manual.
 
 ### Audio Local, VAD, STT y TTS (R2B)
 
@@ -323,3 +538,68 @@
 - La NC250 se integra como fuente Vision RTSP preferida mediante host/ruta/usuario en config y contraseña sólo por variable de entorno. Nunca persistir credenciales de cámara en TOML, docs o logs.
 - El micrófono RTSP de la NC250 queda validado como fuente técnica, pero no sustituye al `AudioInputBackend` hasta implementar captura remota con buffering/reconexión y pruebas VAD/STT.
 - Para uso nocturno, preferir modo Auto de la cámara y validar por readback + prueba YuNet; no asumir IR activo sólo porque el hardware lo soporta.
+### R4 — local-first objetivo y Provider Manager externo corregido (2026-08-31)
+
+- **Producto, no ASRock**: el hardware vendido debe ejecutar un GGUF local
+  cuantizado elegido y medido por tier. Las APIs son opcionales o una futura
+  suscripción administrada. ASRock sólo verifica contratos y no demuestra 4/8 GB.
+- **Desactivación real**: `ai.local.enabled=false` excluye discovery, backend,
+  managed runtime, prewarm, intent model y fallback; no se consulta Ollama.
+- **Prioridad efectiva**: `/ia` alimenta el orden real. Se intenta el preferido
+  sano y luego prioridad; `cloud` es la única ruta para OpenAI-compatible.
+- **Privacidad comprobada**: el boundary reconstruye cada intento remoto con el
+  turno actual y metadata allowlisted. Tests de captura rechazan historial,
+  memoria, personalidad, persona, capabilities, paths, tools y secretos.
+- **Errores y cuota**: adapters normalizan timeout/rate limit/auth/model/network/
+  unavailable/invalid response/internal; 429 respeta `Retry-After` acotado y
+  activa cooldown antes del fallback.
+- **Medición honesta**: AGY fue funcional pero demasiado lento para voz (primer
+  texto 6,74 s avg, 8,88 s p95 bajo contención; spawn ~0,4 ms). OpenCode Free
+  completó 1/4 antes de un 429. Ninguno se promueve por esa prueba.
+- **Panel**: catálogo live/configured/known-fallback/manual, health e inferencia
+  verificada se distinguen. Guardar requiere reinicio; no hay hot reload fingido.
+- **Capacidad local obligatoria, estado local explícito**: el producto soporta
+  operación completamente local; `ai.local.enabled=false` sigue significando que
+  esa instalación no toca runtimes locales. No son afirmaciones contradictorias.
+- **Una interfaz local**: Ollama y llama.cpp administrado implementan
+  `AiBackend`/`StreamingAiBackend`. llama.cpp carga un GGUF verificado bajo
+  demanda; la presión de RAM sólo libera un modelo/runtime ocioso y propio.
+- **Envelopes, no promesas**: 4/8/16/32/64+ GB tienen presupuestos de modelo, contexto y
+  piso libre canónicos. La elección final exige benchmark físico con todo el stack;
+  el detector no transforma una ficha que entra en RAM en soporte declarado.
+- **Evidencia STT hasta Core**: texto, confianza real, motor, duración,
+  `utterance_id`, barge-in, truncamiento y alternativas forman el turno. Una tool
+  mutante no se ejecuta con audio dudoso/truncado aunque el intent puntúe alto;
+  un barge-in completo no se confunde con una frase cortada.
+- **Llamada incremental**: deltas reales se segmentan en frases y alimentan una
+  cola TTS de un elemento dentro de un único turno cancelable. Barge-in detiene
+  nuevas frases; no se mezcla fallback detrás de una respuesta parcial ya oída.
+- **Resolver no es chatbot**: charla, saludos, opiniones y humor llegan al LLM;
+  respuestas deterministas quedan para tools/resultados verificables, errores
+  operativos y repreguntas STT. Ailén es general y el taller es contexto, no
+  identidad obligatoria.
+- **Bandas STT explícitas**: confidence real se clasifica en ruido, dudoso,
+  conversación y acción; `None` permanece desconocido. Longitud de texto no
+  convierte audio de confianza extremadamente baja en conversación válida.
+  Alternativas sólo se usan si vienen del motor y superan el umbral.
+- **Cancelación generacional**: cada habla tiene `turn_id/generation_id`;
+  playback se corta de inmediato y resultados TTS obsoletos se descartan.
+  Piper/ONNX activo puede drenar bajo lock y se mide aparte. Assistant
+  interrumpido no entra como respuesta completa en el contexto persistido.
+- **`auto` adaptativo**: modalidad, privacidad, disponibilidad, complejidad y
+  elegibilidad realtime eligen la clase de primary. Las prioridades no
+  reemplazan esta política y sólo ordenan equivalentes/fallbacks. Preferencia
+  explícita sigue siendo autoritativa si está permitida.
+- **Calibración sin ficción**: `/audio` mide RMS real en RAM o falla
+  honestamente. El harness `lab calibrate-voice` compara WebRTC 2/3 y
+  380/500/600 ms y tiene un bloque barge-in real; no persiste PCM ni cambia
+  thresholds.
+- **Calificación local versionada**: catálogo `candidate/qualified/rejected`,
+  manifest con artefacto/licencia/template/digest y evidencia de hardware. En
+  el envelope seguro gana la mejor calidad aprobada, no siempre el menor
+  footprint. Las bandas mayores a 0.8B siguen candidatas sin descargas ni hashes
+  inventados.
+- **AGY aislado no quedó mínimo**: un custom agent local a la carpeta Lab con
+  `tools: []` siguió reportando el contexto amplio del CLI; una muestra pública
+  consumió 17.425 input tokens y ~6,48 s wall. No se alteró configuración
+  global; AGY permanece non-realtime para voz automática en esta ruta/version.

@@ -1,10 +1,18 @@
 # Handoff para agentes — AILEN
 
-> Documento operativo para Gemini, OpenCode, Codex u otros agentes. Debe leerse junto con `AGENTS.md` antes de modificar el repositorio.
+> Documento operativo para Codex Sol Max, Codex Spark y otros agentes de desarrollo. OpenCode/AGY pueden aparecer en antecedentes históricos, pero no son proveedores runtime de AILEN. Debe leerse junto con `AGENTS.md` antes de modificar el repositorio.
 
 ## 1. Estado
 
-AILEN está en `0.1.0-dev.0` y ya tiene un runtime funcional de laboratorio: Foundation/Core/Web, persistencia SQLite, Face/Vision, Audio/VAD/STT/TTS, AI Router adaptativo y R3C Controlled Tools. El baseline actual supera 500 tests. Los agentes deben partir de `docs/memory/CURRENT_STATE.md` y `TASKS.md`; no deben reconstruir Foundation ni asumir que los bloques R1-R3 siguen pendientes.
+AILEN está en `0.4.0-dev.0` y ya tiene un runtime funcional de laboratorio: Foundation/Core/Web, persistencia SQLite, Face/Vision, Audio/VAD/STT/TTS, AI Router adaptativo, R3C Controlled Tools, recordatorios, local Ollama/llama.cpp, LAN Brain y remotos HTTP nombrados. AGY/Antigravity y OpenCode están retirados del producto. OpenAI/Anthropic/DeepSeek/Kimi/MiniMax son presets no probados hasta disponer de clave/modelo y benchmark consentido. El baseline vigente es de 1145 tests, Ruff limpio, mypy limpio en 164 módulos y wheel limpio de 202 entradas; usar siempre el gate más reciente de `CURRENT_STATE.md`. El provisioning exige evidencia separada por hardware/modelo/runtime y no infiere runtime ni GPU offload desde compatibilidad declarada. FacePack 1.6 es default, falla a headless y nunca selecciona `portrait`/`pixel` automáticamente. Los agentes deben partir de `docs/memory/CURRENT_STATE.md` y `TASKS.md`; no deben reconstruir Foundation ni asumir que los bloques R1-R3 siguen pendientes.
+
+## 1.1 Continuidad del thread Codex
+
+- Thread canónico: `01a03a1f-e86e-7213-9581-af295af5c7f1`. Todos los trabajos de AILEN deben reanudar ese mismo chat, también cuando se alterna entre Sol Max y Spark.
+- Sol Max: agente principal para arquitectura, cambios transversales y auditoría final.
+- Spark: subagente `spark_worker` para tareas estrechas y rápidas. Sol puede delegarlo desde el thread canónico; el child thread devuelve su resumen al principal. No se usa para cerrar una migración extensa sin revisión de Sol y sus prompts deben ordenar tests y revisión del diff.
+- Reanudación: `scripts/resume_codex_ailen.sh sol` o `scripts/resume_codex_ailen.sh spark`. No usar `codex fork` ni crear una sesión nueva salvo autorización expresa.
+- El perfil Spark queda preparado, pero su acceso real depende de que la cuenta Codex lo tenga habilitado; un fallo de disponibilidad no cambia de thread ni habilita otro proveedor automáticamente.
 
 ## 2. Lectura obligatoria
 
@@ -47,14 +55,20 @@ Si una decisión estructural no está resuelta, crear/proponer ADR y dejar imple
 Trabajar sobre R4 y deudas verificables sin reabrir bloques cerrados:
 
 ```text
-1. terminar backend musical local/MPRIS y validarlo físicamente cuando exista un reproductor disponible;
-2. mantener WebSearch desacoplado y elegir/implementar proveedor real sólo con credenciales/costos explícitos;
-3. mejorar robustez de instalación limpia y provisioning Debian;
-4. dejar STT G600 vs Whisper.cpp y benchmarks de hardware para sesiones físicas autorizadas;
-5. mantener documentación, tests y boundaries de seguridad sincronizados.
+1. consolidar el working tree 0.4.0-dev.0 y mantener documentación/versionado sincronizados;
+2. ejecutar en hardware reciclado la calificación local y la matriz de voz sobre el micrófono integrado/nativo de cada placa; ASRock/USB/Easy Effects sirven sólo como laboratorio. No guardar PCM ni promover modelos o micrófonos por detección;
+3. terminar R5 Web Admin con datos reales: eliminar maquetas/hardcodes de memoria, diagnóstico, personalidad, visión y tools sin acoplar handlers a infraestructura;
+4. continuar R5B desde ADR-012 y el pack desktop de 79 secuencias: `facepack` es
+   default y falla a headless; falta validar DLL/release packaging, perfiles LOW
+   y una sesión conversacional completa con PCM/Vision reales;
+5. preparar R6 Appliance Debian 13 minimal, systemd/watchdog y packaging reproducible;
+6. conservar tests, seguridad, privacidad y límites de hardware como gates de cada entrega.
 ```
 
-En Debian de desarrollo se permite implementar y probar software, pero no declarar hardware físico validado sin evidencia real. Gemini/OpenCode/Codex actúan como agentes subordinados: no hacen commit/push y no cambian arquitectura sin ADR o coordinación explícita.
+En Debian de desarrollo se permite implementar y probar software, pero no declarar hardware físico validado sin evidencia real. Codex Sol Max y Codex Spark son agentes de desarrollo; Gemini/OpenCode/AGY pueden figurar en documentos históricos, pero ninguno es proveedor conversacional runtime por ese solo hecho. Los agentes no hacen commit/push ni cambian arquitectura sin ADR o coordinación explícita.
+
+
+> **Nota:** las secciones de carriles Foundation/Web/POC que siguen se conservan como referencia histórica de responsabilidades. No representan trabajo pendiente salvo que `TASKS.md` abra explícitamente una regresión o refactor.
 
 ## 5. Carril A — Foundation/Core
 

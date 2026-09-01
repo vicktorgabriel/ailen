@@ -31,6 +31,8 @@ Si un futuro renderer SDL2/DRM-KMS resulta superior en hardware objetivo, se pod
 /etc/ailen/ailen.toml
 /var/lib/ailen/ailen.db
 /var/lib/ailen/assets/
+/var/lib/ailen/artifacts/objects/<prefijo-sha256>/<sha256>
+/var/lib/ailen/provisioning/
 /var/lib/ailen/secrets/
 /run/ailen/runtime.json
 ```
@@ -39,15 +41,40 @@ Si un futuro renderer SDL2/DRM-KMS resulta superior en hardware objetivo, se pod
 
 ```text
 check manifest
-  -> download
-  -> verify
-  -> unpack new release
+  -> verify exact Ed25519 signature
+  -> plan + explicit approval
+  -> bounded/resumable download
+  -> verify size/SHA-256 into immutable CAS
+  -> safely prepare new release
   -> preflight
-  -> switch current
+  -> atomic switch current
   -> restart
-  -> health check
+  -> health probation
   -> keep OR rollback
 ```
+
+### Estado real del vertical de actualización
+
+Vertical 1 está implementado y probado **únicamente como `LAB_SIMULATION`**:
+manifiesto JSON estricto, firma Ed25519 con OpenSSL, downloader reanudable,
+almacén por contenido, journal atómico, extracción segura, switch/health/rollback
+sobre raíces temporales y administración autenticada en `/actualizaciones`.
+Construir el servicio no inicia red, threads ni crea directorios; cada operación
+requiere acción administrativa y una fuente/trust root completa.
+
+En Lab, la activación usa un controller in-memory y jamás llama a systemd. El
+modo Appliance falla honestamente como no disponible. Por lo tanto siguen
+pendientes antes de usar estas rutas bajo `/opt` y `/var/lib` reales:
+
+- `ailen-updaterd` con separación de privilegios y protocolo acotado;
+- unidades systemd, ownership/permisos finales y política de retención de CAS;
+- pipeline/custodia de claves para firmar releases productivas;
+- CLI de bundle offline y provisión separada de modelos/voces/FacePack;
+- pruebas de corte de energía, disco lleno y recuperación física;
+- actualización/rollback real en Banghó u otro appliance dedicado.
+
+La prueba sintética no declara soporte de 4 GB/8 GB ni habilita actualizaciones
+automáticas o el canal estable.
 
 ## Canales
 

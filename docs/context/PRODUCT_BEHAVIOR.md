@@ -255,10 +255,15 @@ Casos que NO deberían usar LLM:
 - play/pause;
 - timers simples;
 - hora si ya existe tool;
-- saludo por presencia;
+- decisión de iniciar o no un saludo por presencia (el texto conversacional del
+  saludo lo genera el LLM);
 - cambio de modo;
 - estado del sistema;
 - animaciones.
+
+Saludos pronunciados por el usuario, charla general, humor, opiniones y
+respuestas abiertas no son `RULE_ONLY`: deben llegar al backend conversacional.
+El resolver determinista decide rutas y acciones; no reemplaza al chatbot.
 
 ## 10. Degradación
 
