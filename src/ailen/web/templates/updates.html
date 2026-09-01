@@ -1,0 +1,174 @@
+<section
+  class="page-section"
+  id="updates-admin"
+  data-csrf="{{ csrf }}"
+  data-operation-id="{{ operation_id }}"
+  data-phase="{{ phase }}"
+>
+  <div class="page-header">
+    <div>
+      <h1>Actualizaciones firmadas</h1>
+      <p>Canal {{ channel }} · modo {{ mode }}</p>
+    </div>
+    <span class="mode-badge">{{ availability }}</span>
+  </div>
+
+  <div class="notice warn">
+    Este nodo ejecuta el actualizador en modo <strong>{{ mode }}</strong>.
+    La activación Appliance permanece deshabilitada hasta disponer del daemon privilegiado.
+  </div>
+
+  <div class="card" style="margin-bottom: 1rem;">
+    <div class="card-header">
+      <h2 class="card-title">Estado verificado</h2>
+    </div>
+    <div class="card-body">
+      <ul class="kv-list">
+        <li class="kv-item"><span class="kv-key">Instalada</span><span class="kv-val">{{ installed_version }}</span></li>
+        <li class="kv-item"><span class="kv-key">Efectiva</span><span class="kv-val">{{ effective_version }}</span></li>
+        <li class="kv-item"><span class="kv-key">Candidata</span><span class="kv-val">{{ candidate_version }}</span></li>
+        <li class="kv-item"><span class="kv-key">Detalle</span><span class="kv-val">{{ detail }}</span></li>
+      </ul>
+      <h3 style="margin-top: 1rem;">Notas de versión verificadas</h3>
+      <p>{{ release_notes }}</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom: 1rem;">
+    <div class="card-header">
+      <h2 class="card-title">Operación</h2>
+      <span class="mode-badge" id="update-phase">{{ phase }}</span>
+    </div>
+    <div class="card-body">
+      <div style="height: 0.65rem; border-radius: 999px; overflow: hidden; background: var(--bg-elevated);">
+        <div
+          id="update-progress-bar"
+          style="height: 100%; width: {{ progress_value }}%; background: var(--brand-primary);"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="{{ progress_value }}"
+        ></div>
+      </div>
+      <p id="update-progress" style="margin-top: 0.5rem;">{{ progress_bytes }} · {{ progress_percent }}</p>
+      <ul class="kv-list">
+        <li class="kv-item"><span class="kv-key">Error</span><span class="kv-val" id="update-error-kind">{{ error_kind }}</span></li>
+        <li class="kv-item"><span class="kv-key">Detalle público</span><span class="kv-val" id="update-error-message">{{ error_message }}</span></li>
+      </ul>
+    </div>
+    <div class="card-footer" style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+      {{ raw:actions }}
+    </div>
+  </div>
+
+  <div class="notice info" id="update-notice" aria-live="polite">
+    Las descargas continúan en el worker aunque el navegador se cierre.
+  </div>
+</section>
+
+<script>
+(() => {
+  "use strict";
+  const root = document.getElementById("updates-admin");
+  if (!root) return;
+  const csrf = root.dataset.csrf || "";
+  let operationId = root.dataset.operationId || "";
+  let polling = true;
+  const terminalPhases = new Set(["active", "rolled_back", "cancelled", "failed"]);
+  const notice = document.getElementById("update-notice");
+
+  window.addEventListener("beforeunload", () => { polling = false; });
+
+  async function postUpdate(path, fields = {}) {
+    const body = new URLSearchParams({ _csrf: csrf, ...fields });
+    const response = await fetch(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      throw new Error(data.message || "La operación no pudo completarse.");
+    }
+    return data;
+  }
+
+  function showNotice(message, failed = false) {
+    if (!notice) return;
+    notice.textContent = message;
+    notice.className = failed ? "notice error" : "notice info";
+  }
+
+  function renderOperation(operation) {
+    const phase = String(operation.phase || "").toLowerCase();
+    const total = Number(operation.total_bytes || 0);
+    const downloaded = Number(operation.downloaded_bytes || 0);
+    const percent = total > 0 ? Math.min(100, Math.floor(downloaded * 100 / total)) : 0;
+    document.getElementById("update-phase").textContent = phase.toUpperCase();
+    document.getElementById("update-progress").textContent = `${downloaded} / ${total} · ${percent}%`;
+    const bar = document.getElementById("update-progress-bar");
+    bar.style.width = `${percent}%`;
+    bar.setAttribute("aria-valuenow", String(percent));
+    document.getElementById("update-error-kind").textContent = operation.error_kind || "—";
+    document.getElementById("update-error-message").textContent = operation.error_message || "—";
+    return phase;
+  }
+
+  async function pollUpdateStatus() {
+    if (!polling || !operationId) return;
+    let terminal = false;
+    try {
+      const response = await fetch(`/api/updates/status?operation_id=${encodeURIComponent(operationId)}`, {
+        credentials: "same-origin",
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.message || "Estado no disponible.");
+      terminal = terminalPhases.has(renderOperation(data.operation));
+      if (terminal) showNotice("La operación terminó. Recargá la página para ver las acciones disponibles.");
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : "Estado no disponible.", true);
+      terminal = true;
+    }
+    if (polling && !terminal) setTimeout(pollUpdateStatus, 1000);
+  }
+
+  root.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-update-action]");
+    if (!button) return;
+    const action = button.dataset.updateAction;
+    button.disabled = true;
+    try {
+      if (action === "check") {
+        await postUpdate("/api/updates/check");
+        window.location.reload();
+      } else if (action === "plan") {
+        const releaseId = button.dataset.releaseId || "";
+        const plan = await postUpdate("/api/updates/plan", { release_id: releaseId });
+        const started = await postUpdate("/api/updates/download", {
+          release_id: releaseId,
+          approval_token: plan.approval_token,
+        });
+        operationId = started.operation_id || plan.operation_id || "";
+        showNotice("Descarga firmada iniciada.");
+        setTimeout(pollUpdateStatus, 1000);
+      } else if (action === "cancel" || action === "activate") {
+        await postUpdate(`/api/updates/${action}`, {
+          operation_id: button.dataset.operationId || operationId,
+        });
+        window.location.reload();
+      } else if (action === "rollback") {
+        await postUpdate("/api/updates/rollback");
+        window.location.reload();
+      }
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : "La operación no pudo completarse.", true);
+      button.disabled = false;
+    }
+  });
+
+  if (operationId && !terminalPhases.has((root.dataset.phase || "").toLowerCase())) {
+    setTimeout(pollUpdateStatus, 1000);
+  }
+})();
+</script>

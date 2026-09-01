@@ -1,0 +1,237 @@
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Personalidad & Identidad</h1>
+    <p class="page-lede">Configuración del comportamiento social, rasgos conversacionales y límites de privacidad.</p>
+  </div>
+</div>
+
+<div class="notice info">
+  <span>🛡️ <strong>Regla de Seguridad del Core:</strong> La personalidad y su evolución están contenidas en SQLite local. Nunca modifican permisos del sistema operativo ni reglas de seguridad.</span>
+</div>
+
+<form method="post" action="/config" style="display: flex; flex-direction: column; gap: 1.25rem;">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="section" value="personality">
+
+  <div class="grid grid-cols-2">
+    <!-- Columna 1: Identidad Base & Modo Social -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">🎭 Identidad Base & Entorno</h2>
+      </div>
+      <div class="card-body">
+        <div class="form-group">
+          <label class="form-label" for="f-identity-name">Nombre Visible del Asistente</label>
+          <input type="text" id="f-identity-name" name="identity.display_name" value="{{ display_name }}">
+          <span class="form-help">Nombre con el que se presenta e interactúa en el nodo (por defecto: Ailén).</span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="f-social-mode">Modo Social Activo</label>
+          <select id="f-social-mode" name="social.default_mode">
+            <option value="WORKSHOP"{{ sel_workshop }}>WORKSHOP (Taller / Técnico / Informal / Proactivo)</option>
+            <option value="SHOP"{{ sel_shop }}>SHOP (Comercio / Cordial / Privacidad Alta)</option>
+            <option value="HOME"{{ sel_home }}>HOME (Hogar / Cercano / Privacidad Media)</option>
+            <option value="PUBLIC"{{ sel_public }}>PUBLIC (Público / Máxima Restricción de Memoria)</option>
+            <option value="PRIVATE"{{ sel_private }}>PRIVATE (Privado / Confidencial)</option>
+          </select>
+          <span class="form-help">Limita la iniciativa, el lenguaje y la exposición de memoria privada.</span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="f-personality-desc">Descripción del Personaje / Prompt de Estilo</label>
+          <textarea id="f-personality-desc" name="personality.description" rows="3" style="width: 100%; border-radius: 6px; padding: 0.5rem; background: var(--bg-surface-elevated); border: 1px solid var(--border-color); color: var(--fg-primary); resize: vertical;">{{ val_desc }}</textarea>
+          <span class="form-help">Instrucciones de tono de voz y rol de trabajo.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Columna 2: Dinámica Social & Saludos -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">🌱 Dinámica Social & Memoria</h2>
+        <span class="status-pill ok">Core Local</span>
+      </div>
+      <div class="card-body">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0;">
+          <div>
+            <div style="font-weight: 600; font-size: 0.88rem;">Saludo Automático por Presencia</div>
+            <div class="form-help">Saluda de forma espontánea al detectar a alguien en el taller.</div>
+          </div>
+          <label class="switch">
+            <input type="hidden" name="__present.social.auto_greeting_enabled" value="1">
+            <input type="checkbox" name="social.auto_greeting_enabled" value="true"{{ chk_auto_greet }}>
+            <span class="slider-toggle"></span>
+          </label>
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-header">
+            <span class="slider-title">Tiempo de Espera entre Saludos (segundos)</span>
+            <span class="slider-value-badge" id="badge-greet-cd">{{ val_greet_cd }}s</span>
+          </div>
+          <div class="slider-controls">
+            <span class="slider-bound-label">Corto (30s)</span>
+            <input type="range" min="30" max="600" value="{{ val_greet_cd_int }}" class="custom-range range-synced" data-badge="badge-greet-cd" data-suffix="s" name="social.greeting_cooldown_seconds">
+            <span class="slider-bound-label">Largo (10m)</span>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-top: 0.5rem;">
+          <label class="form-label">Perfil de Comportamiento:</label>
+          <ul class="kv-list">
+            <li class="kv-item">
+              <span class="kv-key">Entorno</span>
+              <span class="kv-val">Taller Electrónico / Banco de Trabajo</span>
+            </li>
+            <li class="kv-item">
+              <span class="kv-key">Memoria Privada</span>
+              <span class="kv-val">SQLite FTS5 Local (100% aislada)</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Matriz de Sliders de Rasgos -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">🎚️ Matriz de Rasgos de Personalidad</h2>
+      <span class="card-subtitle">Ajustá la expresividad e iniciativa de respuesta</span>
+    </div>
+    <div class="card-body">
+      <div class="grid grid-cols-2">
+        <!-- Slider 1: Humor -->
+        <div class="slider-group">
+          <div class="slider-header">
+            <span class="slider-title">Humor / Chispa</span>
+            <span class="slider-value-badge" id="badge-humor">{{ val_humor }}%</span>
+          </div>
+          <div class="slider-controls">
+            <span class="slider-bound-label">Seca / Seria</span>
+            <input type="range" min="0" max="100" value="{{ val_humor }}" class="custom-range range-synced" data-badge="badge-humor" data-scale="100" name="personality.base_humor">
+            <span class="slider-bound-label">Chispeante / Pícara</span>
+          </div>
+        </div>
+
+        <!-- Slider 2: Verbosidad -->
+        <div class="slider-group">
+          <div class="slider-header">
+            <span class="slider-title">Verbosidad / Concisión</span>
+            <span class="slider-value-badge" id="badge-verbosity">{{ val_verbosity }}%</span>
+          </div>
+          <div class="slider-controls">
+            <span class="slider-bound-label">Telegráfica</span>
+            <input type="range" min="0" max="100" value="{{ val_verbosity }}" class="custom-range range-synced" data-badge="badge-verbosity" data-scale="100" name="personality.base_verbosity">
+            <span class="slider-bound-label">Detallada</span>
+          </div>
+        </div>
+
+        <!-- Slider 3: Curiosidad -->
+        <div class="slider-group">
+          <div class="slider-header">
+            <span class="slider-title">Iniciativa / Curiosidad</span>
+            <span class="slider-value-badge" id="badge-curiosity">{{ val_curiosity }}%</span>
+          </div>
+          <div class="slider-controls">
+            <span class="slider-bound-label">Pasiva</span>
+            <input type="range" min="0" max="100" value="{{ val_curiosity }}" class="custom-range range-synced" data-badge="badge-curiosity" data-scale="100" name="personality.base_curiosity">
+            <span class="slider-bound-label">Proactiva</span>
+          </div>
+        </div>
+
+        <!-- Slider 4: Paciencia -->
+        <div class="slider-group">
+          <div class="slider-header">
+            <span class="slider-title">Paciencia / Pedagogía</span>
+            <span class="slider-value-badge" id="badge-patience">{{ val_patience }}%</span>
+          </div>
+          <div class="slider-controls">
+            <span class="slider-bound-label">Directa</span>
+            <input type="range" min="0" max="100" value="{{ val_patience }}" class="custom-range range-synced" data-badge="badge-patience" data-scale="100" name="personality.base_patience">
+            <span class="slider-bound-label">Muy pedagógica</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-footer" style="display: flex; justify-content: space-between; align-items: center;">
+      <span>Los cambios de rasgos se aplican al próximo turno conversacional.</span>
+      <button type="submit" class="btn btn-primary">💾 Guardar Personalidad</button>
+    </div>
+  </div>
+</form>
+
+<!-- Simulador de Personalidad en Vivo -->
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">💬 Simulador de Respuestas en Tiempo Real</h2>
+    <span class="card-subtitle">Probá cómo respondería AILÉN con los rasgos actuales sin tocar el micrófono</span>
+  </div>
+  <div class="card-body">
+    <div style="display: flex; gap: 0.75rem;">
+      <input type="text" id="sim-prompt-input" placeholder="Escribí una frase: ej: '¿Llegaron los repuestos de la notebook?'" style="flex: 1;">
+      <button type="button" class="btn btn-secondary" id="btn-run-simulation">⚡ Simular Respuesta</button>
+    </div>
+
+    <div class="chat-preview-box" id="sim-response-box" style="margin-top: 0.75rem;">
+      <div class="chat-bubble ailen">
+        <div class="chat-bubble-avatar">🔥</div>
+        <div class="chat-bubble-content">
+          <p id="sim-response-text">"Buenas. En el registro de hoy no figura ninguna encomienda entregada todavía. Si querés me fijo en las notas de ayer."</p>
+          <div id="sim-meta" style="font-size: 0.75rem; color: var(--fg-muted); margin-top: 0.35rem; display: none;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('btn-run-simulation');
+  const input = document.getElementById('sim-prompt-input');
+  const respText = document.getElementById('sim-response-text');
+  const meta = document.getElementById('sim-meta');
+  const CSRF = "{{ csrf }}";
+
+  const runSim = async () => {
+    const prompt = input.value.trim();
+    if (!prompt) return;
+    const oldText = btn.innerText;
+    btn.innerText = '⌛ Pensando...';
+    btn.disabled = true;
+    respText.innerText = 'Consultando motor de IA...';
+
+    try {
+      const res = await fetch('/api/personality/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ _csrf: CSRF, prompt: prompt }).toString()
+      });
+      const data = await res.json();
+      if (data.ok) {
+        respText.innerText = `"${data.reply}"`;
+        if (meta) {
+          meta.style.display = 'block';
+          meta.innerText = `🧠 ${data.provider} (${data.model}) · Latencia: ${data.latency_ms} ms`;
+        }
+      } else {
+        respText.innerText = `Error: ${data.error || 'No se pudo generar respuesta'}`;
+      }
+    } catch (err) {
+      respText.innerText = 'Error de conexión al simular.';
+    } finally {
+      btn.innerText = oldText;
+      btn.disabled = false;
+    }
+  };
+
+  btn?.addEventListener('click', runSim);
+  input?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      runSim();
+    }
+  });
+});
+</script>

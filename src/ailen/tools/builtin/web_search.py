@@ -226,7 +226,7 @@ class WebSearchTool:
     description: str = "Busca información pública en la web de forma controlada y estructurada."
     intent_hints = (
         "internet", "web", "buscar", "buscá", "busca", "averigua", "averiguá",
-        "investiga", "investigá", "consulta", "consultá", "noticias", "clima",
+        "investiga", "investigá", "noticias", "clima",
         "temperatura", "pronóstico", "pronostico", "novedades", "precio actual",
         "cotización", "cotizacion",
     )
@@ -283,6 +283,10 @@ class WebSearchTool:
 
     def __init__(self, provider: WebSearchProvider | None = None) -> None:
         self.provider = provider or UnconfiguredWebSearchProvider()
+
+    def is_side_effecting(self, arguments: dict[str, Any]) -> bool:
+        del arguments
+        return False
 
     @property
     def is_available(self) -> bool:

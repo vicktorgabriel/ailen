@@ -142,6 +142,10 @@ class WebFetchTool:
     def __init__(self, max_bytes: int = DEFAULT_MAX_BYTES) -> None:
         self.max_bytes = max_bytes
 
+    def is_side_effecting(self, arguments: dict[str, Any]) -> bool:
+        del arguments
+        return False
+
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         url = validated_args["url"].strip()
 

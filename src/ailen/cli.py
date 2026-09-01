@@ -25,6 +25,8 @@ from ailen.runtime.manager import LocalRuntimeManager
 from ailen.services.config_service import ConfigService
 from ailen.services.settings_service import SettingsService
 from ailen.services.status_service import StatusService
+from ailen.updates.activation import AppliancePaths
+from ailen.updates.factory import build_update_service
 from ailen.version import __version__
 from ailen.web.app import AILENWebApp
 from ailen.web.auth_store import AdminCredentialStore
@@ -103,15 +105,40 @@ def create_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--port", type=int, help="Override web port")
 
     # Command: demo
-    demo_parser = subparsers.add_parser("demo", help="Interactive physical presence, face, and audio demos")
+    demo_parser = subparsers.add_parser("demo", help="Physical presence, face, and audio diagnostics")
     demo_sub = demo_parser.add_subparsers(dest="demo_target", help="Demo target component")
 
     # Subcommand: demo face
-    demo_face = demo_sub.add_parser("face", help="Interactive Face animator and renderer demo")
+    demo_face = demo_sub.add_parser("face", help="Run the configured face renderer or automatic FacePack QA")
     demo_face.add_argument("--headless", action="store_true", help="Run headless in terminal without opening GUI window")
     demo_face.add_argument("--gui", action="store_true", help="Force opening GUI window (Tkinter)")
     demo_face.add_argument("--duration", type=float, default=None, help="Run demo for N seconds and exit")
-    demo_face.add_argument("--fps", type=int, default=30, help="Target FPS (default: 30)")
+    demo_face.add_argument(
+        "--fps",
+        type=int,
+        default=None,
+        help="Target FPS override; defaults to display.fps_limit from config",
+    )
+    demo_face.add_argument(
+        "--style",
+        choices=("facepack", "portrait", "pixel", "vector"),
+        default=None,
+        help="Renderer override; defaults to display.face_style from config (normally facepack)",
+    )
+    demo_face.add_argument(
+        "--showcase",
+        action="store_true",
+        help="Run automatic FacePack visual QA without AI, audio, or camera",
+    )
+    demo_face.add_argument(
+        "--showcase-filter",
+        help="Limit showcase to one category or exact FacePack sequence/state id",
+    )
+    demo_face.add_argument(
+        "--showcase-once",
+        action="store_true",
+        help="Run one automatic pass, then remain idle until the window is closed",
+    )
 
     # Subcommand: demo vision
     demo_vis = demo_sub.add_parser("vision", help="Camera presence detection and debounce demo")
@@ -181,7 +208,19 @@ def create_parser() -> argparse.ArgumentParser:
     lab_prepare_ai = lab_sub.add_parser("prepare-ai", help="Inspect and prepare local model and runtime for Lab Mode")
     lab_prepare_ai.add_argument("-y", "--yes", action="store_true", help="Automatically accept downloading missing model artifact")
     lab_prepare_ai.add_argument("--start-runtime", action="store_true", help="Temporarily start/health-check an AILEN-managed llama.cpp runtime, then stop it")
-    lab_prepare_ai.add_argument("--purpose", choices=["SANITY", "BALANCED", "QUALITY"], default="BALANCED", help="Model execution purpose")
+    lab_prepare_ai.add_argument(
+        "--activate-selection",
+        action="store_true",
+        help=(
+            "After exact artifact verification, atomically activate this "
+            "target-qualified model/runtime for subsequent sessions"
+        ),
+    )
+    lab_prepare_ai.add_argument(
+        "--qualification-dir",
+        default="runtime/lab/model_qualification/hardware",
+        help="Versioned evidence records for this hardware class",
+    )
     lab_prep_speech = lab_sub.add_parser("prepare-speech", help="Inspect and prepare STT/TTS models and voice assets for Lab Mode")
     lab_prep_speech.add_argument("-y", "--yes", action="store_true", help="Automatically download approved speech assets")
     lab_prep_speech.add_argument("--stt", choices=["vosk", "whisper_cpp"], default="vosk", help="Target STT engine (default: vosk)")
@@ -190,10 +229,25 @@ def create_parser() -> argparse.ArgumentParser:
     lab_cfg_sub = lab_cfg_init.add_subparsers(dest="lab_config_action", help="Lab config action")
     lab_cfg_init_p = lab_cfg_sub.add_parser("init", help="Initialize runtime/lab/ailen-lab.toml without touching product config")
     lab_cfg_init_p.add_argument("-f", "--force", action="store_true", help="Overwrite existing lab configuration")
+    lab_cfg_init_p.add_argument(
+        "--profile",
+        required=True,
+        choices=(
+            "recycled-4gb-local-candidate",
+            "recycled-8gb-hybrid",
+            "lan-satellite",
+            "gpu-lan-brain",
+            "external-only",
+        ),
+        help="Explicit candidate topology; it is not a hardware certification",
+    )
     lab_cfg_init_p.add_argument("--stt", choices=["vosk", "whisper_cpp"], default="vosk", help="Target STT engine")
     lab_cfg_init_p.add_argument("--voice", default="es_ES-davefx-medium", help="Target TTS voice key")
-    lab_cfg_init_p.add_argument("--ai-endpoint", default="http://127.0.0.1:11434/v1", help="Target Local AI endpoint")
-    lab_cfg_init_p.add_argument("--ai-model", default="qwen3.5:9b", help="Target Local AI model name")
+    lab_cfg_init_p.add_argument("--local-endpoint", default="", help="Override local Ollama/llama.cpp endpoint")
+    lab_cfg_init_p.add_argument("--local-model", default="", help="Override explicit local model ID")
+    lab_cfg_init_p.add_argument("--lan-endpoint", default="", help="Override LAN Brain endpoint")
+    lab_cfg_init_p.add_argument("--lan-model", default="", help="Override LAN Brain model ID")
+    lab_cfg_init_p.add_argument("--lan-trusted", action="store_true", help="Explicitly trust the configured LAN Brain")
     lab_audio = lab_sub.add_parser("audio-devices", help="List audio capture and playback devices with ALSA IDs")
     lab_audio.add_argument("--json", action="store_true", help="Output as JSON")
     lab_cams = lab_sub.add_parser("cameras", help="List detected camera devices and paths")
@@ -228,6 +282,71 @@ def create_parser() -> argparse.ArgumentParser:
     lab_bench_stt.add_argument("--whisper-binary", default="whisper-cli", help="whisper.cpp binary name/path")
     lab_bench_stt.add_argument("--whisper-model", default="", help="whisper.cpp ggml model file path")
     lab_bench_stt.add_argument("--json", action="store_true", help="Print results as JSON")
+    lab_calibrate_voice = lab_sub.add_parser(
+        "calibrate-voice",
+        help="Guided RAM-only WebRTC VAD + Vosk physical calibration",
+    )
+    lab_calibrate_voice.add_argument(
+        "--device",
+        action="append",
+        default=[],
+        help=(
+            "Exact capture endpoint override (repeatable); without it, discover a "
+            "bounded set of default/physical/Easy Effects sources"
+        ),
+    )
+    lab_calibrate_voice.add_argument(
+        "--capture-gains",
+        default="",
+        help="Comma-separated bounded digital gains in dB (default: active config only)",
+    )
+    lab_calibrate_voice.add_argument(
+        "--auto-gain-modes",
+        default="",
+        help="Comma-separated off,on modes (default: active config only)",
+    )
+    lab_calibrate_voice.add_argument(
+        "--distances-cm",
+        default="30,75,100",
+        help="Comma-separated operator distances (default: 30,75,100 cm)",
+    )
+    lab_calibrate_voice.add_argument(
+        "--processing-profiles",
+        default="raw,noise_only,full",
+        help="Comma-separated raw,noise_only,full capture profiles",
+    )
+    lab_calibrate_voice.add_argument(
+        "--silence-seconds",
+        type=float,
+        default=2.5,
+        help="RAM-only noise phase before each phrase (default: 2.5 s)",
+    )
+    lab_calibrate_voice.add_argument("--vad-modes", default="2,3", help="Comma-separated WebRTC modes")
+    lab_calibrate_voice.add_argument(
+        "--silence-timeouts",
+        default="380,500,600",
+        help="Comma-separated utterance close times in milliseconds",
+    )
+    lab_calibrate_voice.add_argument("--limit", type=int, default=0, help="Use only the first N public cases")
+    lab_calibrate_voice.add_argument("--max-wait", type=float, default=18.0, help="Bounded seconds per sample")
+    lab_calibrate_voice.add_argument(
+        "--barge-in-only",
+        action="store_true",
+        help="Run only the guided early/middle/late physical interruption trials",
+    )
+    lab_calibrate_voice.add_argument(
+        "--barge-in-timeout",
+        type=float,
+        default=15.0,
+        help="Bounded seconds to wait for the preserved interruption transcript",
+    )
+    lab_calibrate_voice.add_argument(
+        "--output",
+        default="runtime/lab/voice_validation",
+        help="Metrics destination; PCM is never written here",
+    )
+    lab_calibrate_voice.add_argument("--list-cases", action="store_true", help="Print matrix without opening audio")
+    lab_calibrate_voice.add_argument("--json", action="store_true", help="JSON output for --list-cases")
 
     # Command: speech
     speech_parser = subparsers.add_parser("speech", help="Manage offline speech assets (Vosk, Whisper, Piper voices)")
@@ -254,11 +373,47 @@ def create_parser() -> argparse.ArgumentParser:
     models_plan.add_argument("--json", action="store_true", help="Output as JSON")
     models_plan.add_argument("--purpose", choices=["SANITY", "BALANCED", "QUALITY"], default="BALANCED", help="Model execution purpose")
     models_plan.add_argument("--all", action="store_true", help="Include non-downloadable metadata candidates")
+    models_provision = models_sub.add_parser(
+        "provision-plan",
+        help="Build a consent-gated install plan from detected hardware and qualification evidence",
+    )
+    models_provision.add_argument(
+        "--topology",
+        choices=("hybrid", "local", "lan-satellite", "gpu-lan-brain", "external-only"),
+        default="hybrid",
+    )
+    models_provision.add_argument(
+        "--qualification-dir",
+        default="runtime/lab/model_qualification/hardware",
+        help="Directory containing versioned target-hardware qualification records",
+    )
+    models_provision.add_argument(
+        "--model-override",
+        default="",
+        help="Explicit lab candidate override; never promotes it to qualified",
+    )
+    models_provision.add_argument("--json", action="store_true", help="Output as JSON")
     models_fetch = models_sub.add_parser("fetch", help="Download and verify a model from catalog")
     models_fetch.add_argument("model_id", help="Model ID from catalog (e.g. qwen3.5-0.8b-q4_0)")
     models_fetch.add_argument("-y", "--yes", action="store_true", help="Bypass interactive confirmation prompt")
     models_verify = models_sub.add_parser("verify", help="Verify SHA-256 integrity of an installed model")
     models_verify.add_argument("model_id", help="Model ID to verify in local store")
+    models_qualification = models_sub.add_parser(
+        "qualification-template",
+        help="Create an evidence manifest; never download model weights",
+    )
+    models_qualification.add_argument("model_id", help="Candidate model ID from the catalog")
+    models_qualification.add_argument(
+        "--output",
+        default="",
+        help="Output JSON (default: runtime/lab/model_qualification/<model>.json)",
+    )
+    models_qualification.add_argument("--force", action="store_true", help="Replace an existing manifest")
+    models_qualification_validate = models_sub.add_parser(
+        "qualification-validate",
+        help="Validate evidence and report candidate/qualified status",
+    )
+    models_qualification_validate.add_argument("manifest", help="Qualification JSON path")
 
     return parser
 
@@ -429,103 +584,153 @@ def cmd_serve(args: argparse.Namespace, config_path: str | None) -> int:
     status = StatusService(health_service=health)
     config_service = ConfigService(config_path)
     settings = SettingsService(config_service)
-    app = AILENWebApp(auth=auth, status=status, settings=settings)
+    update_root = (Path("runtime/lab/update-simulation")).resolve()
+    update_service = build_update_service(
+        cfg,
+        mode="lab",
+        paths=AppliancePaths(
+            install_root=update_root / "install",
+            state_root=update_root / "state",
+        ),
+    )
+    try:
+        from ailen.audio.alsa_backend import AlsaAudioInputBackend, AlsaDeviceEnumerator
+        from ailen.audio.calibration import PcmNoiseCalibrator
+        from ailen.audio.level import build_capture_processor
 
-    logger.info("Starting AILEN web panel on %s:%d", host, port)
-    print(f"AILEN Foundation v{__version__} running at http://{host}:{port}. Press Ctrl+C to stop.")
-    serve_web(app, host=host, port=port)
+        observed_default = AlsaDeviceEnumerator().get_default_route(is_input=True)
+        observed_source = cfg.audio.input_device
+        if cfg.audio.input_device in {"auto", "default", "pipewire"} and observed_default:
+            observed_source = f"pipewire:{observed_default}"
+        noise_calibrator = PcmNoiseCalibrator(
+            input_factory=lambda: AlsaAudioInputBackend(
+                device=cfg.audio.input_device,
+                sample_rate=cfg.audio.sample_rate,
+                channels=cfg.audio.channels,
+                frame_ms=cfg.audio.frame_ms,
+            ),
+            duration_seconds=3.0,
+            frame_ms=cfg.audio.frame_ms,
+            source_label=observed_source,
+            frame_processor=build_capture_processor(
+                sample_rate=cfg.audio.sample_rate,
+                channels=cfg.audio.channels,
+                frame_ms=cfg.audio.frame_ms,
+                capture_gain_db=cfg.audio.capture_gain_db,
+                auto_gain_enabled=cfg.audio.auto_gain_enabled,
+                auto_gain_target_rms=cfg.audio.auto_gain_target_rms,
+                max_auto_gain_db=cfg.audio.max_auto_gain_db,
+                auto_gain_attack_ms=cfg.audio.auto_gain_attack_ms,
+                auto_gain_release_ms=cfg.audio.auto_gain_release_ms,
+                auto_gain_noise_gate_rms=cfg.audio.auto_gain_noise_gate_rms,
+                auto_gain_gate_hold_ms=cfg.audio.auto_gain_gate_hold_ms,
+                capture_limiter_peak=cfg.audio.capture_limiter_peak,
+                noise_suppression_engine=cfg.speech.noise_suppression_engine,
+                noise_suppression_level=cfg.speech.noise_suppression_level,
+                input_processing_mode=cfg.audio.input_processing_mode,
+                input_device=cfg.audio.input_device,
+                effective_source=observed_source,
+            ),
+        )
+        app = AILENWebApp(
+            auth=auth,
+            status=status,
+            settings=settings,
+            updates=update_service,
+            noise_calibrator=noise_calibrator,
+        )
+
+        logger.info("Starting AILEN web panel on %s:%d", host, port)
+        print(
+            f"AILEN Foundation v{__version__} running at http://{host}:{port}. "
+            "Press Ctrl+C to stop."
+        )
+        serve_web(app, host=host, port=port)
+    finally:
+        update_service.close()
     return 0
 
 
-def cmd_demo_face(args: argparse.Namespace) -> int:
-    """Run interactive Face animator demo."""
-    from ailen.face.animator import FaceAnimator
-    from ailen.face.gui import TkinterFaceController
+def cmd_demo_face(args: argparse.Namespace, config_path: str | None) -> int:
+    """Run the canonical configured Face path, optionally with automatic QA."""
 
-    force_headless = getattr(args, "headless", False)
-    force_gui = getattr(args, "gui", False)
-    fps = max(1, getattr(args, "fps", 30))
-    duration = getattr(args, "duration", None)
-
-    gui = TkinterFaceController(fps_limit=fps)
-    can_gui = gui.is_available() and not force_headless
-
-    if force_gui and not gui.is_available():
-        print("Aviso: Tkinter no está disponible en este entorno; ejecutando en modo headless.")
-
-    if can_gui and (force_gui or not force_headless):
-        try:
-            print("==========================================================")
-            print(" AILEN Face POC — Demo interactiva (Tkinter 2D Canvas)")
-            print(" Controles de teclado:")
-            print("   1..8  : IDLE, ATTENTION, LISTENING, PROCESSING, SPEAKING, SLEEP, WAKE, ERROR")
-            print("   Flechas: Orientar mirada (Gaze)")
-            print("   Espacio: Nivel de apertura de boca (habla)")
-            print("   Q / Esc: Salir")
-            print("==========================================================")
-            gui.start_window(interactive_keys=True)
-            if duration:
-                gui.schedule_close(int(duration * 1000))
-            gui.mainloop()
-            return 0
-        except Exception as e:  # noqa: BLE001
-            print(f"No se pudo iniciar ventana gráfica ({e}); pasando a modo headless.")
-
-    # Headless loop
     import time
 
-    print("==========================================================")
-    print(f" AILEN Face POC — Demo Headless (FPS objetivo: {fps})")
-    print(" Presioná Ctrl+C para detener.")
-    print("==========================================================")
-    animator = FaceAnimator()
-    start_t = time.time()
-    frame_count = 0
-    interval = 1.0 / fps
+    from ailen.face.showcase import FacePackShowcase
+    from ailen.runtime.factory import LabComponentFactory
 
-    states = [
-        (0.0, AssistantState.IDLE, (0.0, 0.0), 0.0),
-        (2.0, AssistantState.ATTENTION, (0.4, 0.1), 0.0),
-        (4.0, AssistantState.LISTENING, (0.4, 0.1), 0.0),
-        (6.0, AssistantState.PROCESSING, (-0.2, 0.5), 0.0),
-        (8.0, AssistantState.SPEAKING, (0.0, 0.0), 0.7),
-        (10.0, AssistantState.SLEEP, (0.0, -0.2), 0.0),
-        (12.0, AssistantState.IDLE, (0.0, 0.0), 0.0),
-    ]
-    cur_idx = 0
+    force_headless = bool(getattr(args, "headless", False))
+    force_gui = bool(getattr(args, "gui", False))
+    showcase_enabled = bool(getattr(args, "showcase", False))
+    duration = getattr(args, "duration", None)
+    cfg = load_config(config_path)
+    fps_override = getattr(args, "fps", None)
+    fps = max(1, int(fps_override if fps_override is not None else cfg.display.fps_limit))
+    style_override = getattr(args, "style", None)
+    style = str(style_override or cfg.display.face_style)
+    if showcase_enabled and style != "facepack":
+        print("Error: --showcase requiere --style facepack o display.face_style=facepack.")
+        return 2
+    if force_headless and showcase_enabled:
+        print("Error: el showcase visual no puede ejecutarse con --headless.")
+        return 2
 
+    cfg.display.face_style = style
+    if fps_override is not None:
+        cfg.display.fps_limit = fps
+    controller, status = LabComponentFactory(cfg).build_face(headless=force_headless)
+    print("==========================================================")
+    print(f" AILEN Face — backend={status.backend} state={status.state}")
+    print(f" {status.detail}")
+    print(" Cierre: Ctrl+C o cerrar la ventana. No hay controles manuales de gestos.")
+    print("==========================================================")
+
+    if force_headless:
+        print("Face headless activo: no se anuncian ni simulan expresiones visibles.")
+        close = getattr(controller, "close", None)
+        if callable(close):
+            close()
+        return 0
+
+    start_window = getattr(controller, "start_window", None)
+    if not callable(start_window):
+        print("Face display no disponible; AILEN permanece headless/degraded.")
+        return 2 if force_gui or showcase_enabled else 0
+
+    showcase: FacePackShowcase | None = None
     try:
-        while True:
-            now = time.time()
-            elapsed = now - start_t
-            if duration and elapsed >= duration:
+        start_window(interactive_keys=False)
+        if not controller.is_display_active():
+            print("Face display no disponible; AILEN permanece headless/degraded.")
+            return 2 if force_gui or showcase_enabled else 0
+        if showcase_enabled:
+            showcase = FacePackShowcase(
+                controller,
+                filter_value=getattr(args, "showcase_filter", None),
+                loop=not bool(getattr(args, "showcase_once", False)),
+            )
+            showcase.start()
+        started = time.monotonic()
+        while controller.is_display_active():
+            update = getattr(controller, "update", None)
+            if callable(update):
+                update()
+            if showcase is not None:
+                showcase.update()
+            if duration is not None and time.monotonic() - started >= max(0.0, duration):
                 break
-
-            # Cycle demo states every few seconds in headless mode
-            if cur_idx < len(states) - 1 and elapsed >= states[cur_idx + 1][0]:
-                cur_idx += 1
-                _, state, gaze, speech = states[cur_idx]
-                animator.set_state(state)
-                animator.set_gaze(*gaze)
-                animator.set_speech_level(speech)
-
-            pose = animator.step(current_time=now)
-            frame_count += 1
-
-            if frame_count % fps == 0 or frame_count == 1:
-                fps_achieved = frame_count / max(0.001, elapsed)
-                print(
-                    f"[{elapsed:5.1f}s | {fps_achieved:4.1f} FPS] State={animator.state.value:10} "
-                    f"| Gaze=({pose.gaze_x:+.2f}, {pose.gaze_y:+.2f}) "
-                    f"| Eyes=(L:{pose.left_eye_open:.2f}, R:{pose.right_eye_open:.2f}) "
-                    f"| Mouth={pose.mouth_open:.2f} | Expr={pose.expression:8}"
-                )
-
-            time.sleep(interval)
+            time.sleep(min(0.01, 0.5 / fps))
     except KeyboardInterrupt:
-        print("\nDemo detenida por el usuario.")
-
-    print(f"Demo headless completada. Total frames: {frame_count}")
+        print("\nFace detenido por el usuario.")
+    except Exception as exc:  # noqa: BLE001
+        print(f"Face display falló y queda headless/degraded: {type(exc).__name__}: {exc}")
+        return 2
+    finally:
+        if showcase is not None:
+            showcase.close()
+        close = getattr(controller, "close", None)
+        if callable(close):
+            close()
     return 0
 
 
@@ -698,12 +903,13 @@ def cmd_diagnose_audio(args: argparse.Namespace, config_path: str | None) -> int
 
 
 def cmd_diagnose_ai(args: argparse.Namespace, config_path: str | None) -> int:
-    """Run AI Router, Local, LAN Brain, and Cloud LLM diagnostics."""
+    """Inspect local, LAN and named remote providers without inventing health."""
+
     from ailen.ai.budget import BudgetPolicy
-    from ailen.ai.cloud_backend import CloudAiBackend
     from ailen.ai.contracts import BackendHealth
     from ailen.ai.lan_backend import LanBrainAiBackend
     from ailen.ai.local_backend import LocalAiBackend
+    from ailen.ai.remote_backend import build_remote_backend
     from ailen.ai.secrets import SecretResolver
     from ailen.core.config import load_config
     from ailen.domain.enums import ServiceStatus
@@ -714,55 +920,75 @@ def cmd_diagnose_ai(args: argparse.Namespace, config_path: str | None) -> int:
     cfg = load_config(config_path)
     db_mgr = SQLiteManager(cfg.memory.sqlite_path)
     MigrationRunner(db_mgr).run_migrations()
-    repo = MemoryRepository(db_mgr)
-    budget_policy = BudgetPolicy(
-        repository=repo,
-        daily_budget_usd=cfg.ai.cloud.daily_budget_usd,
-        monthly_budget_usd=cfg.ai.cloud.monthly_budget_usd,
-    )
-    budget_avail, budget_reason, spending = budget_policy.is_budget_available()
+    repository = MemoryRepository(db_mgr)
 
-    # Local backend health
-    local_backend = LocalAiBackend(
-        endpoint=cfg.ai.local.endpoint,
-        model=cfg.ai.local.model,
-        timeout_seconds=cfg.ai.local.timeout_seconds,
-    )
-    local_health = local_backend.health() if cfg.ai.local.enabled else BackendHealth(ServiceStatus.DISABLED, "Disabled in config")
+    disabled_health = BackendHealth(ServiceStatus.DISABLED, "Disabled in config")
+    local_health = disabled_health
+    if cfg.ai.local.enabled:
+        local_health = LocalAiBackend(
+            endpoint=cfg.ai.local.endpoint,
+            model=cfg.ai.local.model,
+            timeout_seconds=cfg.ai.local.timeout_seconds,
+        ).health()
 
-    # LAN Brain health
-    lan_backend = LanBrainAiBackend(
-        endpoint=cfg.ai.lan.endpoint,
-        model=cfg.ai.lan.model,
-        trusted=cfg.ai.lan.trusted,
-        timeout_seconds=cfg.ai.lan.timeout_seconds,
-    )
-    lan_health = lan_backend.health() if cfg.ai.lan.enabled else BackendHealth(ServiceStatus.DISABLED, "Disabled in config")
+    lan_health = disabled_health
+    if cfg.ai.lan.enabled:
+        lan_health = LanBrainAiBackend(
+            endpoint=cfg.ai.lan.endpoint,
+            model=cfg.ai.lan.model,
+            trusted=cfg.ai.lan.trusted,
+            timeout_seconds=cfg.ai.lan.timeout_seconds,
+        ).health()
 
-    # Cloud backend health
-    secret_resolver = SecretResolver()
-    has_key = secret_resolver.resolve(
-        env_var=cfg.ai.cloud.api_key_env,
-        file_name=cfg.ai.cloud.api_key_file,
-    ) is not None
-
-    cloud_backend = CloudAiBackend(
-        endpoint=cfg.ai.cloud.endpoint,
-        model=cfg.ai.cloud.model,
-        api_key_env=cfg.ai.cloud.api_key_env,
-        api_key_file=cfg.ai.cloud.api_key_file,
-        secrets_resolver=secret_resolver,
-        timeout_seconds=cfg.ai.cloud.timeout_seconds,
-        provider_name=cfg.ai.cloud.provider,
-        input_cost_per_million=cfg.ai.cloud.input_cost_per_million,
-        output_cost_per_million=cfg.ai.cloud.output_cost_per_million,
-    )
-    cloud_health = cloud_backend.health() if cfg.ai.cloud.enabled else BackendHealth(ServiceStatus.DISABLED, "Disabled in config")
+    resolver = SecretResolver()
+    remote_report: dict[str, dict[str, object]] = {}
+    for provider_id, remote in sorted(
+        cfg.ai.remote.providers.items(),
+        key=lambda item: (item[1].priority, item[0]),
+    ):
+        has_key = remote.auth_mode == "none" or resolver.has_secret(
+            env_var=remote.api_key_env or None,
+            file_name=remote.api_key_file or None,
+        )
+        status = disabled_health
+        if cfg.ai.allow_remote and cfg.ai.remote.enabled and remote.enabled:
+            backend = build_remote_backend(
+                provider_id,
+                remote,
+                api_key=resolver.resolve(
+                    env_var=remote.api_key_env or None,
+                    file_name=remote.api_key_file or None,
+                ),
+            )
+            status = backend.health()
+        budget = BudgetPolicy(
+            repository=repository,
+            provider=f"remote:{provider_id}",
+            daily_budget_usd=remote.daily_budget_usd,
+            monthly_budget_usd=remote.monthly_budget_usd,
+        )
+        available, reason, spending = budget.is_budget_available()
+        remote_report[provider_id] = {
+            "enabled": remote.enabled,
+            "protocol": remote.protocol,
+            "endpoint": remote.endpoint,
+            "model": remote.model,
+            "priority": remote.priority,
+            "credential_configured": has_key,
+            "status": status.status.value,
+            "detail": status.detail,
+            "qualification_status": remote.qualification_status,
+            "voice_realtime_eligible": remote.voice_realtime_eligible,
+            "budget_available": available,
+            "budget_reason": reason,
+            "daily_spent_usd": spending["daily_spent_usd"],
+            "monthly_spent_usd": spending["monthly_spent_usd"],
+        }
 
     report: dict[str, Any] = {
         "node_profile": cfg.node.profile.value,
-        "default_provider": cfg.ai.provider,
-        "allow_cloud": cfg.ai.allow_cloud,
+        "preferred_provider": cfg.ai.provider,
+        "allow_remote": cfg.ai.allow_remote,
         "local": {
             "enabled": cfg.ai.local.enabled,
             "endpoint": cfg.ai.local.endpoint,
@@ -778,45 +1004,26 @@ def cmd_diagnose_ai(args: argparse.Namespace, config_path: str | None) -> int:
             "status": lan_health.status.value,
             "detail": lan_health.detail,
         },
-        "cloud": {
-            "enabled": cfg.ai.cloud.enabled,
-            "provider": cfg.ai.cloud.provider,
-            "endpoint": cfg.ai.cloud.endpoint,
-            "model": cfg.ai.cloud.model,
-            "api_key_configured": has_key,
-            "status": cloud_health.status.value,
-            "detail": cloud_health.detail,
-        },
-        "budget": {
-            "daily_spent_usd": spending["daily_spent_usd"],
-            "daily_limit_usd": cfg.ai.cloud.daily_budget_usd,
-            "monthly_spent_usd": spending["monthly_spent_usd"],
-            "monthly_limit_usd": cfg.ai.cloud.monthly_budget_usd,
-            "budget_available": budget_avail,
-            "reason_code": budget_reason,
-        },
+        "remote_providers": remote_report,
     }
-
     if getattr(args, "json", False):
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return 0
 
     print("==================================================================")
-    print(" AILEN AI Diagnostics — Hybrid AI Router & Providers")
+    print(" AILEN AI Diagnostics — local / LAN / named remote providers")
     print("==================================================================")
-    print(f" Perfil de Dispositivo : {cfg.node.profile.value}")
-    print(f" Proveedor por defecto : {cfg.ai.provider} | Allow Cloud: {cfg.ai.allow_cloud}")
-    print("------------------------------------------------------------------")
-    print(f" Local LLM Server      : {'ENABLED' if cfg.ai.local.enabled else 'DISABLED'} | Status: {local_health.status.value} ({local_health.detail})")
-    print(f"   Endpoint: {cfg.ai.local.endpoint} | Model: {cfg.ai.local.model}")
-    print(f" LAN Brain Server      : {'ENABLED' if cfg.ai.lan.enabled else 'DISABLED'} | Status: {lan_health.status.value} ({lan_health.detail})")
-    print(f"   Endpoint: {cfg.ai.lan.endpoint} | Trusted: {cfg.ai.lan.trusted} | Model: {cfg.ai.lan.model}")
-    print(f" Cloud Provider        : {'ENABLED' if cfg.ai.cloud.enabled else 'DISABLED'} | Status: {cloud_health.status.value} ({cloud_health.detail})")
-    print(f"   Endpoint: {cfg.ai.cloud.endpoint} | Model: {cfg.ai.cloud.model} | API Key: {'CONFIGURED' if has_key else 'NOT FOUND'}")
-    print("------------------------------------------------------------------")
-    print(f" Presupuesto Cloud     : {'DISPONIBLE' if budget_avail else 'EXCEDIDO (' + budget_reason + ')'}")
-    print(f"   Gasto Hoy: ${spending['daily_spent_usd']:.4f} / ${cfg.ai.cloud.daily_budget_usd:.2f}")
-    print(f"   Gasto Mes: ${spending['monthly_spent_usd']:.4f} / ${cfg.ai.cloud.monthly_budget_usd:.2f}")
+    print(f" Perfil              : {cfg.node.profile.value}")
+    print(f" Preferencia         : {cfg.ai.provider}")
+    print(f" Local               : {local_health.status.value} · {local_health.detail}")
+    print(f" LAN Brain           : {lan_health.status.value} · {lan_health.detail}")
+    for provider_id, data in remote_report.items():
+        print(
+            f" remote:{provider_id:<20} {data['status']} · "
+            f"model={data['model'] or 'manual/no configurado'} · "
+            f"qualified={data['qualification_status']} · "
+            f"credential={'yes' if data['credential_configured'] else 'no'}"
+        )
     print("==================================================================")
     return 0
 
@@ -1027,15 +1234,15 @@ def cmd_demo_tts(args: argparse.Namespace, config_path: str | None) -> int:
 
 
 def cmd_demo_ai(args: argparse.Namespace, config_path: str | None) -> int:
-    """Run AI routing and inference demo."""
-    from ailen.ai.budget import BudgetPolicy
-    from ailen.ai.cloud_backend import CloudAiBackend
+    """Exercise the canonical router with configured local/LAN/remote backends."""
+
     from ailen.ai.context import AiContextBuilder
-    from ailen.ai.fake import FakeAiBackend
     from ailen.ai.lan_backend import LanBrainAiBackend
     from ailen.ai.local_backend import LocalAiBackend
     from ailen.ai.orchestrator import AiOrchestrator
+    from ailen.ai.remote_backend import build_remote_backend
     from ailen.ai.router import RouteRequest, RuleBasedRouter
+    from ailen.ai.secrets import SecretResolver
     from ailen.core.config import load_config
     from ailen.domain.enums import DeviceProfile, PrivacyLevel, SocialMode
     from ailen.infrastructure.sqlite.connection import SQLiteManager
@@ -1045,59 +1252,84 @@ def cmd_demo_ai(args: argparse.Namespace, config_path: str | None) -> int:
     cfg = load_config(config_path)
     prompt = getattr(args, "prompt", "Hola")
     dry_run = getattr(args, "dry_run", False)
-    mode_str = getattr(args, "mode", "WORKSHOP")
-    privacy_str = getattr(args, "privacy", "PRIVATE")
-    profile_str = getattr(args, "profile", None)
-    intent_str = getattr(args, "intent", "chat")
-
     try:
-        social_mode = SocialMode(mode_str)
+        social_mode = SocialMode(getattr(args, "mode", "WORKSHOP"))
     except ValueError:
         social_mode = SocialMode.WORKSHOP
-
     try:
-        privacy_level = PrivacyLevel(privacy_str)
+        privacy_level = PrivacyLevel(getattr(args, "privacy", "PRIVATE"))
     except ValueError:
         privacy_level = PrivacyLevel.PRIVATE
-
     profile = cfg.node.profile
-    if profile_str:
+    requested_profile = getattr(args, "profile", None)
+    if requested_profile:
         try:
-            profile = DeviceProfile(profile_str)
+            profile = DeviceProfile(requested_profile)
         except ValueError:
             pass
 
     db_mgr = SQLiteManager(cfg.memory.sqlite_path)
     MigrationRunner(db_mgr).run_migrations()
-    repo = MemoryRepository(db_mgr)
-    budget_policy = BudgetPolicy(
-        repository=repo,
-        daily_budget_usd=cfg.ai.cloud.daily_budget_usd,
-        monthly_budget_usd=cfg.ai.cloud.monthly_budget_usd,
-    )
-    budget_avail, _budget_reason, _ = budget_policy.is_budget_available()
-
+    repository = MemoryRepository(db_mgr)
     router = RuleBasedRouter()
     context_builder = AiContextBuilder(
-        repository=repo,
+        repository=repository,
         default_identity_name=cfg.identity.display_name,
     )
 
-    # Route decision
-    route_req = RouteRequest(
-        intent=intent_str,
-        profile=profile,
-        privacy_level=privacy_level,
-        internet_available=cfg.ai.allow_cloud,
-        lan_brain_available=cfg.ai.lan.enabled,
-        lan_brain_trusted=cfg.ai.lan.trusted,
-        local_backend_available=cfg.ai.local.enabled,
-        cloud_allowed=cfg.ai.cloud.enabled and cfg.ai.allow_cloud,
-        budget_exceeded=not budget_avail,
+    enabled_remotes = tuple(
+        f"remote:{provider_id}"
+        for provider_id, provider in cfg.ai.remote.providers.items()
+        if cfg.ai.allow_remote
+        and cfg.ai.remote.enabled
+        and provider.enabled
+        and provider.endpoint
+        and provider.model
+        and (
+            provider.qualification_status == "qualified"
+            or cfg.ai.provider == f"remote:{provider_id}"
+        )
     )
-    plan = router.route(route_req)
-
-    ai_req = context_builder.build_request(
+    priorities = {
+        "local": cfg.ai.local.priority,
+        "lan_brain": cfg.ai.lan.priority,
+        **{
+            f"remote:{provider_id}": provider.priority
+            for provider_id, provider in cfg.ai.remote.providers.items()
+        },
+    }
+    timeouts = {
+        "local": cfg.ai.local.timeout_seconds,
+        "lan_brain": cfg.ai.lan.timeout_seconds,
+        **{
+            f"remote:{provider_id}": provider.timeout_seconds
+            for provider_id, provider in cfg.ai.remote.providers.items()
+        },
+    }
+    realtime = {
+        f"remote:{provider_id}": provider.voice_realtime_eligible
+        and provider.qualification_status == "qualified"
+        for provider_id, provider in cfg.ai.remote.providers.items()
+    }
+    plan = router.route(
+        RouteRequest(
+            intent=getattr(args, "intent", "chat"),
+            profile=profile,
+            privacy_level=privacy_level,
+            internet_available=bool(enabled_remotes),
+            lan_brain_available=cfg.ai.lan.enabled,
+            lan_brain_trusted=cfg.ai.lan.trusted,
+            local_backend_available=cfg.ai.local.enabled,
+            external_allowed=cfg.ai.allow_remote,
+            allow_sanitized_external_prompts=cfg.ai.allow_sanitized_external_prompts,
+            remote_backends=enabled_remotes,
+            preferred_backend=cfg.ai.provider,
+            backend_priorities=priorities,
+            backend_timeouts=timeouts,
+            realtime_eligible_backends=realtime,
+        )
+    )
+    ai_request = context_builder.build_request(
         user_message=prompt,
         mode=social_mode,
         privacy_level=privacy_level,
@@ -1107,21 +1339,16 @@ def cmd_demo_ai(args: argparse.Namespace, config_path: str | None) -> int:
     )
 
     print("==========================================================")
-    print(" AILEN AI Demo — Hybrid Routing & Context")
-    print(f" Mensaje: \"{prompt}\"")
-    print(f" Perfil: {profile.value} | Modo: {social_mode.value} | Privacidad: {privacy_level.value}")
-    print(f" Destino Primario : {plan.primary_backend.upper()}")
-    print(f" Fallbacks        : {[fb.upper() for fb in plan.fallback_backends]}")
-    print(f" Motivo (Reason)  : {plan.reason_code}")
-    print(f" Decisión Privacy : {plan.privacy_decision}")
-    print(f" Memorias Context : {len(ai_req.retrieved_memory)} ítems")
+    print(" AILEN AI Demo — canonical adaptive routing")
+    print(f" Destino primario : {plan.primary_backend}")
+    print(f" Fallbacks        : {plan.fallback_backends}")
+    print(f" Motivo           : {plan.reason_code}")
+    print(f" Privacidad       : {plan.privacy_decision}")
     print("==========================================================")
-
     if dry_run:
-        print("[DRY-RUN] Decisión de enrutamiento completada sin llamadas de red.")
+        print("[DRY-RUN] No se realizó ninguna inferencia ni llamada de red.")
         return 0
 
-    # Build orchestrator with active backends (or fake fallback)
     backends: dict[str, Any] = {}
     if cfg.ai.local.enabled:
         backends["local"] = LocalAiBackend(
@@ -1136,26 +1363,33 @@ def cmd_demo_ai(args: argparse.Namespace, config_path: str | None) -> int:
             trusted=cfg.ai.lan.trusted,
             timeout_seconds=cfg.ai.lan.timeout_seconds,
         )
-    if cfg.ai.cloud.enabled:
-        backends["cloud"] = CloudAiBackend(
-            endpoint=cfg.ai.cloud.endpoint,
-            model=cfg.ai.cloud.model,
-            api_key_env=cfg.ai.cloud.api_key_env,
-            api_key_file=cfg.ai.cloud.api_key_file,
-            timeout_seconds=cfg.ai.cloud.timeout_seconds,
-            provider_name=cfg.ai.cloud.provider,
-            input_cost_per_million=cfg.ai.cloud.input_cost_per_million,
-            output_cost_per_million=cfg.ai.cloud.output_cost_per_million,
+    resolver = SecretResolver()
+    for provider_id, provider in cfg.ai.remote.providers.items():
+        route_id = f"remote:{provider_id}"
+        if route_id not in enabled_remotes:
+            continue
+        backends[route_id] = build_remote_backend(
+            provider_id,
+            provider,
+            api_key=resolver.resolve(
+                env_var=provider.api_key_env or None,
+                file_name=provider.api_key_file or None,
+            ),
         )
     if not backends:
-        backends["local"] = FakeAiBackend(canned_response="Respuesta simulada local (sin servidor configurado)")
-        backends["fake"] = backends["local"]
+        print("No hay backend configurado; no se activa local ni remoto implícitamente.")
+        return 2
 
-    orchestrator = AiOrchestrator(backends=backends, router=router, repository=repo)
-    resp, _exec_plan = orchestrator.execute(ai_req, plan=plan)
-
-    print(f"Respuesta ({resp.provider}/{resp.model}): \"{resp.text}\"")
-    print(f"Latencia: {resp.latency_ms:.1f}ms | Tokens In/Out: {resp.usage.input_tokens}/{resp.usage.output_tokens} | Finish: {resp.finish_reason}")
+    response, _ = AiOrchestrator(
+        backends=backends,
+        router=router,
+        repository=repository,
+    ).execute(ai_request, plan=plan)
+    print(f"Respuesta ({response.provider}/{response.model}): {response.text!r}")
+    print(
+        f"Latencia: {response.latency_ms:.1f} ms | "
+        f"finish={response.finish_reason}"
+    )
     return 0
 
 
@@ -1229,7 +1463,7 @@ def cmd_lab_inspect(args: argparse.Namespace) -> int:
         print(f"  Disk Required  : {plan.model_descriptor.disk_size_bytes // (1024 * 1024)} MB")
         print(f"  Plan Reasons   : {', '.join(plan.reason_codes)}")
     else:
-        print("  Status         : NO VIABLE LOCAL MODEL PLAN (will delegate to LAN Brain or Cloud)")
+        print("  Status         : NO VIABLE LOCAL MODEL PLAN (will delegate to LAN Brain or a named remote provider)")
         print(f"  Reasons        : {', '.join(plan.reason_codes)}")
     print("==================================================================")
     return 0
@@ -1266,18 +1500,29 @@ def cmd_lab_doctor(args: argparse.Namespace, config_path: str | None) -> int:
 
 def cmd_lab_prepare_ai(args: argparse.Namespace, config_path: str | None) -> int:
     """Run interactive or automated prepare-ai workflow."""
-    from ailen.models.catalog import ModelPurpose
+    from ailen.provisioning.planner import (
+        HardwareQualificationStore,
+        ProvisioningPlanner,
+    )
     from ailen.runtime.prepare import LabAiPreparer
 
     cfg = load_config(config_path)
-    preparer = LabAiPreparer(config=cfg)
-    purpose_str = getattr(args, "purpose", "BALANCED").upper()
-    purpose = ModelPurpose(purpose_str) if purpose_str in ModelPurpose._value2member_map_ else ModelPurpose.BALANCED
+    try:
+        qualifications = HardwareQualificationStore.from_directory(
+            Path(str(args.qualification_dir))
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Error: evidencia de calificación inválida: {exc}")
+        return 1
+    preparer = LabAiPreparer(
+        config=cfg,
+        provisioning_planner=ProvisioningPlanner(qualifications=qualifications),
+    )
 
     _report, code = preparer.run(
         auto_download=getattr(args, "yes", False),
         start_runtime=getattr(args, "start_runtime", False),
-        purpose=purpose,
+        activate_selection=getattr(args, "activate_selection", False),
     )
     return code
 
@@ -1500,6 +1745,690 @@ def cmd_lab_benchmark_stt(args: argparse.Namespace, config_path: str | None) -> 
     return 0
 
 
+def _parse_bounded_int_csv(raw: str, *, allowed: set[int], label: str) -> list[int]:
+    values: list[int] = []
+    for part in raw.split(","):
+        try:
+            value = int(part.strip())
+        except ValueError as exc:
+            raise ValueError(f"{label} contiene un entero inválido: {part!r}") from exc
+        if value not in allowed:
+            raise ValueError(f"{label} fuera de rango: {value}")
+        if value not in values:
+            values.append(value)
+    if not values:
+        raise ValueError(f"{label} no puede estar vacío")
+    return values
+
+
+def _run_lab_barge_in_validation(
+    *,
+    cfg: Any,
+    cases: list[Any],
+    output_root: Path,
+    timeout_seconds: float,
+) -> int:
+    """Run real early/middle/late interruption trials over canonical Lab audio."""
+    import os
+    import secrets
+    from datetime import UTC, datetime
+
+    from ailen.audio.alsa_backend import AlsaDeviceEnumerator
+    from ailen.audio.voice_validation import (
+        BargeInTrialResult,
+        run_physical_barge_in_trial,
+    )
+    from ailen.core.events import EventBus
+    from ailen.runtime.factory import LabComponentFactory
+
+    factory = LabComponentFactory(config=cfg)
+    audio_input, audio_output, audio_status = factory.build_audio_io()
+    stt, stt_status = factory.build_stt()
+    tts, tts_status = factory.build_tts()
+    unavailable = [
+        status
+        for status, component in (
+            (audio_status, audio_input),
+            (stt_status, stt),
+            (tts_status, tts),
+        )
+        if component is None
+    ]
+    if unavailable:
+        for status in unavailable:
+            print(f"ERROR: {status.name} no está listo: {status.detail}")
+        return 1
+    assert audio_input is not None
+    assert audio_output is not None
+    assert stt is not None
+    assert tts is not None
+
+    event_bus = EventBus(record_history=False)
+    coordinator = factory.build_audio_coordinator(
+        audio_input=audio_input,
+        audio_output=audio_output,
+        stt=stt,
+        tts=tts,
+        state_manager=StateManager(initial_state=AssistantState.IDLE),
+        event_bus=event_bus,
+        auto_reset_after_stt=True,
+    )
+    if coordinator is None:
+        print("ERROR: no se pudo construir el pipeline de audio canónico.")
+        return 1
+
+    session_id = (
+        f"barge-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-"
+        f"{secrets.token_hex(3)}"
+    )
+    output_dir = output_root / session_id
+    output_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
+    enumerator = AlsaDeviceEnumerator()
+    route_snapshot = {
+        "configured_input": cfg.audio.input_device,
+        "configured_output": cfg.audio.output_device,
+        "default_input_route": enumerator.get_default_route(is_input=True),
+        "default_output_route": enumerator.get_default_route(is_input=False),
+        "default_input_physical": enumerator.get_default_alsa_endpoint(is_input=True),
+        "default_output_physical": enumerator.get_default_alsa_endpoint(is_input=False),
+    }
+    results: list[BargeInTrialResult] = []
+    aborted = False
+
+    print("==================================================================")
+    print("AILÉN — BARGE-IN FÍSICO TEMPRANO / MEDIO / TARDÍO")
+    print("Usa Vosk, TTS y ALSA reales de la config. PCM permanece sólo en RAM.")
+    print("No hay AEC real: el resultado depende también de fuga del parlante al micrófono.")
+    print("La síntesis ONNX activa no se finge cancelable; se mide su drenaje aparte.")
+    print(f"Session: {session_id}")
+    print(f"Entrada: {cfg.audio.input_device} | Salida: {cfg.audio.output_device}")
+    print("Enter=ejecutar, s=omitir, q=guardar parcial y salir.")
+    print("==================================================================")
+
+    def show_cue(phase: str, expected_text: str) -> None:
+        print(f"\n>>> INTERRUMPÍ AHORA ({phase}): «{expected_text}» <<<", flush=True)
+
+    coordinator.start()
+    try:
+        if not coordinator.capabilities()[0].available:
+            print("ERROR: la captura de audio no quedó activa.")
+            return 1
+        for case in cases:
+            print(
+                f"\nEnsayo {case.phase}: la señal aparece a los "
+                f"{case.cue_delay_seconds:.2f}s del primer PCM."
+            )
+            choice = input("Enter para iniciar / s omitir / q terminar: ").strip().lower()
+            if choice == "q":
+                aborted = True
+                break
+            if choice == "s":
+                results.append(
+                    BargeInTrialResult(
+                        phase=case.phase,
+                        expected_text=case.expected_text,
+                        recognized_text="",
+                        status="skipped",
+                    )
+                )
+                continue
+            turn_id = f"barge-{case.phase}-{secrets.token_hex(3)}"
+            result = run_physical_barge_in_trial(
+                coordinator=coordinator,
+                phase=case.phase,
+                expected_text=case.expected_text,
+                cue_delay_seconds=case.cue_delay_seconds,
+                timeout_seconds=timeout_seconds,
+                turn_id=turn_id,
+                on_cue=show_cue,
+            )
+            results.append(result)
+            print(
+                f"RESULTADO: {result.status} texto={result.recognized_text!r} "
+                f"conf={result.confidence} WER={result.wer} "
+                f"stop={result.playback_stop_ms}ms frames={result.buffered_frames} "
+                f"drain={result.synthesis_drain_observed}"
+            )
+    except (EOFError, KeyboardInterrupt):
+        aborted = True
+        print("\nSesión detenida; se guarda sólo evidencia textual parcial.")
+    finally:
+        coordinator.stop()
+
+    report = {
+        "schema_version": 1,
+        "session_id": session_id,
+        "created_at": datetime.now(UTC).isoformat(),
+        "status": "partial" if aborted else "complete",
+        "lab_host": "ASRock contended",
+        "load_average": list(os.getloadavg()),
+        "pcm_persisted": False,
+        "aec_available": False,
+        "active_config_modified": False,
+        "route_snapshot": route_snapshot,
+        "component_status": {
+            "audio": audio_status.to_dict(),
+            "stt": stt_status.to_dict(),
+            "tts": tts_status.to_dict(),
+        },
+        "results": [result.to_dict() for result in results],
+    }
+    report_path = output_dir / "summary.json"
+    report_path.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    report_path.chmod(0o600)
+    lines = [
+        f"# AILÉN barge-in validation {session_id}",
+        "",
+        f"- Estado: {report['status']}",
+        "- PCM/audio persistido: no",
+        "- AEC real disponible: no",
+        "- Config activa modificada: no",
+        "- Host: ASRock contended; no extrapolar a equipos 4/8 GB",
+        "",
+        "| Fase | Resultado | Stop ms | Frames | WER | Drenaje observado |",
+        "|---|---|---:|---:|---:|---|",
+    ]
+    for result in results:
+        lines.append(
+            f"| {result.phase} | {result.status} | {result.playback_stop_ms} | "
+            f"{result.buffered_frames} | {result.wer} | "
+            f"{result.synthesis_drain_observed} |"
+        )
+    markdown_path = output_dir / "summary.md"
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    markdown_path.chmod(0o600)
+    print(f"\nMétricas: {report_path}")
+    return 130 if aborted else 0
+
+
+def cmd_lab_calibrate_voice(args: argparse.Namespace, config_path: str | None) -> int:
+    """Run guided physical source/level/VAD/Vosk comparisons without PCM files."""
+    import os
+    import secrets
+    from datetime import UTC, datetime
+
+    from ailen.audio.alsa_backend import AlsaAudioInputBackend, AlsaDeviceEnumerator
+    from ailen.audio.level import build_capture_processor
+    from ailen.audio.stt_quality import SttQualityEvaluator
+    from ailen.audio.vad import UtteranceCollector, WebRtcVad
+    from ailen.audio.voice_validation import (
+        VoiceSampleResult,
+        VoiceValidationCase,
+        capture_voice_sample,
+        default_barge_in_validation_cases,
+        default_voice_validation_cases,
+        format_voice_sample_result,
+        recommend_voice_configuration,
+        select_voice_calibration_devices,
+    )
+    from ailen.audio.vosk_backend import VoskSttBackend
+    from ailen.domain.enums import ServiceStatus
+
+    cfg = load_config(config_path)
+    try:
+        vad_modes = _parse_bounded_int_csv(
+            str(args.vad_modes), allowed={0, 1, 2, 3}, label="--vad-modes"
+        )
+        silence_timeouts = _parse_bounded_int_csv(
+            str(args.silence_timeouts),
+            allowed=set(range(200, 1501)),
+            label="--silence-timeouts",
+        )
+        distances_cm = _parse_bounded_int_csv(
+            str(args.distances_cm),
+            allowed=set(range(20, 501)),
+            label="--distances-cm",
+        )
+        processing_profiles = list(
+            dict.fromkeys(
+                part.strip().lower()
+                for part in str(args.processing_profiles).split(",")
+                if part.strip()
+            )
+        )
+        silence_seconds = float(args.silence_seconds)
+        if not processing_profiles or any(
+            profile not in {"raw", "noise_only", "full"}
+            for profile in processing_profiles
+        ):
+            raise ValueError(
+                "--processing-profiles sólo acepta raw,noise_only,full"
+            )
+        if not 0.5 <= silence_seconds <= 5.0:
+            raise ValueError("--silence-seconds debe estar entre 0.5 y 5.0")
+
+        gain_raw = str(args.capture_gains).strip()
+        capture_gains = (
+            [float(part.strip()) for part in gain_raw.split(",") if part.strip()]
+            if gain_raw
+            else [cfg.audio.capture_gain_db]
+        )
+        if not capture_gains or any(not -24.0 <= value <= 30.0 for value in capture_gains):
+            raise ValueError("--capture-gains debe contener valores entre -24 y 30 dB")
+        capture_gains = list(dict.fromkeys(capture_gains))
+
+        agc_raw = str(args.auto_gain_modes).strip()
+        if agc_raw:
+            mapping = {"off": False, "on": True}
+            invalid = [
+                part.strip().lower()
+                for part in agc_raw.split(",")
+                if part.strip().lower() not in mapping
+            ]
+            if invalid:
+                raise ValueError("--auto-gain-modes sólo acepta off,on")
+            auto_gain_modes = list(
+                dict.fromkeys(mapping[part.strip().lower()] for part in agc_raw.split(","))
+            )
+        else:
+            auto_gain_modes = [cfg.audio.auto_gain_enabled]
+    except (TypeError, ValueError) as exc:
+        print(f"ERROR: {exc}")
+        return 1
+
+    barge_in_cases = default_barge_in_validation_cases()
+    if bool(args.barge_in_only):
+        barge_matrix = {
+            "mode": "barge_in",
+            "trials": [
+                {
+                    "phase": barge_case.phase,
+                    "expected_text": barge_case.expected_text,
+                    "cue_delay_seconds": barge_case.cue_delay_seconds,
+                }
+                for barge_case in barge_in_cases
+            ],
+            "captures_audio": False,
+            "aec_available": False,
+            "note": (
+                "--list-cases no abre audio; la prueba real usa el pipeline "
+                "configurado y nunca persiste PCM."
+            ),
+        }
+        if bool(args.list_cases):
+            if bool(args.json):
+                print(json.dumps(barge_matrix, indent=2, ensure_ascii=False))
+            else:
+                print("AILÉN — ensayos físicos de barge-in (sin AEC real)")
+                for barge_case in barge_in_cases:
+                    print(
+                        f"- {barge_case.phase}: decí «{barge_case.expected_text}» "
+                        "al recibir la señal"
+                    )
+            return 0
+        return _run_lab_barge_in_validation(
+            cfg=cfg,
+            cases=barge_in_cases,
+            output_root=Path(str(args.output)),
+            timeout_seconds=max(1.0, float(args.barge_in_timeout)),
+        )
+
+    enumerator = AlsaDeviceEnumerator()
+    pipewire_sources = []
+    seen_source_ids: set[str] = set()
+    for source in enumerator.list_pipewire_devices(is_input=True):
+        if source.is_monitor or source.id in seen_source_ids:
+            continue
+        seen_source_ids.add(source.id)
+        pipewire_sources.append(source)
+    default_source = next(
+        (source.id for source in pipewire_sources if source.is_default),
+        None,
+    )
+
+    def observed_source_for(device: str) -> str:
+        if device in {"auto", "default", "pipewire"} and default_source:
+            return default_source
+        return device
+    explicit_devices = [
+        str(item).strip() for item in args.device if str(item).strip()
+    ]
+    devices = select_voice_calibration_devices(
+        explicit_devices=explicit_devices,
+        configured_device=cfg.audio.input_device,
+        pipewire_sources=pipewire_sources,
+    )
+
+    source_snapshot = [
+        {
+            "id": source.id,
+            "name": source.name,
+            "default": source.is_default,
+            "state": source.state,
+            "volume_percent": source.volume_percent,
+            "volume_db": source.volume_db,
+            "attenuation_warning": bool(
+                (source.volume_percent is not None and source.volume_percent < 60.0)
+                or (source.volume_db is not None and source.volume_db < -10.0)
+            ),
+        }
+        for source in pipewire_sources
+    ]
+    source_by_id = {str(item["id"]): item for item in source_snapshot}
+
+    cases = default_voice_validation_cases()
+    limit = max(0, int(args.limit))
+    if limit:
+        cases = cases[:limit]
+    matrix = {
+        "devices": devices,
+        "available_pipewire_sources": source_snapshot,
+        "vad_modes": vad_modes,
+        "silence_timeouts_ms": silence_timeouts,
+        "capture_gains_db": capture_gains,
+        "auto_gain_modes": auto_gain_modes,
+        "distances_cm": distances_cm,
+        "processing_profiles": processing_profiles,
+        "silence_phase_seconds": silence_seconds,
+        "cases": [
+            {
+                "case_id": case.case_id,
+                "expected_text": case.expected_text,
+                "instruction": case.instruction,
+            }
+            for case in cases
+        ],
+        "captures_audio": False,
+        "note": "--list-cases no abre el micrófono; PCM real permanece sólo en RAM.",
+    }
+    if bool(args.list_cases):
+        if bool(args.json):
+            print(json.dumps(matrix, indent=2, ensure_ascii=False))
+        else:
+            print("AILÉN — matriz física de fuente + nivel + WebRTC VAD + Vosk")
+            print(f"Fuentes: {devices}")
+            print(
+                f"Gain: {capture_gains} dB; AGC: {auto_gain_modes}; "
+                f"distancias: {distances_cm} cm; perfiles: {processing_profiles}; "
+                f"silencio: {silence_seconds:.1f} s"
+            )
+            print(f"WebRTC: {vad_modes}; cierre: {silence_timeouts} ms")
+            for index, voice_case in enumerate(cases, start=1):
+                print(
+                    f"{index:02d}. {voice_case.expected_text} "
+                    f"({voice_case.instruction})"
+                )
+        return 0
+
+    stt = VoskSttBackend(
+        model_path=cfg.speech.stt_model_path,
+        sample_rate=cfg.audio.sample_rate,
+    )
+    stt_health = stt.health()
+    if stt_health.status is not ServiceStatus.HEALTHY:
+        print(f"ERROR: Vosk no está listo: {stt_health.detail}")
+        return 1
+
+    route_snapshot = {
+        "configured_input": cfg.audio.input_device,
+        "default_route": default_source,
+        "default_physical_endpoint": enumerator.get_default_alsa_endpoint(is_input=True),
+        "tested_devices": devices,
+        "available_pipewire_sources": source_snapshot,
+    }
+    session_id = (
+        f"voice-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-"
+        f"{secrets.token_hex(3)}"
+    )
+    output_dir = Path(str(args.output)) / session_id
+    output_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
+    results: list[VoiceSampleResult] = []
+    aborted = False
+
+    print("==================================================================")
+    print("AILÉN — COMPARACIÓN FÍSICA DE CAPTURA A DISTANCIA")
+    print("PCM: sólo RAM; no se guarda WAV/audio. Config activa: no se modifica.")
+    print("Easy Effects es sólo una fuente observable de Lab; AILÉN no depende de ella.")
+    print("AGC/ganancia NO son AEC; durante playback persiste la limitación física de eco.")
+    print("Trading Bot queda intacto; esta ASRock se etiqueta como contended.")
+    print(f"Session: {session_id}")
+    print(f"Configurada: {route_snapshot['configured_input']}")
+    print(f"Default efectiva: {route_snapshot['default_route'] or 'no observable'}")
+    for snapshot_entry in source_snapshot:
+        warning = (
+            " ⚠ ATENUADA" if snapshot_entry["attenuation_warning"] else ""
+        )
+        print(
+            f"- {snapshot_entry['id']}: {snapshot_entry['name']} "
+            f"{snapshot_entry['volume_percent']}% / "
+            f"{snapshot_entry['volume_db']} dB "
+            f"[{snapshot_entry['state']}]{warning}"
+        )
+    print("Cada muestra inicia con silencio medido; AILÉN indicará cuándo hablar.")
+    print("Enter=iniciar, s=omitir, q=guardar parcial y salir.")
+    print("==================================================================")
+
+    trials: list[
+        tuple[str, str, str, float, bool, int, int, int, VoiceValidationCase]
+    ] = []
+    for device in devices:
+        is_external_dsp = "easyeffects" in device.casefold()
+        profiles_for_device = (
+            [("external_reference", "raw")]
+            if is_external_dsp
+            else [(profile, profile) for profile in processing_profiles]
+        )
+        for profile_label, build_profile in profiles_for_device:
+            gain_values = capture_gains if build_profile == "full" else [0.0]
+            agc_values = auto_gain_modes if build_profile == "full" else [False]
+            for capture_gain_db in gain_values:
+                for auto_gain_enabled in agc_values:
+                    for distance_cm in distances_cm:
+                        for vad_mode in vad_modes:
+                            for silence_timeout_ms in silence_timeouts:
+                                for voice_case in cases:
+                                    trials.append(
+                                        (
+                                            device,
+                                            profile_label,
+                                            build_profile,
+                                            capture_gain_db,
+                                            auto_gain_enabled,
+                                            distance_cm,
+                                            vad_mode,
+                                            silence_timeout_ms,
+                                            voice_case,
+                                        )
+                                    )
+    total = len(trials)
+    ordinal = 0
+    warned_attenuated_sources: set[str] = set()
+    try:
+        for (
+            device,
+            profile_label,
+            build_profile,
+            capture_gain_db,
+            auto_gain_enabled,
+            distance_cm,
+            vad_mode,
+            silence_timeout_ms,
+            voice_case_raw,
+        ) in trials:
+            voice_case = voice_case_raw
+            effective_source_hint = observed_source_for(device)
+            source_info = source_by_id.get(effective_source_hint)
+            if (
+                source_info
+                and source_info["attenuation_warning"]
+                and device not in warned_attenuated_sources
+            ):
+                warned_attenuated_sources.add(device)
+                print(
+                    f"\n⚠ {source_info['name']} está atenuada a "
+                    f"{source_info['volume_percent']}% / {source_info['volume_db']} dB. "
+                    "Se medirá así; AILÉN no cambiará el sistema."
+                )
+            ordinal += 1
+            print(
+                f"\n[{ordinal}/{total}] source={device} profile={profile_label} "
+                f"gain={capture_gain_db:+.1f}dB AGC={auto_gain_enabled} "
+                f"WebRTC={vad_mode} close={silence_timeout_ms}ms"
+            )
+            print(
+                f"LUEGO DECÍ A {distance_cm} cm: «{voice_case.expected_text}»"
+            )
+            print(f"INDICACIÓN: {voice_case.instruction}")
+            choice = input(
+                "Enter para medir silencio / s omitir / q terminar: "
+            ).strip().lower()
+            if choice == "q":
+                aborted = True
+                raise KeyboardInterrupt
+            if choice == "s":
+                results.append(
+                    VoiceSampleResult(
+                        case_id=voice_case.case_id,
+                        expected_text=voice_case.expected_text,
+                        recognized_text="",
+                        device=device,
+                        vad_mode=vad_mode,
+                        silence_timeout_ms=silence_timeout_ms,
+                        status="skipped",
+                        processing_profile=profile_label,
+                        distance_cm=distance_cm,
+                        capture_gain_db=capture_gain_db,
+                        auto_gain_enabled=auto_gain_enabled,
+                    )
+                )
+                continue
+
+            frame_ms = cfg.audio.frame_ms
+            collector = UtteranceCollector(
+                vad=WebRtcVad(
+                    sample_rate=cfg.audio.sample_rate,
+                    frame_ms=frame_ms,
+                    mode=vad_mode,
+                    hangover_frames=max(
+                        0,
+                        round(cfg.speech.vad_hangover_ms / frame_ms),
+                    ),
+                    min_rms=cfg.speech.vad_threshold,
+                ),
+                sample_rate=cfg.audio.sample_rate,
+                channels=cfg.audio.channels,
+                frame_ms=frame_ms,
+                min_speech_ms=cfg.speech.min_speech_ms,
+                silence_timeout_ms=silence_timeout_ms,
+                max_utterance_seconds=cfg.speech.max_utterance_seconds,
+                pre_roll_ms=cfg.speech.pre_roll_ms,
+            )
+            frame_processor = build_capture_processor(
+                sample_rate=cfg.audio.sample_rate,
+                channels=cfg.audio.channels,
+                frame_ms=frame_ms,
+                capture_gain_db=capture_gain_db,
+                auto_gain_enabled=auto_gain_enabled,
+                auto_gain_target_rms=cfg.audio.auto_gain_target_rms,
+                max_auto_gain_db=cfg.audio.max_auto_gain_db,
+                auto_gain_attack_ms=cfg.audio.auto_gain_attack_ms,
+                auto_gain_release_ms=cfg.audio.auto_gain_release_ms,
+                auto_gain_noise_gate_rms=cfg.audio.auto_gain_noise_gate_rms,
+                auto_gain_gate_hold_ms=cfg.audio.auto_gain_gate_hold_ms,
+                capture_limiter_peak=cfg.audio.capture_limiter_peak,
+                noise_suppression_engine=cfg.speech.noise_suppression_engine,
+                noise_suppression_level=cfg.speech.noise_suppression_level,
+                input_processing_mode="auto",
+                input_device=device,
+                effective_source=effective_source_hint,
+                processing_profile=build_profile,
+            )
+
+            def speech_ready(target_distance_cm: int = distance_cm) -> None:
+                print(
+                    f">>> HABLÁ AHORA, en volumen normal a {target_distance_cm} cm <<<",
+                    flush=True,
+                )
+
+            result = capture_voice_sample(
+                case=voice_case,
+                device=device,
+                vad_mode=vad_mode,
+                silence_timeout_ms=silence_timeout_ms,
+                audio_input=AlsaAudioInputBackend(
+                    device=device,
+                    sample_rate=cfg.audio.sample_rate,
+                    channels=cfg.audio.channels,
+                    frame_ms=frame_ms,
+                ),
+                collector=collector,
+                stt=stt,
+                quality=SttQualityEvaluator(
+                    noise_confidence_max=cfg.speech.stt_noise_confidence_max,
+                    conversation_min_confidence=(
+                        cfg.speech.stt_conversation_min_confidence
+                    ),
+                    action_min_confidence=cfg.speech.voice_action_min_confidence,
+                ),
+                frame_processor=frame_processor,
+                max_wait_seconds=max(1.0, float(args.max_wait)),
+                silence_seconds=silence_seconds,
+                distance_cm=distance_cm,
+                on_speech_ready=speech_ready,
+                capture_gain_db=capture_gain_db,
+                auto_gain_enabled=auto_gain_enabled,
+                processing_profile=profile_label,
+                effective_source_hint=effective_source_hint,
+            )
+            results.append(result)
+            print(f"RESULTADO: {format_voice_sample_result(result)}")
+    except (EOFError, KeyboardInterrupt):
+        aborted = True
+        print("\nSesión detenida; se guardan sólo métricas textuales parciales.")
+
+    recommendation = recommend_voice_configuration(results)
+    report = {
+        "schema_version": 2,
+        "session_id": session_id,
+        "created_at": datetime.now(UTC).isoformat(),
+        "status": "partial" if aborted else "complete",
+        "lab_host": "ASRock contended",
+        "load_average": list(os.getloadavg()),
+        "pcm_persisted": False,
+        "active_config_modified": False,
+        "aec_available": False,
+        "stt": {"engine": "vosk", "health": stt_health.status.value},
+        "route_snapshot": route_snapshot,
+        "matrix": matrix,
+        "results": [result.to_dict() for result in results],
+        "recommendation": recommendation,
+        "barge_in": {
+            "validated": False,
+            "detail": "Ejecutar --barge-in-only por separado; AGC no equivale a AEC.",
+        },
+    }
+    report_path = output_dir / "summary.json"
+    report_path.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    report_path.chmod(0o600)
+    markdown = [
+        f"# AILÉN voice validation {session_id}",
+        "",
+        f"- Estado: {report['status']}",
+        f"- Muestras: {len(results)}",
+        "- PCM/audio persistido: no",
+        "- Configuración activa modificada: no",
+        "- AEC disponible: no",
+        "- Host: ASRock contended; no extrapolar a 4/8 GB",
+        "",
+        "## Recomendación observacional",
+        "",
+        json.dumps(recommendation, ensure_ascii=False, sort_keys=True),
+        "",
+        "Requiere confirmación humana antes de persistir fuente, gain, AGC o VAD.",
+    ]
+    markdown_path = output_dir / "summary.md"
+    markdown_path.write_text("\n".join(markdown) + "\n", encoding="utf-8")
+    markdown_path.chmod(0o600)
+    print(f"\nMétricas: {report_path}")
+    print("No se modificó config/ailen.toml. Toda recomendación requiere confirmación.")
+    return 130 if aborted else 0
+
 def _record_wav_authorized(device: str, seconds: float, out_path: str) -> int:
     """Record an explicit operator-authorized WAV via the ALSA input backend."""
     import time as _time
@@ -1584,11 +2513,15 @@ def cmd_lab_config(args: argparse.Namespace) -> int:
         from ailen.runtime.lab_config import init_lab_config
 
         out_path, created = init_lab_config(
+            profile_id=args.profile,
             force=getattr(args, "force", False),
             stt_engine=getattr(args, "stt", "vosk"),
             tts_voice=getattr(args, "voice", "es_ES-davefx-medium"),
-            ai_endpoint=getattr(args, "ai_endpoint", "http://127.0.0.1:11434/v1"),
-            ai_model=getattr(args, "ai_model", "qwen3.5:9b"),
+            local_endpoint=getattr(args, "local_endpoint", "") or None,
+            local_model=getattr(args, "local_model", "") or None,
+            lan_endpoint=getattr(args, "lan_endpoint", "") or None,
+            lan_model=getattr(args, "lan_model", "") or None,
+            lan_trusted=bool(getattr(args, "lan_trusted", False)),
         )
         if created:
             print(f"[OK] Isolated lab configuration created at: {out_path}")
@@ -1601,13 +2534,14 @@ def cmd_lab_config(args: argparse.Namespace) -> int:
 
 def cmd_lab_audio_devices(args: argparse.Namespace, config_path: str | None) -> int:
     """List physical ALSA hardware separately from virtual routing endpoints."""
-    del config_path
     from ailen.audio.alsa_backend import AlsaDeviceEnumerator
 
+    cfg = load_config(config_path)
     enumerator = AlsaDeviceEnumerator()
     capture_hw = enumerator.list_hardware_devices(is_input=True)
     playback_hw = enumerator.list_hardware_devices(is_input=False)
     endpoints = enumerator.list_devices()
+    default_capture = enumerator.get_default_route(is_input=True)
 
     if getattr(args, "json", False):
         payload = {
@@ -1624,9 +2558,16 @@ def cmd_lab_audio_devices(args: argparse.Namespace, config_path: str | None) -> 
                     "is_input": d.is_input,
                     "is_output": d.is_output,
                     "is_default": d.is_default,
+                    "backend": d.backend,
+                    "state": d.state,
+                    "volume_percent": d.volume_percent,
+                    "volume_db": d.volume_db,
+                    "is_monitor": d.is_monitor,
                 }
                 for d in endpoints
             ],
+            "configured_capture": cfg.audio.input_device,
+            "effective_default_capture": default_capture,
         }
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
@@ -1648,9 +2589,30 @@ def cmd_lab_audio_devices(args: argparse.Namespace, config_path: str | None) -> 
         print("PLAYBACK: no hardware endpoints reported by `aplay -l`.")
 
     print("------------------------------------------------------------------")
+    print("PIPEWIRE SOURCES (stable syntax: pipewire:<node-name>):")
+    for d in endpoints:
+        if d.backend != "pipewire" or not d.is_input or d.is_monitor:
+            continue
+        default_tag = " (DEFAULT)" if d.is_default else ""
+        level = ""
+        if d.volume_percent is not None:
+            level += f" {d.volume_percent:.0f}%"
+        if d.volume_db is not None:
+            level += f" / {d.volume_db:.2f} dB"
+        warning = "  ⚠ ATENUADA" if (
+            (d.volume_percent is not None and d.volume_percent < 60.0)
+            or (d.volume_db is not None and d.volume_db < -10.0)
+        ) else ""
+        print(
+            f"  [MIC] {d.id} : {d.name}{default_tag} [{d.state or 'unknown'}]"
+            f"{level}{warning}"
+        )
+    print(f"CONFIGURADA: {cfg.audio.input_device}")
+    print(f"DEFAULT EFECTIVA: {default_capture or 'no observable'}")
+    print("------------------------------------------------------------------")
     print("ALSA ROUTING/PLUGIN ENDPOINTS (not proof of physical hardware):")
     for d in endpoints:
-        if d.is_default or d.id in {"pipewire", "pulse"}:
+        if d.backend != "pipewire" and (d.is_default or d.id in {"pipewire", "pulse"}):
             dtype = "INPUT" if d.is_input else "OUTPUT"
             default_tag = " (DEFAULT)" if d.is_default else ""
             print(f"  [{dtype}] {d.id:<26} : {d.name}{default_tag}")
@@ -1706,7 +2668,9 @@ def cmd_lab(args: argparse.Namespace, config_path: str | None) -> int:
         return cmd_lab_benchmark_vision(args, config_path)
     elif action == "benchmark-stt":
         return cmd_lab_benchmark_stt(args, config_path)
-    print("Uso: ailen lab [inspect|start|doctor|preflight|prepare-ai|prepare-speech|config|audio-devices|cameras|benchmark|benchmark-ai|benchmark-vision|benchmark-stt]")
+    elif action == "calibrate-voice":
+        return cmd_lab_calibrate_voice(args, config_path)
+    print("Uso: ailen lab [inspect|start|doctor|preflight|prepare-ai|prepare-speech|config|audio-devices|cameras|benchmark|benchmark-ai|benchmark-vision|benchmark-stt|calibrate-voice]")
     return 1
 
 
@@ -2017,10 +2981,93 @@ def cmd_models_verify(args: argparse.Namespace) -> int:
     if valid:
         print(f"SUCCESS: Integrity check passed for '{model_id}' (SHA-256 match).")
         return 0
-    else:
-        print(f"FAILURE: SHA-256 mismatch for '{model_id}'!")
-        return 1
+    print(f"FAILURE: SHA-256 mismatch for '{model_id}'!")
+    return 1
 
+
+def cmd_models_provision_plan(args: argparse.Namespace) -> int:
+    """Print the canonical installation decision without downloading anything."""
+
+    from ailen.provisioning.planner import (
+        HardwareQualificationStore,
+        ProvisioningPlanner,
+    )
+
+    store = ModelStore()
+    report = HardwareDetector().detect(str(store.base_dir))
+    try:
+        qualifications = HardwareQualificationStore.from_directory(
+            Path(str(args.qualification_dir))
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Error: evidencia de calificación inválida: {exc}")
+        return 1
+    plan = ProvisioningPlanner(qualifications=qualifications).plan(
+        report,
+        topology=str(args.topology),
+        manual_model_override=str(args.model_override).strip() or None,
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(plan.to_dict(), indent=2, ensure_ascii=False))
+        return 0
+
+    print("==================================================================")
+    print(" AILEN PROVISIONING PLAN — no downloads performed")
+    print("==================================================================")
+    print(f"Hardware class : {plan.hardware_class}")
+    print(f"Tier / topology: {plan.hardware_tier} / {plan.topology}")
+    print(f"Runtime        : {plan.runtime} ({plan.runtime_reason})")
+    print(f"Execution      : {plan.execution_device} (GPU layers: {plan.gpu_layers})")
+    print(f"Primary model  : {plan.primary_model_id or 'none qualified'}")
+    print(f"Candidates     : {list(plan.candidate_model_ids)}")
+    print(f"Auto-download  : {'eligible after consent' if plan.auto_download_allowed else 'blocked'}")
+    print(f"Consent actions: {list(plan.consent_actions)}")
+    print(f"Reasons        : {', '.join(plan.reason_codes)}")
+    print("==================================================================")
+    return 0
+
+
+def cmd_models_qualification_template(args: argparse.Namespace) -> int:
+    """Create an evidence template without resolving or downloading weights."""
+    from ailen.models.qualification import qualification_template
+
+    descriptor = ModelCatalog().get_model(str(args.model_id))
+    if descriptor is None:
+        print(f"Error: Model '{args.model_id}' not found in catalog.")
+        return 1
+    destination = Path(
+        str(args.output).strip()
+        or f"runtime/lab/model_qualification/{descriptor.model_id}.json"
+    )
+    if destination.exists() and not bool(args.force):
+        print(f"Error: {destination} already exists (use --force to replace it).")
+        return 1
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(qualification_template(descriptor).to_json(), encoding="utf-8")
+    print(f"Manifest candidato creado: {destination}")
+    print("No se descargaron pesos ni se certificó hardware.")
+    return 0
+
+
+def cmd_models_qualification_validate(args: argparse.Namespace) -> int:
+    """Validate a qualification manifest and fail closed on incomplete proof."""
+    from ailen.models.qualification import ModelQualificationManifest
+
+    source = Path(str(args.manifest))
+    try:
+        raw = json.loads(source.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise TypeError("manifest root must be an object")
+        manifest = ModelQualificationManifest.from_dict(raw)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Error: manifest inválido: {exc}")
+        return 1
+    missing = manifest.missing_for_qualification()
+    if missing:
+        print(f"NO CALIFICADO ({manifest.status.value}): faltan {', '.join(missing)}")
+        return 2
+    print(f"EVIDENCIA COMPLETA: {manifest.model_id} ({manifest.status.value})")
+    return 0
 
 def cmd_models(args: argparse.Namespace) -> int:
     """Execute models subcommand."""
@@ -2029,11 +3076,17 @@ def cmd_models(args: argparse.Namespace) -> int:
         return cmd_models_list(args)
     elif action == "plan":
         return cmd_models_plan(args)
+    elif action == "provision-plan":
+        return cmd_models_provision_plan(args)
     elif action == "fetch":
         return cmd_models_fetch(args)
     elif action == "verify":
         return cmd_models_verify(args)
-    print("Uso: ailen models [list|plan|fetch|verify]")
+    elif action == "qualification-template":
+        return cmd_models_qualification_template(args)
+    elif action == "qualification-validate":
+        return cmd_models_qualification_validate(args)
+    print("Uso: ailen models [list|plan|provision-plan|fetch|verify|qualification-template|qualification-validate]")
     return 1
 
 
@@ -2041,7 +3094,7 @@ def cmd_demo(args: argparse.Namespace, config_path: str | None) -> int:
     """Execute demo subcommand."""
     target = getattr(args, "demo_target", None)
     if target == "face":
-        return cmd_demo_face(args)
+        return cmd_demo_face(args, config_path)
     elif target == "vision":
         return cmd_demo_vision(args, config_path)
     elif target == "vad":

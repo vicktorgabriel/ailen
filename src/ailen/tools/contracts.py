@@ -103,6 +103,14 @@ class Tool(Protocol):
         """Execute with pre-validated arguments. Never trust unvalidated LLM output."""
         ...
 
+    def is_side_effecting(self, arguments: dict[str, Any]) -> bool:
+        """Return whether these arguments would mutate user or device state.
+
+        This is deliberately tool-owned metadata: Core must not maintain a
+        second list of action names that can drift from the implementation.
+        """
+        ...
+
 
 def validate_args(schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     """Validate and normalize arguments against a JSON-like schema specification.

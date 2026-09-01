@@ -41,6 +41,10 @@ class SystemStatusTool:
     def __init__(self, detector: HardwareDetector | None = None) -> None:
         self.detector = detector or HardwareDetector()
 
+    def is_side_effecting(self, arguments: dict[str, Any]) -> bool:
+        del arguments
+        return False
+
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         report = self.detector.detect()
         detailed = validated_args.get("detailed", False)

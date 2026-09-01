@@ -269,6 +269,9 @@ class VolumeTool:
     def __init__(self, service: AudioVolumeService | None = None) -> None:
         self.service = service if service is not None else SystemAudioVolumeService()
 
+    def is_side_effecting(self, arguments: dict[str, Any]) -> bool:
+        return arguments.get("action") != "get"
+
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         action = validated_args["action"]
 

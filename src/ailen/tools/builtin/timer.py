@@ -143,6 +143,9 @@ class TimerTool:
     def __init__(self, service: TimerService | None = None) -> None:
         self.service = service or TimerService()
 
+    def is_side_effecting(self, arguments: dict[str, Any]) -> bool:
+        return arguments.get("action") != "list"
+
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         action = validated_args["action"]
 

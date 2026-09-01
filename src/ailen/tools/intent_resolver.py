@@ -381,6 +381,42 @@ class IntentResolver:
         return None
 
     def _match_music(self, clean: str, raw_text: str) -> IntentResolution | None:
+        # Source-qualified playback commands are deterministic: Core decides the
+        # provider and the music tool validates the resulting query.
+        source_prefixes = (
+            (("poné en youtube ", "pone en youtube ", "pon en youtube ", "reproducí en youtube ", "reproduce en youtube ", "buscá en youtube ", "busca en youtube "), "youtube"),
+            (("poné de youtube ", "pone de youtube ", "reproducí de youtube ", "reproduce de youtube "), "youtube"),
+            (("poné de mi música ", "pone de mi música ", "poné de mi musica ", "pone de mi musica ", "reproducí de mi música ", "reproduce de mi música ", "poné música local ", "pone música local ", "poné musica local ", "pone musica local "), "local"),
+        )
+        for prefixes, source in source_prefixes:
+            for prefix in prefixes:
+                remainder = self._strip_prefix_preserving_case(raw_text, prefix)
+                if remainder:
+                    return IntentResolution(
+                        intent="music_play",
+                        tool_name="music",
+                        tool_args={"action": "play", "query": remainder, "source": source},
+                        requires_llm=False,
+                        confidence=1.0,
+                        raw_text=raw_text,
+                    )
+
+        for prefix in (
+            "poné la canción ", "pone la canción ", "poné la cancion ", "pone la cancion ",
+            "reproducí la canción ", "reproduce la canción ", "reproducí la cancion ", "reproduce la cancion ",
+            "poné música de ", "pone música de ", "poné musica de ", "pone musica de ",
+        ):
+            remainder = self._strip_prefix_preserving_case(raw_text, prefix)
+            if remainder:
+                return IntentResolution(
+                    intent="music_play",
+                    tool_name="music",
+                    tool_args={"action": "play", "query": remainder, "source": "auto"},
+                    requires_llm=False,
+                    confidence=1.0,
+                    raw_text=raw_text,
+                )
+
         if clean in {
             "poné música", "pone música", "pon música", "reproducí música", "reproduce música",
             "reproducir música", "tocá música", "toca música", "poner música", "poner musica",
@@ -576,6 +612,46 @@ class IntentResolver:
         )
 
     def _match_web_search(self, clean: str, raw_text: str) -> IntentResolution | None:
+        # Natural imperative forms such as "buscame"/"averiguame" are a direct
+        # request for external information, not conversational chat.
+        collapsed = " ".join(raw_text.strip().split()).lstrip("¿?¡!.,;:")
+        imperative = re.match(
+            r"(?i)^(?:busc(?:a|á)me|averigu(?:a|á)me|investig(?:a|á)me)(?:\s+en\s+(?:internet|la\s+web))?\s+(.+)$",
+            collapsed,
+        )
+        if imperative:
+            query = imperative.group(1).strip()
+            query_clean = " ".join(query.lower().split()).strip(" ¿?¡!.,;:")
+            tool_args: dict[str, Any] = {"query": query}
+            if any(marker in query_clean for marker in ("noticias", "novedades", "qué pasó", "que paso")):
+                tool_args["category"] = "news"
+                if "hoy" in query_clean or "ahora" in query_clean:
+                    tool_args["freshness"] = "day"
+                elif "esta semana" in query_clean:
+                    tool_args["freshness"] = "week"
+                elif "este mes" in query_clean:
+                    tool_args["freshness"] = "month"
+                clean_query = re.sub(
+                    r"(?i)^(?:noticias|novedades)(?:\s+de|\s+sobre)?\s+",
+                    "",
+                    query,
+                )
+                clean_query = re.sub(
+                    r"(?i)\s+(?:de\s+)?(?:hoy|ahora|esta\s+semana|este\s+mes)\s*$",
+                    "",
+                    clean_query,
+                ).strip()
+                if clean_query:
+                    tool_args["query"] = clean_query
+            return IntentResolution(
+                intent="web_search",
+                tool_name="web_search",
+                tool_args=tool_args,
+                requires_llm=True,
+                confidence=1.0,
+                raw_text=raw_text,
+            )
+
         search_prefixes = (
             "buscá en internet ", "busca en internet ", "buscar en internet ",
             "buscá en la web ", "busca en la web ", "buscar en la web ",

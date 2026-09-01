@@ -1,35 +1,196 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
-<title>{{ title }} · AILEN</title>
-<link rel="stylesheet" href="/static/css/main.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>{{ title }} · AILÉN Admin</title>
+  <link rel="stylesheet" href="/static/css/main.css">
 </head>
 <body>
-<header class="topbar">
-  <span class="brand">🔥 AILEN</span>
-  <nav class="nav">
-    <a href="/"{{ raw:nav_dashboard }}>Panel</a>
-    <a href="/config"{{ raw:nav_config }}>Config</a>
-    <a href="/comercio"{{ raw:nav_comercio }}>Comercio</a>
-    <a href="/personalidad"{{ raw:nav_personalidad }}>Personalidad</a>
-    <a href="/ia"{{ raw:nav_ia }}>IA</a>
-    <a href="/audio-camara"{{ raw:nav_audio }}>Audio/Cámara</a>
-    <a href="/sistema"{{ raw:nav_sistema }}>Sistema</a>
-  </nav>
-  <form method="post" action="/logout" class="logout">
-    <input type="hidden" name="_csrf" value="{{ csrf }}">
-    <button type="submit">Salir</button>
-  </form>
-</header>
-<main class="content">
-{{ raw:content }}
-</main>
-<footer class="footer">
-  <small>AILEN {{ version }} · nodo {{ node_id }} · panel local</small>
-</footer>
+<div class="app-layout">
+  <!-- Sidebar -->
+  <aside class="app-sidebar" id="app-sidebar">
+    <div class="sidebar-header">
+      <a href="/" class="brand-logo">
+        <span class="icon">🔥</span>
+        <span>AILÉN</span>
+      </a>
+      <span class="brand-badge">SaaS v{{ version }}</span>
+    </div>
+
+    <div class="sidebar-scroll">
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Operación</div>
+        <ul class="sidebar-nav">
+          <li>
+            <a href="/" class="sidebar-link{{ raw:nav_dashboard }}">
+              <span class="icon">📊</span>
+              <span>Overview</span>
+            </a>
+          </li>
+          <li>
+            <a href="/config" class="sidebar-link{{ raw:nav_config }}">
+              <span class="icon">⚙️</span>
+              <span>Configuración</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Identidad & IA</div>
+        <ul class="sidebar-nav">
+          <li>
+            <a href="/personalidad" class="sidebar-link{{ raw:nav_personalidad }}">
+              <span class="icon">✨</span>
+              <span>Personalidad</span>
+            </a>
+          </li>
+          <li>
+            <a href="/audio" class="sidebar-link{{ raw:nav_audio }}">
+              <span class="icon">🎙️</span>
+              <span>Voz & Audio</span>
+            </a>
+          </li>
+          <li>
+            <a href="/ia" class="sidebar-link{{ raw:nav_ia }}">
+              <span class="icon">🧠</span>
+              <span>IA & Modelos</span>
+            </a>
+          </li>
+          <li>
+            <a href="/memoria" class="sidebar-link{{ raw:nav_memoria }}">
+              <span class="icon">💾</span>
+              <span>Memoria FTS5</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Percepción & Entorno</div>
+        <ul class="sidebar-nav">
+          <li>
+            <a href="/herramientas" class="sidebar-link{{ raw:nav_herramientas }}">
+              <span class="icon">🛠️</span>
+              <span>Herramientas & Red</span>
+            </a>
+          </li>
+          <li>
+            <a href="/vision" class="sidebar-link{{ raw:nav_vision }}">
+              <span class="icon">👁️</span>
+              <span>Visión & Presencia</span>
+            </a>
+          </li>
+          <li>
+            <a href="/rostro" class="sidebar-link{{ raw:nav_rostro }}">
+              <span class="icon">🎭</span>
+              <span>Rostro & Avatar</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Infraestructura</div>
+        <ul class="sidebar-nav">
+          <li>
+            <a href="/sistema" class="sidebar-link{{ raw:nav_sistema }}">
+              <span class="icon">🖥️</span>
+              <span>Sistema & Nodo</span>
+            </a>
+          </li>
+          <li>
+            <a href="/actualizaciones" class="sidebar-link{{ raw:nav_actualizaciones }}">
+              <span class="icon">⬆️</span>
+              <span>Actualizaciones</span>
+            </a>
+          </li>
+          <li>
+            <a href="/diagnostico" class="sidebar-link{{ raw:nav_diagnostico }}">
+              <span class="icon">🩺</span>
+              <span>Diagnóstico & Logs</span>
+            </a>
+          </li>
+          <li>
+            <a href="/setup" class="sidebar-link{{ raw:nav_setup }}">
+              <span class="icon">🚀</span>
+              <span>Setup Wizard</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="companion-status-card">
+        <div class="companion-status-indicator">
+          <span class="status-dot ok" id="sidebar-status-dot"></span>
+          <span id="sidebar-assistant-state">IDLE</span>
+        </div>
+        <span class="mode-badge mode-workshop" id="sidebar-mode-badge">TALLER</span>
+      </div>
+      <form method="post" action="/logout">
+        <input type="hidden" name="_csrf" value="{{ csrf }}">
+        <button type="submit" class="btn btn-secondary btn-sm" style="width: 100%;">
+          <span>Cerrar Sesión</span>
+        </button>
+      </form>
+    </div>
+  </aside>
+
+  <!-- Topbar -->
+  <header class="app-topbar">
+    <div class="topbar-left">
+      <button class="menu-toggle-btn" id="menu-toggle" aria-label="Abrir Menú">☰</button>
+      <div class="topbar-breadcrumbs">
+        <a href="/">AILÉN</a>
+        <span>/</span>
+        <span class="current">{{ title }}</span>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <span class="node-pill" id="live-session-pill" style="color: var(--status-ok);" title="Sesión activa y sincronizada">🟢 Sincronizado</span>
+      <span class="node-pill" title="Archivo de Configuración Activo">📄 {{ config_file }}</span>
+      <a href="/ia" class="node-pill" style="text-decoration: none; border-color: var(--brand-primary); color: var(--brand-primary);" title="Modelo IA en Core">🧠 {{ active_llm_badge }}</a>
+      <a href="/audio" class="btn btn-primary btn-sm">
+        <span>🗣️ Probar Voz</span>
+      </a>
+    </div>
+  </header>
+
+  <!-- Main Content Area -->
+  <main class="app-main">
+    {{ raw:content }}
+  </main>
+</div>
+
+<!-- Mobile Bottom Navigation -->
+<nav class="mobile-bottom-nav">
+  <a href="/" class="mobile-nav-item{{ raw:nav_dashboard }}">
+    <span class="icon">📊</span>
+    <span>Panel</span>
+  </a>
+  <a href="/personalidad" class="mobile-nav-item{{ raw:nav_personalidad }}">
+    <span class="icon">✨</span>
+    <span>Identidad</span>
+  </a>
+  <a href="/audio" class="mobile-nav-item{{ raw:nav_audio }}">
+    <span class="icon">🎙️</span>
+    <span>Audio</span>
+  </a>
+  <a href="/ia" class="mobile-nav-item{{ raw:nav_ia }}">
+    <span class="icon">🧠</span>
+    <span>Modelos</span>
+  </a>
+  <a href="/config" class="mobile-nav-item{{ raw:nav_config }}">
+    <span class="icon">⚙️</span>
+    <span>Config</span>
+  </a>
+</nav>
+
 <script src="/static/js/main.js" defer></script>
 </body>
 </html>

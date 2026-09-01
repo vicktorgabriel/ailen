@@ -1,0 +1,383 @@
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Voz & Sonido</h1>
+    <p class="page-lede">Configuración de TTS, captura de micrófono, supresión de ruido y barge-in. AEC todavía no está implementado.</p>
+  </div>
+  <div class="header-actions">
+    <button type="button" class="btn btn-secondary btn-sm" id="btn-test-speakers">🔊 Probar Parlantes</button>
+  </div>
+</div>
+
+<div class="notice info">
+  <span>🔊 <strong>Procesamiento Local de Audio:</strong> La síntesis de voz neural Piper y la captura de micrófono se ejecutan localmente en este equipo sin enviar muestras de voz a la nube.</span>
+</div>
+
+<div id="audio-alert" style="display: none;" class="notice ok">
+  <span id="audio-alert-text"></span>
+</div>
+
+<form method="post" action="/config" style="display: flex; flex-direction: column; gap: 1.25rem;">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="section" value="audio">
+
+  <div class="grid grid-cols-2">
+    <!-- Bloque 1: Síntesis de Voz (TTS) -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">🗣️ Síntesis de Voz (TTS)</h2>
+        <span class="status-pill ok">Piper Local</span>
+      </div>
+      <div class="card-body">
+        <div class="form-group">
+          <label class="form-label" for="f-tts-backend">Motor de Síntesis</label>
+          <select id="f-tts-backend" name="speech.tts_engine">
+            <option value="piper"{{ sel_piper }}>Piper local neural (latencia dependiente del hardware y la voz)</option>
+            <option value="chatterbox"{{ sel_chatterbox }}>Chatterbox Neural (Alta expresividad)</option>
+            <option value="null"{{ sel_tts_null }}>Sin salida de voz (Modo silencioso / solo texto)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="f-tts-voice">Modelo de Voz</label>
+          <select id="f-tts-voice" name="speech.tts_voice">
+            <option value="es_AR-daniela-high"{{ sel_voice_daniela }}>Daniela (Español Argentino / Rioplatense - Femenina)</option>
+            <option value="es_ES-davefx-medium"{{ sel_voice_dave }}>Dave (Español Neutro - Masculina)</option>
+            <option value="es_ES-carlfm-x_low"{{ sel_voice_carl }}>Carl (Español Ligero - Optimizado para 2-4GB)</option>
+          </select>
+        </div>
+
+        <!-- Slider Velocidad -->
+        <div class="slider-group">
+          <div class="slider-header">
+            <span class="slider-title">Velocidad de Habla</span>
+            <span class="slider-value-badge" id="badge-tts-speed">{{ val_tts_speed }}x</span>
+          </div>
+          <div class="slider-controls">
+            <span class="slider-bound-label">Lenta (0.8x)</span>
+            <input type="range" min="80" max="150" value="{{ val_tts_speed_int }}" class="custom-range range-synced" data-badge="badge-tts-speed" data-suffix="x" data-scale="100" name="speech.tts_rate">
+            <span class="slider-bound-label">Rápida (1.5x)</span>
+          </div>
+        </div>
+
+        <!-- Frase de Prueba -->
+        <div style="margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem;">
+          <label class="form-label">Frase de Muestra para Prueba:</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="text" id="tts-test-input" value="Hola, todo listo para arrancar la jornada en el taller." style="flex: 1;">
+            <button type="button" class="btn btn-primary btn-sm" id="btn-play-tts-sample">🗣️ Escuchar</button>
+          </div>
+          <span id="tts-test-feedback" style="font-size: 0.8rem; color: var(--fg-secondary); margin-top: 0.2rem;"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bloque 2: Captura de Micrófono & VAD -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">🎙️ Micrófono & Detección de Voz (VAD)</h2>
+        <span class="status-pill ok">ALSA / PipeWire</span>
+      </div>
+      <div class="card-body">
+        <div class="form-group">
+          <label class="form-label" for="f-audio-input">Dispositivo de Entrada</label>
+          <select id="f-audio-input" name="audio.input_device">
+            {{ raw:source_options }}
+          </select>
+          <div class="form-help">Fuente efectiva observada: <code>{{ effective_input }}</code></div>
+          <div class="form-help">{{ attenuation_warning }}</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="f-input-processing">Procesamiento de entrada</label>
+          <select id="f-input-processing" name="audio.input_processing_mode">
+            <option value="auto"{{ sel_processing_auto }}>Automático</option>
+            <option value="raw"{{ sel_processing_raw }}>Sin DSP interno</option>
+            <option value="easyeffects"{{ sel_processing_easyeffects }}>Fuente ya procesada (Easy Effects)</option>
+          </select>
+          <div class="form-help">Auto evita preamp/AGC/supresión duplicados cuando la fuente explícita ya es Easy Effects.</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="f-capture-gain">Pre-ganancia digital (dB)</label>
+          <input id="f-capture-gain" type="number" step="0.5" min="-24" max="30" name="audio.capture_gain_db" value="{{ val_capture_gain }}">
+          <div class="form-help">En el perfil completo se aplica después de la supresión, junto con AGC acotado y limitador. No cambia la ganancia ALSA.</div>
+        </div>
+
+        <div style="display:flex; gap:0.75rem; align-items:end;">
+          <label class="switch" title="Ganancia automática acotada">
+            <input type="hidden" name="__present.audio.auto_gain_enabled" value="1">
+            <input type="checkbox" name="audio.auto_gain_enabled" value="true"{{ chk_auto_gain }}>
+            <span class="slider-toggle"></span>
+          </label>
+          <div class="form-group" style="flex:1;">
+            <label class="form-label">RMS objetivo</label>
+            <input type="number" step="0.01" min="0.01" max="0.5" name="audio.auto_gain_target_rms" value="{{ val_auto_gain_target }}">
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label class="form-label">AGC máximo (dB)</label>
+            <input type="number" step="0.5" min="0" max="30" name="audio.max_auto_gain_db" value="{{ val_max_auto_gain }}">
+          </div>
+        </div>
+
+        <div style="display:flex; gap:0.75rem; align-items:end;">
+          <div class="form-group" style="flex:1;">
+            <label class="form-label" for="f-auto-gain-gate">Piso de ruido del AGC (RMS)</label>
+            <input id="f-auto-gain-gate" type="number" step="0.001" min="0" max="0.5" name="audio.auto_gain_noise_gate_rms" value="{{ val_auto_gain_gate }}">
+            <div class="form-help">Debajo de este RMS el AGC sostiene brevemente y luego reduce su ganancia; no amplifica ruido continuo.</div>
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label class="form-label">Retención bajo el piso (ms)</label>
+            <input type="number" step="20" min="0" max="5000" name="audio.auto_gain_gate_hold_ms" value="{{ val_auto_gain_hold }}">
+          </div>
+        </div>
+
+        <!-- VU Meter en Vivo -->
+        <div class="vu-meter-box">
+          <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; margin-bottom: 0.4rem;">
+            <span>Medición acotada del input configurado:</span>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <strong id="vu-db-text" style="font-family: ui-monospace, monospace;">Inactivo</strong>
+              <button type="button" class="btn btn-secondary btn-xs" id="btn-toggle-mic" style="font-size: 0.72rem; padding: 0.15rem 0.45rem;">🎙️ Medir piso/nivel 3 s</button>
+            </div>
+          </div>
+          <div class="vu-track">
+            <div class="vu-fill" id="vu-meter-bar" style="width: 0%;"></div>
+            <div class="vu-threshold-line" id="vu-thresh-mark" style="left: 22%;" title="Umbral VAD"></div>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--fg-muted); margin-top: 0.2rem;">
+            <span>Silencio</span>
+            <span id="vu-legend-thresh">Umbral VAD ({{ val_vad_thresh }})</span>
+            <span>Habla Fuerte</span>
+          </div>
+        </div>
+
+        <!-- Slider Umbral VAD -->
+        <div class="slider-group">
+          <div class="slider-header">
+            <span class="slider-title">Sensibilidad VAD (Umbral RMS)</span>
+            <span class="slider-value-badge" id="badge-vad-thresh">{{ val_vad_thresh }}</span>
+          </div>
+          <div class="slider-controls">
+            <span class="slider-bound-label">Sensible (0.010)</span>
+            <input type="range" min="10" max="60" value="{{ val_vad_thresh_int }}" class="custom-range range-synced" data-badge="badge-vad-thresh" data-scale="1000" id="range-vad-thresh" name="speech.vad_threshold">
+            <span class="slider-bound-label">Estricto (0.060)</span>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.35rem 0;">
+          <div>
+            <div style="font-weight: 600; font-size: 0.88rem;">Cancelación de Ruido WebRTC</div>
+            <div class="form-help">Filtra soplidos y ruidos estacionarios de ventiladores.</div>
+          </div>
+          <label class="switch">
+            <input type="hidden" name="__present.speech.noise_suppression_engine" value="1">
+            <select name="speech.noise_suppression_engine" style="display:none;" id="sel-noise-supp">
+              <option value="none"{{ sel_noise_none }}>none</option>
+              <option value="webrtc"{{ sel_noise_webrtc }}>webrtc</option>
+            </select>
+            <input type="checkbox" id="chk-noise-supp-toggle" value="true"{{ chk_noise_supp }} onchange="document.getElementById('sel-noise-supp').value = this.checked ? 'webrtc' : 'none';">
+            <span class="slider-toggle"></span>
+          </label>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.35rem 0;">
+          <div>
+            <div style="font-weight: 600; font-size: 0.88rem;">Barge-In (Interrupción al Hablar)</div>
+            <div class="form-help">Corta la voz de AILÉN si el usuario empieza a hablar.</div>
+          </div>
+          <label class="switch">
+            <input type="hidden" name="__present.speech.interruption_enabled" value="1">
+            <input type="checkbox" name="speech.interruption_enabled" value="true"{{ chk_barge_in }}>
+            <span class="slider-toggle"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">🔧 Troubleshooting Acústico Rápido</h2>
+      <span class="card-subtitle">Diagnóstico de ruido, nivel bajo o cortes; no modifica ganancia física</span>
+    </div>
+    <div class="card-body">
+      <div style="display: flex; flex-wrap: wrap; gap: 0.75rem;">
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-fix-pipewire">🔄 Reiniciar Daemon PipeWire</button>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-calibrate-noise">📏 Medir Piso de Ruido (3 s)</button>
+      </div>
+      <div class="form-help">Esta lectura corta sólo mide piso/nivel del input configurado. La calibración de distancia, SNR, WER y fuente se realiza con <code>ailen lab calibrate-voice</code>.</div>
+    </div>
+    <div class="card-footer" style="display: flex; justify-content: space-between; align-items: center;">
+      <span>Los cambios quedan guardados y se aplican al reiniciar AILÉN.</span>
+      <button type="submit" class="btn btn-primary">💾 Guardar Configuración de Audio</button>
+    </div>
+  </div>
+</form>
+
+<script>
+const CSRF = "{{ csrf }}";
+
+function showAlert(text, isError) {
+  const el = document.getElementById('audio-alert');
+  const textEl = document.getElementById('audio-alert-text');
+  if (!el || !textEl) return;
+  el.className = 'notice ' + (isError ? 'error' : 'ok');
+  textEl.innerText = text;
+  el.style.display = 'flex';
+  setTimeout(() => { el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, 100);
+}
+
+document.getElementById('btn-test-speakers')?.addEventListener('click', async () => {
+  const btn = document.getElementById('btn-test-speakers');
+  const oldText = btn.innerText;
+  btn.innerText = '⌛ Emitiendo...';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/audio/test-speakers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ _csrf: CSRF }).toString()
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showAlert('✓ ' + (data.message || 'Sonido de prueba emitido en parlantes.'), false);
+    } else {
+      showAlert('✗ ' + (data.error || 'Fallo en la prueba de parlantes.'), true);
+    }
+  } catch (err) {
+    showAlert('✗ Error de conexión con el servidor.', true);
+  } finally {
+    btn.innerText = oldText;
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('btn-play-tts-sample')?.addEventListener('click', async () => {
+  const btn = document.getElementById('btn-play-tts-sample');
+  const text = document.getElementById('tts-test-input').value;
+  const engine = document.getElementById('f-tts-backend')?.value || 'piper';
+  const voice = document.getElementById('f-tts-voice').value;
+  const speed = document.getElementById('badge-tts-speed').innerText.replace('x', '');
+  const feedback = document.getElementById('tts-test-feedback');
+  
+  const oldText = btn.innerText;
+  btn.innerText = '⌛ Sintetizando...';
+  btn.disabled = true;
+  if (feedback) feedback.innerText = `Sintetizando muestra con motor ${engine.toUpperCase()}...`;
+
+  try {
+    const res = await fetch('/api/audio/test-tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        _csrf: CSRF,
+        text: text,
+        engine: engine,
+        voice: voice,
+        speed: speed
+      }).toString()
+    });
+    const data = await res.json();
+    if (data.ok) {
+      if (feedback) feedback.innerText = `✓ ${data.message} (${data.latency_ms} ms)`;
+      showAlert('✓ ' + data.message, false);
+    } else {
+      if (feedback) feedback.innerText = '✗ ' + (data.error || 'Fallo de síntesis');
+      showAlert('✗ ' + (data.error || 'Fallo al reproducir muestra.'), true);
+    }
+  } catch (err) {
+    if (feedback) feedback.innerText = '✗ Error de red';
+    showAlert('✗ Error de red al comunicarse con el sintetizador.', true);
+  } finally {
+    btn.innerText = oldText;
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('btn-fix-pipewire')?.addEventListener('click', async () => {
+  try {
+    const res = await fetch('/api/audio/fix-pipewire', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ _csrf: CSRF }).toString()
+    });
+    const data = await res.json();
+    showAlert(data.ok ? ('✓ ' + data.message) : ('✗ ' + data.error), !data.ok);
+  } catch (err) {
+    showAlert('✗ Error de conexión.', true);
+  }
+});
+
+document.getElementById('btn-calibrate-noise')?.addEventListener('click', async () => {
+  showAlert('⌛ Midiendo piso/nivel del input configurado durante 3 s...', false);
+  try {
+    const res = await fetch('/api/audio/calibrate-noise', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ _csrf: CSRF }).toString()
+    });
+    const data = await res.json();
+    if (data.ok) {
+      if (data.recommended_threshold) {
+        const slider = document.getElementById('range-vad-thresh');
+        const badge = document.getElementById('badge-vad-thresh');
+        if (slider) slider.value = Math.round(data.recommended_threshold * 1000);
+        if (badge) badge.innerText = Number(data.recommended_threshold).toFixed(3);
+      }
+      if (data.recommended_auto_gain_gate_rms) {
+        const gate = document.getElementById('f-auto-gain-gate');
+        if (gate) gate.value = Number(data.recommended_auto_gain_gate_rms).toFixed(3);
+      }
+      showAlert('✓ ' + data.message, false);
+    } else {
+      showAlert('✗ ' + data.error, true);
+    }
+  } catch (err) {
+    showAlert('✗ Error de conexión.', true);
+  }
+});
+
+function updateVadMark() {
+  const configuredVad = Number('{{ val_vad_thresh }}');
+  const displayedVad = parseFloat(document.getElementById('badge-vad-thresh')?.innerText || '');
+  const vadVal = Number.isFinite(displayedVad) ? displayedVad : configuredVad;
+  const mark = document.getElementById('vu-thresh-mark');
+  const leg = document.getElementById('vu-legend-thresh');
+  const pct = Math.min(100, Math.max(0, Math.round(vadVal * 1000)));
+  if (mark) mark.style.left = pct + '%';
+  if (leg) leg.innerText = `Umbral VAD (${vadVal.toFixed(3)})`;
+}
+
+document.getElementById('range-vad-thresh')?.addEventListener('input', () => {
+  setTimeout(updateVadMark, 10);
+});
+updateVadMark();
+
+async function measureRuntimeMicrophone() {
+  const btn = document.getElementById('btn-toggle-mic');
+  const vuBar = document.getElementById('vu-meter-bar');
+  const vuText = document.getElementById('vu-db-text');
+  try {
+    if (btn) { btn.innerText = '⌛ Midiendo...'; btn.disabled = true; }
+    const res = await fetch('/api/audio/calibrate-noise', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ _csrf: CSRF }).toString()
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'captura no disponible');
+    const rms = Number(data.processed_noise_floor_rms || data.noise_floor_rms || 0);
+    const peak = Number(data.processed_peak || 0);
+    if (vuBar) vuBar.style.width = Math.min(100, Math.round(peak * 100)) + '%';
+    if (vuText) vuText.innerText = `${rms.toFixed(4)} RMS · pico ${peak.toFixed(4)}`;
+    showAlert(`✓ Fuente ${data.effective_source}; gain ${data.applied_gain_db} dB; clipping ${(Number(data.clipping_ratio) * 100).toFixed(3)}%.`, false);
+  } catch (err) {
+    if (vuText) vuText.innerText = 'No disponible';
+    showAlert('✗ Medición real no disponible: ' + err.message, true);
+  } finally {
+    if (btn) { btn.innerText = '🎙️ Medir piso/nivel 3 s'; btn.disabled = false; }
+  }
+}
+
+document.getElementById('btn-toggle-mic')?.addEventListener('click', measureRuntimeMicrophone);
+</script>

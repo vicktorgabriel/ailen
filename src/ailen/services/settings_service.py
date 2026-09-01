@@ -17,6 +17,7 @@ Notas de seguridad:
 import copy
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from ailen.core.config import AILENConfig, validate_config
@@ -56,8 +57,7 @@ FIELD_SPECS: tuple[_FieldSpec, ...] = (
     ),
     _FieldSpec(
         "speech.tts_voice", "Personaje", "Voz configurada", "text",
-        help_text="Identificador de voz del motor TTS activo. La personalidad "
-        "evolutiva se administrará acá cuando el Personality Engine la exponga.",
+        help_text="Identificador de voz del motor TTS activo.",
         max_length=120,
     ),
     # Nodo
@@ -70,15 +70,76 @@ FIELD_SPECS: tuple[_FieldSpec, ...] = (
     # Pantalla
     _FieldSpec("display.enabled", "Pantalla", "Rostro en pantalla habilitado", "bool"),
     _FieldSpec("display.fullscreen", "Pantalla", "Pantalla completa", "bool"),
+    _FieldSpec("display.face_style", "Pantalla", "Estilo de rostro", "select", options=(("facepack", "FacePack nativo"), ("portrait", "Retrato animado"), ("pixel", "Pixel mesh"), ("vector", "Vectorial"))),
+    _FieldSpec("display.fps_limit", "Pantalla", "Límite de cuadros por segundo", "int", min_value=1, max_value=120),
     # Audio
-    _FieldSpec("audio.input_volume", "Audio", "Volumen de micrófono", "int",
-               min_value=0, max_value=100),
+    _FieldSpec(
+        "audio.input_device",
+        "Audio",
+        "Fuente de captura",
+        "text",
+        help_text="Use default, plughw:CARD=...,DEV=... o pipewire:<nombre-estable>.",
+        max_length=240,
+    ),
+    _FieldSpec(
+        "audio.input_processing_mode",
+        "Audio",
+        "Procesamiento de entrada",
+        "select",
+        options=(
+            ("auto", "Automático"),
+            ("raw", "Sin DSP interno"),
+            ("easyeffects", "Fuente ya procesada externamente"),
+        ),
+        help_text="Evita aplicar AGC/preamp dos veces sobre una fuente Easy Effects.",
+    ),
+    _FieldSpec("audio.output_device", "Audio", "Dispositivo de parlantes", "select", options=(("default", "Default del Sistema"), ("hw:0,0", "Parlantes Integrados ALC")), allow_empty=True),
+    _FieldSpec(
+        "audio.capture_gain_db", "Audio", "Pre-ganancia digital (dB)", "float",
+        min_value=-24.0, max_value=30.0,
+        help_text="Ganancia digital explícita; calibrar antes de aumentarla.",
+    ),
+    _FieldSpec("audio.auto_gain_enabled", "Audio", "AGC de captura", "bool"),
+    _FieldSpec(
+        "audio.auto_gain_target_rms", "Audio", "RMS objetivo del AGC", "float",
+        min_value=0.01, max_value=0.5,
+    ),
+    _FieldSpec(
+        "audio.max_auto_gain_db", "Audio", "Ganancia automática máxima (dB)", "float",
+        min_value=0.0, max_value=30.0,
+    ),
+    _FieldSpec(
+        "audio.auto_gain_noise_gate_rms",
+        "Audio",
+        "Piso de ruido del AGC (RMS)",
+        "float",
+        min_value=0.0,
+        max_value=0.5,
+        help_text="Por debajo de este nivel el AGC no aumenta ganancia.",
+    ),
+    _FieldSpec(
+        "audio.auto_gain_gate_hold_ms",
+        "Audio",
+        "Retención del AGC bajo el piso (ms)",
+        "float",
+        min_value=0.0,
+        max_value=5000.0,
+    ),
     _FieldSpec("audio.output_volume", "Audio", "Volumen de salida", "int",
                min_value=0, max_value=100),
     _FieldSpec("audio.music_volume", "Audio", "Volumen de música", "int",
                min_value=0, max_value=100),
     # Visión
     _FieldSpec("vision.enabled", "Visión", "Detección de presencia habilitada", "bool"),
+    _FieldSpec(
+        "vision.camera_source", "Visión", "Fuente de cámara", "select",
+        options=(("auto", "auto"), ("usb", "usb"), ("rtsp", "rtsp")),
+    ),
+    _FieldSpec("vision.detector", "Visión", "Detector facial", "select", options=(("yunet", "yunet"), ("haar", "haar"))),
+    _FieldSpec("vision.fps", "Visión", "Cuadros por segundo", "int", min_value=1, max_value=30),
+    _FieldSpec("vision.detector_score_threshold", "Visión", "Umbral detector facial", "float", min_value=0.1, max_value=1.0),
+    _FieldSpec("vision.presence_confirm_seconds", "Visión", "Confirmación de presencia (seg)", "float", min_value=0.1, max_value=10.0),
+    _FieldSpec("vision.absence_confirm_seconds", "Visión", "Confirmación de ausencia (seg)", "float", min_value=0.1, max_value=10.0),
     _FieldSpec(
         "vision.camera_device", "Visión", "Cámara seleccionada", "text",
         help_text='Dispositivo actual, p.ej. "/dev/video0".',
@@ -110,13 +171,12 @@ FIELD_SPECS: tuple[_FieldSpec, ...] = (
                "Saludo automático al detectar presencia", "bool"),
     _FieldSpec("social.greeting_cooldown_seconds", "Comportamiento",
                "Cooldown de saludo (segundos)", "float", min_value=0),
-    # IA híbrida: el equipo siempre puede conservar un modelo local y,
-    # opcionalmente, preferir un proveedor externo. Las credenciales NO se
-    # administran desde esta allowlist.
+    # IA híbrida. Los proveedores remotos nombrados agregan sus specs en
+    # ``SettingsService._specs``; ningún secreto forma parte de esta allowlist.
     _FieldSpec(
-        "ai.provider", "IA híbrida", "Backend conversacional preferido", "select",
-        options=(("local", "Local"), ("cloud", "API externa"), ("lan_brain", "LAN Brain (laboratorio)")),
+        "ai.provider", "IA híbrida", "Backend conversacional preferido", "text",
         help_text="Si el preferido no está disponible, el router usa los backends permitidos como fallback.",
+        max_length=40,
     ),
     _FieldSpec("ai.max_tokens", "IA híbrida", "Máximo de tokens por respuesta", "int", min_value=32, max_value=2048),
     _FieldSpec(
@@ -133,41 +193,34 @@ FIELD_SPECS: tuple[_FieldSpec, ...] = (
         "ai.context_char_budget", "IA híbrida", "Presupuesto de contexto (caracteres)", "int",
         min_value=512, max_value=20000,
     ),
-    _FieldSpec("ai.allow_cloud", "IA híbrida", "Permitir uso de API externa", "bool"),
+    _FieldSpec("ai.allow_remote", "IA híbrida", "Permitir proveedores IA remotos", "bool"),
+    _FieldSpec("ai.remote.enabled", "IA híbrida", "Provider Manager remoto habilitado", "bool"),
+    _FieldSpec(
+        "ai.allow_sanitized_external_prompts", "IA híbrida",
+        "Permitir consulta externa sin memoria privada", "bool",
+        help_text=(
+            "Envía sólo el turno actual y contexto público del personaje. "
+            "No adjunta historial de sesión ni memorias privadas."
+        ),
+    ),
+    # Ollama Local
     _FieldSpec("ai.local.enabled", "IA híbrida", "LLM local habilitado", "bool"),
     _FieldSpec("ai.local.endpoint", "IA híbrida", "Endpoint del LLM local", "text", max_length=240),
     _FieldSpec("ai.local.model", "IA híbrida", "Modelo local cuantizado", "text", max_length=160),
+    _FieldSpec("ai.local.intent_model", "IA híbrida", "Modelo de intención local", "text", max_length=160, allow_empty=True),
     _FieldSpec(
         "ai.local.context_tokens", "IA híbrida", "Contexto local Ollama (tokens)", "int",
         min_value=512, max_value=32768,
         help_text="Un contexto menor reduce RAM en equipos limitados; la memoria completa sigue en SQLite.",
     ),
+    _FieldSpec("ai.local.priority", "IA híbrida", "Prioridad LLM Local", "int", min_value=1, max_value=100),
+    # LAN Brain
     _FieldSpec(
         "ai.lan.provider", "IA híbrida", "Transporte LAN Brain (laboratorio)", "select",
         options=(("openai_compatible", "OpenAI-compatible"), ("ollama_native", "Ollama nativo")),
         help_text="Sólo para laboratorios o nodos LAN confiables; no es requisito del producto final.",
     ),
-    _FieldSpec(
-        "ai.cloud.enabled", "IA híbrida", "Proveedor externo habilitado", "bool",
-        help_text="La clave/API se carga por el almacén seguro o variable configurada; nunca se muestra aquí.",
-    ),
-    _FieldSpec(
-        "ai.cloud.provider", "IA híbrida", "Tipo de proveedor externo", "text",
-        help_text="Actualmente se admite cualquier endpoint OpenAI-compatible.", max_length=80, allow_empty=True,
-    ),
-    _FieldSpec("ai.cloud.endpoint", "IA híbrida", "Endpoint API externa", "text", max_length=300, allow_empty=True),
-    _FieldSpec("ai.cloud.model", "IA híbrida", "Modelo API externa", "text", max_length=180, allow_empty=True),
-    _FieldSpec("ai.cloud.daily_budget_usd", "IA híbrida", "Presupuesto diario USD", "float", min_value=0),
-    _FieldSpec("ai.cloud.monthly_budget_usd", "IA híbrida", "Presupuesto mensual USD", "float", min_value=0),
-    _FieldSpec(
-        "ai.cloud.input_cost_per_million", "IA híbrida", "Costo entrada / millón tokens", "float",
-        min_value=0, allow_empty=True,
-    ),
-    _FieldSpec(
-        "ai.cloud.output_cost_per_million", "IA híbrida", "Costo salida / millón tokens", "float",
-        min_value=0, allow_empty=True,
-    ),
-
+    _FieldSpec("ai.lan.priority", "IA híbrida", "Prioridad LAN Brain", "int", min_value=1, max_value=100),
     # Escucha y voz avanzada.
     _FieldSpec(
         "speech.stt_fallback_engine", "Escucha y voz", "STT de rescate", "select",
@@ -213,14 +266,15 @@ FIELD_SPECS: tuple[_FieldSpec, ...] = (
     _FieldSpec("personality.base_patience", "Personalidad", "Paciencia", "float", min_value=0, max_value=1),
     _FieldSpec("personality.base_expressiveness", "Personalidad", "Expresividad", "float", min_value=0, max_value=1),
 
-    # Sensores / percepción.
+    # Herramientas y Red
+    _FieldSpec("network.outbound_web_enabled", "Herramientas", "Búsqueda web en vivo habilitada", "bool"),
     _FieldSpec(
-        "vision.camera_source", "Sensores", "Fuente de cámara", "select",
-        options=(("auto", "Automática"), ("usb", "USB"), ("rtsp", "RTSP")),
+        "network.web_search_provider", "Herramientas", "Proveedor de búsqueda web", "select",
+        options=(("none", "Desactivada"), ("ddgs", "DuckDuckGo Scraper (DDGS - Privado)")),
     ),
     _FieldSpec(
-        "vision.detector", "Sensores", "Detector visual", "select",
-        options=(("haar", "Haar"), ("yunet", "YuNet")),
+        "network.web_search_region", "Herramientas", "Región de búsqueda web", "select",
+        options=(("ar-es", "Argentina (ar-es)"), ("es-es", "España (es-es)"), ("wt-wt", "Global (wt-wt)")),
     ),
 
     # Actualizaciones
@@ -234,8 +288,6 @@ FIELD_SPECS: tuple[_FieldSpec, ...] = (
     ),
 )
 
-_SPECS_BY_KEY: dict[str, _FieldSpec] = {spec.key: spec for spec in FIELD_SPECS}
-
 _TRUE_VALUES = {"true", "1", "on", "yes", "si", "sí"}
 
 
@@ -245,11 +297,32 @@ class SettingsService:
     def __init__(self, config_service: ConfigService) -> None:
         self._config_service = config_service
 
-    # -- lectura -----------------------------------------------------------
+    def get_config(self) -> AILENConfig:
+        """Devuelve la configuración activa actual."""
+        return self._config_service.reload()
+
+    def set_secret(self, secret_name: str, secret_value: str) -> bool:
+        """Guarda una clave en el almacén seguro 0600."""
+        from ailen.ai.secrets import SecretResolver
+        try:
+            SecretResolver().save_secret(secret_name, secret_value)
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Error saving secret %s: %s", secret_name, e)
+            return False
+
+
+    @property
+    def config_path(self) -> Path | str | None:
+        if hasattr(self._config_service, "config_path") and self._config_service.config_path:
+            return self._config_service.config_path
+        from ailen.core.config import find_config_path
+        return find_config_path()
 
     def get_fields(self) -> list[SettingField]:
         """Devuelve los campos administrables con su valor efectivo actual."""
         cfg = self._config_service.reload()
+        specs = self._specs(cfg)
         return [
             SettingField(
                 key=spec.key,
@@ -260,7 +333,7 @@ class SettingsService:
                 options=list(spec.options),
                 help_text=spec.help_text,
             )
-            for spec in FIELD_SPECS
+            for spec in specs
         ]
 
     # -- escritura ----------------------------------------------------------
@@ -278,13 +351,15 @@ class SettingsService:
           escribir; si algo falla, el archivo actual queda intacto.
         """
         errors: dict[str, str] = {}
-        for key in sorted(k for k in changes if k not in _SPECS_BY_KEY):
+        cfg = copy.deepcopy(self._config_service.current_config)
+        specs = self._specs(cfg)
+        specs_by_key = {spec.key: spec for spec in specs}
+        for key in sorted(k for k in changes if k not in specs_by_key):
             errors[key] = "Campo no permitido."
         if errors:
             return SettingsUpdateResult(ok=False, errors=errors)
 
-        cfg = copy.deepcopy(self._config_service.current_config)
-        for spec in FIELD_SPECS:
+        for spec in specs:
             if spec.key not in changes:
                 continue
             raw = changes[spec.key]
@@ -305,7 +380,7 @@ class SettingsService:
             return SettingsUpdateResult(ok=False, errors=errors)
 
         self._config_service.save_config(cfg)
-        logger.info("Configuración actualizada vía panel (%d campos).", len(FIELD_SPECS))
+        logger.info("Configuración actualizada vía panel (%d campos).", len(changes))
         return SettingsUpdateResult(ok=True)
 
     # -- helpers -------------------------------------------------------------
@@ -317,7 +392,7 @@ class SettingsService:
             raise ValueError(f"Invalid setting path: {key!r}")
         target: Any = cfg
         for part in parts[:-1]:
-            target = getattr(target, part)
+            target = target[part] if isinstance(target, dict) else getattr(target, part)
         return target, parts[-1]
 
     def _read(self, cfg: AILENConfig, spec: _FieldSpec) -> str:
@@ -350,9 +425,13 @@ class SettingsService:
                 errors[spec.key] = f"Máximo {spec.max_length} caracteres."
             return raw
         if spec.kind == "select":
-            allowed = {value for value, _ in spec.options}
-            if raw not in allowed:
-                errors[spec.key] = "Opción inválida."
+            allowed = {value: value for value, _ in spec.options}
+            allowed_lower = {value.lower(): value for value, _ in spec.options}
+            if raw in allowed:
+                return raw
+            if raw.lower() in allowed_lower:
+                return allowed_lower[raw.lower()]
+            errors[spec.key] = "Opción inválida."
             return raw
         if spec.allow_empty and not raw and spec.kind in {"int", "float"}:
             return None
@@ -376,3 +455,31 @@ class SettingsService:
         elif spec.max_value is not None and value > spec.max_value:
             errors[spec.key] = f"Máximo {spec.max_value:g}."
         return value
+    @staticmethod
+    def _specs(cfg: AILENConfig) -> tuple[_FieldSpec, ...]:
+        remote_specs: list[_FieldSpec] = []
+        for provider_id in sorted(cfg.ai.remote.providers):
+            prefix = f"ai.remote.providers.{provider_id}"
+            group = f"IA remota · {provider_id}"
+            remote_specs.extend(
+                (
+                    _FieldSpec(f"{prefix}.enabled", group, "Habilitado", "bool"),
+                    _FieldSpec(f"{prefix}.preset", group, "Preset", "text", max_length=40),
+                    _FieldSpec(
+                        f"{prefix}.protocol", group, "Protocolo", "select",
+                        options=(("openai_responses", "OpenAI Responses"), ("openai_chat", "OpenAI Chat Completions"), ("anthropic_messages", "Anthropic Messages")),
+                    ),
+                    _FieldSpec(f"{prefix}.endpoint", group, "Endpoint HTTPS", "text", max_length=300, allow_empty=True),
+                    _FieldSpec(f"{prefix}.model", group, "Modelo explícito", "text", max_length=180, allow_empty=True),
+                    _FieldSpec(f"{prefix}.priority", group, "Prioridad", "int", min_value=0, max_value=1000),
+                    _FieldSpec(f"{prefix}.timeout_seconds", group, "Timeout", "float", min_value=0.1, max_value=120),
+                    _FieldSpec(f"{prefix}.daily_budget_usd", group, "Presupuesto diario USD", "float", min_value=0),
+                    _FieldSpec(f"{prefix}.monthly_budget_usd", group, "Presupuesto mensual USD", "float", min_value=0),
+                    _FieldSpec(f"{prefix}.streaming_enabled", group, "Streaming real habilitado", "bool"),
+                    _FieldSpec(
+                        f"{prefix}.catalog_mode", group, "Catálogo", "select",
+                        options=(("manual", "Manual"), ("live", "Live /models")),
+                    ),
+                )
+            )
+        return (*FIELD_SPECS, *remote_specs)

@@ -51,6 +51,10 @@ class ClockTool:
     def __init__(self, time_provider: Callable[[], datetime] | None = None) -> None:
         self.time_provider = time_provider or (lambda: datetime.now().astimezone())
 
+    def is_side_effecting(self, arguments: dict[str, Any]) -> bool:
+        del arguments
+        return False
+
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         now = self.time_provider()
         fmt = validated_args.get("format", "time")

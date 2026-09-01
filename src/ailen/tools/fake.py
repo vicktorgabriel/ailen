@@ -24,6 +24,10 @@ class ClockTool:
     destructive: bool = False
     timeout_seconds: float = 2.0
 
+    def is_side_effecting(self, arguments: dict[str, Any]) -> bool:
+        del arguments
+        return False
+
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         args = validate_args(self.schema, validated_args)
         now = datetime.now(UTC)
@@ -51,6 +55,10 @@ class FakeVolumeTool:
 
     def __init__(self) -> None:
         self.level = 80
+
+    def is_side_effecting(self, arguments: dict[str, Any]) -> bool:
+        del arguments
+        return True
 
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         args = validate_args(self.schema, validated_args)
@@ -82,6 +90,9 @@ class FakeNotesTool:
 
     def __init__(self) -> None:
         self._notes: list[str] = []
+
+    def is_side_effecting(self, arguments: dict[str, Any]) -> bool:
+        return arguments.get("action") == "add"
 
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         args = validate_args(self.schema, validated_args)

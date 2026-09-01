@@ -1,0 +1,322 @@
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Rostro & Retrato 32-Bit Hi-Res</h1>
+    <p class="page-lede">Ilustración digital interactiva de alta resolución con anatomía humana/anime completa (cabello, cuello, hombros, orejas cyber, ojos multicapa y articulación labial fluida).</p>
+  </div>
+  <div class="header-actions">
+    <button class="btn btn-secondary btn-sm" id="btn-face-blink">👁️ Parpadeo de Prueba</button>
+  </div>
+</div>
+
+<!-- Canvas de Previsualización en Vivo -->
+<div class="card">
+  <div class="card-header">
+    <div style="display: flex; align-items: center; gap: 0.75rem;">
+      <h2 class="card-title">🎭 Previsualización 32-Bit (800x480)</h2>
+      <span class="status-pill ok" id="face-live-state">NEUTRAL</span>
+    </div>
+    <div style="font-size: 0.8rem; color: var(--fg-muted);">
+      🎮 Calidad: <strong>32-Bit High-Resolution Character</strong> (60 FPS · 0 ms latencia)
+    </div>
+  </div>
+  <div class="card-body">
+    <div class="pixel-avatar-frame" style="background: radial-gradient(circle at 50% 45%, #0d1b2e 0%, #030712 100%);">
+      <svg id="pixel-face-svg" class="pixel-face-canvas" viewBox="0 0 800 480" style="max-height: 420px;">
+        <!-- Fondo Halo Cyber -->
+        <circle cx="400" cy="240" r="220" fill="#061224" opacity="0.6"/>
+        <circle cx="400" cy="240" r="160" fill="#0b1e38" opacity="0.4"/>
+
+        <!-- Cabello Posterior (Volumen detrás de la cabeza) -->
+        <path d="M 240 160 C 180 240 190 380 270 420 C 350 450 450 450 530 420 C 610 380 620 240 560 160 C 480 80 320 80 240 160 Z" fill="#011b33"/>
+
+        <!-- Cuello & Chaqueta Cyber -->
+        <g id="body-chassis">
+          <!-- Cuello -->
+          <polygon points="360,290 345,410 455,410 440,290" fill="#0a1426"/>
+          <polygon points="360,290 400,335 440,290" fill="#050a14"/>
+          <!-- Chaqueta / Cuello alto -->
+          <path d="M 220 480 L 300 395 L 360 415 L 400 440 L 440 415 L 500 395 L 580 480 Z" fill="#080e1a" stroke="#132035" stroke-width="2"/>
+          <path d="M 300 395 L 400 440 L 500 395" stroke="#0284c7" stroke-width="2.5" fill="none"/>
+        </g>
+
+        <!-- Cabeza y Piel de Porcelana Curva -->
+        <g id="head-base">
+          <path d="M 270 140 C 220 200 230 300 295 365 C 345 405 400 415 400 415 C 400 415 455 405 505 365 C 570 300 580 200 530 140 C 480 80 320 80 270 140 Z" fill="#0d182b" stroke="#172844" stroke-width="3"/>
+          <path d="M 285 155 C 245 205 255 290 310 345 C 350 380 400 390 400 390 C 400 390 450 380 490 345 C 545 290 555 205 515 155 C 470 100 330 100 285 155 Z" fill="#122038"/>
+        </g>
+
+        <!-- Orejas Cyber & Auriculares con LED -->
+        <g id="cyber-ears">
+          <!-- Oreja Izquierda -->
+          <path d="M 245 210 C 220 230 220 260 248 275" stroke="#172844" stroke-width="3" fill="#0d182b"/>
+          <circle cx="232" cy="245" r="7" fill="#0284c7" stroke="#ffffff" stroke-width="1.5"/>
+          <!-- Oreja Derecha -->
+          <path d="M 555 210 C 580 230 580 260 552 275" stroke="#172844" stroke-width="3" fill="#0d182b"/>
+          <circle cx="568" cy="245" r="7" fill="#0284c7" stroke="#ffffff" stroke-width="1.5"/>
+        </g>
+
+        <!-- Rubor Suave de Mejillas -->
+        <g id="cheeks">
+          <ellipse id="cheek-left" cx="290" cy="275" rx="35" ry="18" fill="#082f49" opacity="0.8"/>
+          <circle cx="290" cy="275" r="12" fill="#0284c7" opacity="0.6"/>
+          <line x1="282" y1="270" x2="286" y2="280" stroke="#7dd3fc" stroke-width="1.5"/>
+          <line x1="290" y1="270" x2="294" y2="280" stroke="#7dd3fc" stroke-width="1.5"/>
+          <line x1="298" y1="270" x2="302" y2="280" stroke="#7dd3fc" stroke-width="1.5"/>
+
+          <ellipse id="cheek-right" cx="510" cy="275" rx="35" ry="18" fill="#082f49" opacity="0.8"/>
+          <circle cx="510" cy="275" r="12" fill="#0284c7" opacity="0.6"/>
+          <line x1="502" y1="270" x2="506" y2="280" stroke="#7dd3fc" stroke-width="1.5"/>
+          <line x1="510" y1="270" x2="514" y2="280" stroke="#7dd3fc" stroke-width="1.5"/>
+          <line x1="518" y1="270" x2="522" y2="280" stroke="#7dd3fc" stroke-width="1.5"/>
+        </g>
+
+        <!-- Nariz Anatómica -->
+        <g id="nose-bridge">
+          <path d="M 398 220 L 396 255 L 404 260" stroke="#060c18" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+          <circle cx="400" cy="256" r="2.5" fill="#bae6fd"/>
+        </g>
+
+        <!-- Cejas Expresivas 32-Bit -->
+        <g id="brows">
+          <path id="brow-left" d="M 255 160 Q 295 142 335 158" stroke="#0284c7" stroke-width="5" stroke-linecap="round" fill="none"/>
+          <path id="brow-right" d="M 465 158 Q 505 142 545 160" stroke="#0284c7" stroke-width="5" stroke-linecap="round" fill="none"/>
+        </g>
+
+        <!-- Ojo Izquierdo Anime 32-Bit -->
+        <g id="eye-left" transform="translate(295, 215)">
+          <path d="M -50 0 C -35 -35 35 -35 50 0 C 35 35 -35 35 -50 0 Z" fill="#0d1c33" stroke="#172b4c" stroke-width="2"/>
+          <path d="M -40 -8 C -15 -25 15 -25 40 -8 C 15 -14 -15 -14 -40 -8 Z" fill="#070f1e"/>
+
+          <!-- Iris Multicapa con triple brillo -->
+          <g id="iris-left">
+            <ellipse cx="0" cy="0" rx="30" ry="28" fill="#011b2e"/>
+            <ellipse cx="0" cy="0" rx="26" ry="24" fill="#023b61"/>
+            <ellipse cx="0" cy="5" rx="22" ry="20" fill="#0284c7"/>
+            <ellipse cx="0" cy="9" rx="18" ry="14" fill="#38bdf8"/>
+            <ellipse cx="0" cy="12" rx="12" ry="8" fill="#7dd3fc"/>
+            <ellipse id="pupil-left" cx="0" cy="0" rx="11" ry="11" fill="#020617"/>
+            <!-- Brillo 1: Estrella / Diamante -->
+            <polygon points="-10,-15 -5,-10 -10,-5 -15,-10" fill="#ffffff"/>
+            <!-- Brillo 2: Destello secundario -->
+            <circle cx="11" cy="-4" r="3.5" fill="#bae6fd"/>
+            <!-- Brillo 3: Reflejo inferior -->
+            <circle cx="8" cy="10" r="2.5" fill="#ffffff"/>
+          </g>
+
+          <!-- Delineado Superior con Pestaña Alada -->
+          <path id="lash-left" d="M -54 0 C -30 -35 30 -35 58 -8" stroke="#0284c7" stroke-width="6" stroke-linecap="round" fill="none"/>
+          <path d="M -40 -24 C -10 -35 25 -35 50 -16" stroke="#bae6fd" stroke-width="2" fill="none"/>
+        </g>
+
+        <!-- Ojo Derecho Anime 32-Bit -->
+        <g id="eye-right" transform="translate(505, 215)">
+          <path d="M -50 0 C -35 -35 35 -35 50 0 C 35 35 -35 35 -50 0 Z" fill="#0d1c33" stroke="#172b4c" stroke-width="2"/>
+          <path d="M -40 -8 C -15 -25 15 -25 40 -8 C 15 -14 -15 -14 -40 -8 Z" fill="#070f1e"/>
+
+          <!-- Iris Multicapa con triple brillo -->
+          <g id="iris-right">
+            <ellipse cx="0" cy="0" rx="30" ry="28" fill="#011b2e"/>
+            <ellipse cx="0" cy="0" rx="26" ry="24" fill="#023b61"/>
+            <ellipse cx="0" cy="5" rx="22" ry="20" fill="#0284c7"/>
+            <ellipse cx="0" cy="9" rx="18" ry="14" fill="#38bdf8"/>
+            <ellipse cx="0" cy="12" rx="12" ry="8" fill="#7dd3fc"/>
+            <ellipse id="pupil-right" cx="0" cy="0" rx="11" ry="11" fill="#020617"/>
+            <!-- Brillo 1: Estrella / Diamante -->
+            <polygon points="-10,-15 -5,-10 -10,-5 -15,-10" fill="#ffffff"/>
+            <!-- Brillo 2: Destello secundario -->
+            <circle cx="11" cy="-4" r="3.5" fill="#bae6fd"/>
+            <!-- Brillo 3: Reflejo inferior -->
+            <circle cx="8" cy="10" r="2.5" fill="#ffffff"/>
+          </g>
+
+          <!-- Delineado Superior con Pestaña Alada -->
+          <path id="lash-right" d="M -58 -8 C -30 -35 30 -35 54 0" stroke="#0284c7" stroke-width="6" stroke-linecap="round" fill="none"/>
+          <path d="M -50 -16 C -25 -35 10 -35 40 -24" stroke="#bae6fd" stroke-width="2" fill="none"/>
+        </g>
+
+        <!-- Flequillo & Mechones Cyber Frontales (Layer sobre la frente) -->
+        <g id="hair-front">
+          <!-- Mechón Izquierdo -->
+          <path d="M 260 100 C 220 180 230 290 255 330 C 245 270 240 200 300 120 Z" fill="#0284c7"/>
+          <path d="M 265 105 C 230 175 238 275 255 315" stroke="#38bdf8" stroke-width="2.5" fill="none"/>
+
+          <!-- Mechón Derecho -->
+          <path d="M 540 100 C 580 180 570 290 545 330 C 555 270 560 200 500 120 Z" fill="#0284c7"/>
+          <path d="M 535 105 C 570 175 562 275 545 315" stroke="#38bdf8" stroke-width="2.5" fill="none"/>
+
+          <!-- Flequillo Central -->
+          <path d="M 290 100 C 330 160 360 180 375 185 C 385 150 415 150 425 185 C 440 180 470 160 510 100 Z" fill="#0369a1"/>
+          <path d="M 310 105 C 345 150 365 165 375 170" stroke="#bae6fd" stroke-width="2.5" fill="none"/>
+          <path d="M 490 105 C 455 150 435 165 425 170" stroke="#bae6fd" stroke-width="2.5" fill="none"/>
+        </g>
+
+        <!-- Boca Contorneada 32-Bit con Gloss -->
+        <g id="mouth" transform="translate(400, 345)">
+          <ellipse id="mouth-cavity" cx="0" cy="0" rx="38" ry="0" fill="#03060f"/>
+          <path id="mouth-teeth" d="M -22 -2 L 22 -2" stroke="#f8fafc" stroke-width="0" stroke-linecap="round"/>
+          <path id="mouth-upper" d="M -38 0 Q -18 -6 0 -2 Q 18 -6 38 0" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" fill="none"/>
+          <path id="mouth-lower" d="M -28 4 Q 0 8 28 4" stroke="#0284c7" stroke-width="3" stroke-linecap="round" fill="none"/>
+          <circle id="mouth-gloss" cx="0" cy="0" r="2" fill="#bae6fd"/>
+        </g>
+      </svg>
+    </div>
+  </div>
+</div>
+
+<form method="post" action="/config">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="section" value="display">
+
+  <div class="grid grid-cols-2" style="margin-top: 1.25rem;">
+    <!-- Ajustes del Renderizador -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">🎨 Motor visual</h2>
+      </div>
+      <div class="card-body">
+        <div class="form-group">
+          <label class="form-label" for="f-face-style">Estilo de Rostro</label>
+          <select id="f-face-style" name="display.face_style">
+            <option value="facepack" selected>FacePack nativo realista (renderer predeterminado)</option>
+            <option value="portrait">Retrato legacy manual (imagen AILEN + ojos/boca/parallax)</option>
+            <option value="pixel">Renderer geométrico legado</option>
+            <option value="vector">Vector Robot Minimalista</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="f-face-theme">Paleta de Color</label>
+          <select id="f-face-theme" name="display.theme">
+            <option value="cyan_cyber" selected>Cyber Cyan (Azul Neón 32-bit)</option>
+            <option value="amber_pixel">Radiant Amber (Obsidiana + Naranja)</option>
+            <option value="emerald_pixel">Emerald Glow (Verde Esmeralda)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Probador de Gestos y Expresiones -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">🎭 Probador de Expresiones</h2>
+        <span class="card-subtitle">Animación en tiempo real</span>
+      </div>
+      <div class="card-body">
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem;">
+          <button type="button" class="btn btn-secondary btn-sm btn-expr" data-expr="neutral">🙂 Neutral</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-expr" data-expr="happy">😃 Feliz</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-expr" data-expr="thinking">🤔 Pensando</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-expr" data-expr="surprise">😮 Sorpresa</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-expr" data-expr="skeptical">🤨 Escéptica</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-expr" data-expr="sleepy">😴 Dormida</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-expr" data-expr="focused">🎯 Enfocada</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-expr" data-expr="winking">😉 Guiño</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-expr" data-expr="error">⚠️ Falla</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top: 1.25rem;">
+    <div class="card-footer" style="display: flex; justify-content: space-between; align-items: center;">
+      <span>AILÉN renderiza el retrato 32-bit a 60 FPS sin afectar la latencia del diálogo.</span>
+      <button type="submit" class="btn btn-primary">💾 Guardar Ajustes del Rostro</button>
+    </div>
+  </div>
+</form>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const eyeLeft = document.getElementById('eye-left');
+  const eyeRight = document.getElementById('eye-right');
+  const irisLeft = document.getElementById('iris-left');
+  const irisRight = document.getElementById('iris-right');
+  const browLeft = document.getElementById('brow-left');
+  const browRight = document.getElementById('brow-right');
+  const mouthUpper = document.getElementById('mouth-upper');
+  const mouthLower = document.getElementById('mouth-lower');
+  const mouthCavity = document.getElementById('mouth-cavity');
+  const mouthTeeth = document.getElementById('mouth-teeth');
+  const cheekLeft = document.getElementById('cheek-left');
+  const cheekRight = document.getElementById('cheek-right');
+  const stateBadge = document.getElementById('face-live-state');
+
+  const setExpression = (expr) => {
+    if (stateBadge) stateBadge.innerText = expr.toUpperCase();
+
+    // Reset base
+    if (eyeLeft) eyeLeft.setAttribute('transform', 'translate(295, 215)');
+    if (eyeRight) eyeRight.setAttribute('transform', 'translate(505, 215)');
+    if (irisLeft) irisLeft.setAttribute('transform', 'translate(0, 0)');
+    if (irisRight) irisRight.setAttribute('transform', 'translate(0, 0)');
+    if (browLeft) browLeft.setAttribute('d', 'M 255 160 Q 295 142 335 158');
+    if (browRight) browRight.setAttribute('d', 'M 465 158 Q 505 142 545 160');
+    if (mouthUpper) mouthUpper.setAttribute('d', 'M -38 0 Q -18 -6 0 -2 Q 18 -6 38 0');
+    if (mouthLower) mouthLower.setAttribute('d', 'M -28 4 Q 0 8 28 4');
+    if (mouthCavity) mouthCavity.setAttribute('ry', '0');
+    if (mouthTeeth) mouthTeeth.setAttribute('stroke-width', '0');
+    if (cheekLeft) cheekLeft.setAttribute('fill', '#082f49');
+    if (cheekRight) cheekRight.setAttribute('fill', '#082f49');
+
+    if (expr === 'happy') {
+      if (browLeft) browLeft.setAttribute('d', 'M 255 150 Q 295 130 335 148');
+      if (browRight) browRight.setAttribute('d', 'M 465 148 Q 505 130 545 150');
+      if (cheekLeft) cheekLeft.setAttribute('fill', '#f43f5e');
+      if (cheekRight) cheekRight.setAttribute('fill', '#f43f5e');
+      if (mouthUpper) mouthUpper.setAttribute('d', 'M -42 -4 Q 0 22 42 -4');
+      if (mouthLower) mouthLower.setAttribute('d', 'M -26 15 Q 0 22 26 15');
+      if (mouthCavity) mouthCavity.setAttribute('ry', '14');
+      if (mouthTeeth) mouthTeeth.setAttribute('stroke-width', '4');
+    } else if (expr === 'thinking') {
+      if (irisLeft) irisLeft.setAttribute('transform', 'translate(10, -8)');
+      if (irisRight) irisRight.setAttribute('transform', 'translate(10, -8)');
+      if (browLeft) browLeft.setAttribute('d', 'M 255 150 Q 295 146 335 158');
+      if (browRight) browRight.setAttribute('d', 'M 465 165 Q 505 150 545 144');
+      if (mouthUpper) mouthUpper.setAttribute('d', 'M -26 2 Q 0 -3 26 2');
+    } else if (expr === 'surprise') {
+      if (eyeLeft) eyeLeft.setAttribute('transform', 'translate(295, 215) scale(1.15, 1.15)');
+      if (eyeRight) eyeRight.setAttribute('transform', 'translate(505, 215) scale(1.15, 1.15)');
+      if (browLeft) browLeft.setAttribute('d', 'M 255 138 Q 295 120 335 138');
+      if (browRight) browRight.setAttribute('d', 'M 465 138 Q 505 120 545 138');
+      if (mouthUpper) mouthUpper.setAttribute('d', 'M -18 -14 A 18 18 0 1 0 18 -14 A 18 18 0 1 0 -18 -14');
+      if (mouthCavity) mouthCavity.setAttribute('ry', '18');
+    } else if (expr === 'skeptical') {
+      if (browLeft) browLeft.setAttribute('d', 'M 255 138 Q 295 128 335 140');
+      if (browRight) browRight.setAttribute('d', 'M 465 168 Q 505 160 545 155');
+      if (mouthUpper) mouthUpper.setAttribute('d', 'M -30 -2 Q 0 4 30 -5');
+    } else if (expr === 'winking') {
+      if (eyeLeft) eyeLeft.setAttribute('transform', 'translate(295, 215) scale(1, 0.08)');
+      if (browLeft) browLeft.setAttribute('d', 'M 255 150 Q 295 138 335 150');
+      if (cheekLeft) cheekLeft.setAttribute('fill', '#f43f5e');
+      if (cheekRight) cheekRight.setAttribute('fill', '#f43f5e');
+    } else if (expr === 'sleepy') {
+      if (eyeLeft) eyeLeft.setAttribute('transform', 'translate(295, 222) scale(1, 0.15)');
+      if (eyeRight) eyeRight.setAttribute('transform', 'translate(505, 222) scale(1, 0.15)');
+      if (browLeft) browLeft.setAttribute('d', 'M 255 165 Q 295 155 335 165');
+      if (browRight) browRight.setAttribute('d', 'M 465 165 Q 505 155 545 165');
+    } else if (expr === 'error') {
+      if (browLeft) browLeft.setAttribute('d', 'M 255 170 Q 295 155 335 146');
+      if (browRight) browRight.setAttribute('d', 'M 465 146 Q 505 155 545 170');
+      if (mouthUpper) mouthUpper.setAttribute('d', 'M -35 6 Q 0 -10 35 6');
+    }
+  };
+
+  const doBlink = () => {
+    if (eyeLeft) eyeLeft.setAttribute('transform', 'translate(295, 215) scale(1, 0.08)');
+    if (eyeRight) eyeRight.setAttribute('transform', 'translate(505, 215) scale(1, 0.08)');
+    setTimeout(() => {
+      if (eyeLeft) eyeLeft.setAttribute('transform', 'translate(295, 215)');
+      if (eyeRight) eyeRight.setAttribute('transform', 'translate(505, 215)');
+    }, 140);
+  };
+
+  document.querySelectorAll('.btn-expr').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const expr = btn.getAttribute('data-expr');
+      setExpression(expr);
+    });
+  });
+
+  document.getElementById('btn-face-blink')?.addEventListener('click', doBlink);
+});
+</script>

@@ -1,0 +1,97 @@
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Memoria & Conocimiento</h1>
+    <p class="page-lede">Búsqueda rápida en SQLite FTS5, auditoría de recuerdos, notas de taller y políticas de privacidad.</p>
+  </div>
+  <div class="header-actions">
+    <button class="btn btn-secondary btn-sm" id="btn-export-memory">📥 Exportar Memoria</button>
+    <button class="btn btn-danger btn-sm" id="btn-purge-memory">🧹 Purgar Base</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">🔍 Buscador de Memoria (SQLite FTS5)</h2>
+    <span class="card-subtitle">Indexación full-text de notas, hechos y recordatorios</span>
+  </div>
+  <div class="card-body">
+    <div style="display: flex; gap: 0.75rem;">
+      <input type="text" id="memory-search-input" placeholder="Buscar por palabra clave: ej: 'REGN', 'estaño', 'horario'..." style="flex: 1;">
+      <button class="btn btn-primary" id="btn-search-memory">Buscar</button>
+    </div>
+
+    <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
+      <button class="btn btn-sm btn-secondary active">Todos (142)</button>
+      <button class="btn btn-sm btn-secondary">📌 Notas (34)</button>
+      <button class="btn btn-sm btn-secondary">⏰ Recordatorios (3)</button>
+      <button class="btn btn-sm btn-secondary">💡 Hechos Aprendidos (105)</button>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 1.25rem;">
+  <div class="card-header">
+    <h2 class="card-title">📋 Registro de Recuerdos Persistentes</h2>
+    <span class="card-subtitle">Base de datos local cifrada `/var/lib/ailen/ailen.db`</span>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Tipo</th>
+            <th>Contenido del Recuerdo / Nota</th>
+            <th>Fecha</th>
+            <th>Nivel de Privacidad</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="memory-table-body">
+          <tr>
+            <td>📌 Nota</td>
+            <td><strong>REGN mide 6.05 V</strong> en la placa de prueba con integrado BQ24780.</td>
+            <td>Ayer, 18:20</td>
+            <td><span class="mode-badge mode-workshop">🔒 Taller</span></td>
+            <td>
+              <button class="btn btn-sm btn-secondary">✏️</button>
+              <button class="btn btn-sm btn-danger">🗑️</button>
+            </td>
+          </tr>
+          <tr>
+            <td>💡 Hecho</td>
+            <td>El usuario prefiere respuestas breves y directas en consultas de electrónica.</td>
+            <td>24/08/2026</td>
+            <td><span class="mode-badge mode-private">🔒 Privado</span></td>
+            <td>
+              <button class="btn btn-sm btn-secondary">✏️</button>
+              <button class="btn btn-sm btn-danger">🗑️</button>
+            </td>
+          </tr>
+          <tr>
+            <td>⏰ Aviso</td>
+            <td>Revisar temperatura de la batea de ultrasonido en media hora.</td>
+            <td>Hoy, 16:30</td>
+            <td><span class="mode-badge mode-home">🌐 General</span></td>
+            <td>
+              <button class="btn btn-sm btn-secondary">✓</button>
+              <button class="btn btn-sm btn-danger">🗑️</button>
+            </td>
+          </tr>
+          <tr>
+            <td>💡 Hecho</td>
+            <td>Horario de atención al público: Lunes a Viernes de 9:00 a 18:00 hs.</td>
+            <td>20/08/2026</td>
+            <td><span class="mode-badge mode-shop">📢 Público</span></td>
+            <td>
+              <button class="btn btn-sm btn-secondary">✏️</button>
+              <button class="btn btn-sm btn-danger">🗑️</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card-footer">
+    <span>🛡️ En modo <strong>SHOP</strong> o <strong>PUBLIC</strong>, los recuerdos marcados con 🔒 nunca se divulgan a terceros ni a la nube.</span>
+  </div>
+</div>

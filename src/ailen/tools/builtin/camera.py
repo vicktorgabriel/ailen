@@ -42,6 +42,9 @@ class CameraTool:
     def is_available(self) -> bool:
         return bool(self.control is not None and self.control.is_available)
 
+    def is_side_effecting(self, arguments: dict[str, Any]) -> bool:
+        return arguments.get("action") != "status"
+
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         del context
         if not self.is_available or self.control is None:

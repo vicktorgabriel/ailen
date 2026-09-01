@@ -23,6 +23,12 @@ from ailen.domain.models import (
     RuntimeState,
     utc_now_iso,
 )
+from ailen.updates.contracts import (
+    OperationStatus,
+    UpdateAdminSnapshot,
+    UpdateCommandResult,
+)
+from ailen.version import __version__
 
 
 @runtime_checkable
@@ -99,9 +105,39 @@ class SettingsService(Protocol):
         """Campos administrables con su valor efectivo actual."""
         ...
 
+    def get_config(self) -> Any:
+        """Configuración activa actual."""
+        ...
+
     def update(self, changes: dict[str, str]) -> SettingsUpdateResult:
         """Valida y persiste cambios. Rechaza claves fuera de la allowlist."""
         ...
+
+
+@runtime_checkable
+class UpdateAdminService(Protocol):
+    """Bounded updater contract consumed by the authenticated Web panel."""
+
+    def snapshot(self) -> UpdateAdminSnapshot: ...
+
+    def check(self) -> UpdateCommandResult: ...
+
+    def plan(self, release_id: str) -> UpdateCommandResult: ...
+
+    def start_download(
+        self,
+        release_id: str,
+        approval_token: str,
+    ) -> UpdateCommandResult: ...
+
+    def cancel(self, operation_id: str) -> UpdateCommandResult: ...
+
+    def activate(self, operation_id: str) -> UpdateCommandResult: ...
+
+    def rollback(self) -> UpdateCommandResult: ...
+
+    def status(self, operation_id: str) -> OperationStatus: ...
+
 
 
 class FakeAuthService:
@@ -214,7 +250,7 @@ class FakeStatusService:
 
     def get_runtime_state(self) -> RuntimeState:
         return RuntimeState(
-            version="0.1.0-dev.0",
+            version=__version__,
             node_id=self._node_id,
             profile=DeviceProfile.HYBRID,
             assistant_state=AssistantState.IDLE,

@@ -1,14 +1,24 @@
-<section class="page">
-  <h1>Configuración</h1>
-  <p class="lede">Ajustes administrables del nodo. Todo cambio se valida antes de guardarse.</p>
-  {{ raw:notice }}
-  <form method="post" action="/config" class="settings-form">
-    <input type="hidden" name="_csrf" value="{{ csrf }}">
-    {{ raw:groups }}
-    <div class="form-actions">
-      <button type="submit">Guardar cambios</button>
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Configuración General</h1>
+    <p class="page-lede">Ajustes administrables del nodo. Todo cambio se valida estrictamente por allowlist antes de persistirse.</p>
+  </div>
+</div>
+
+{{ raw:notice }}
+
+<form method="post" action="/config" class="settings-form">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+
+  {{ raw:groups }}
+
+  <div class="card" style="margin-top: 1.25rem;">
+    <div class="card-footer" style="justify-content: flex-end;">
+      <button type="submit" class="btn btn-primary">💾 Guardar Cambios de Configuración</button>
     </div>
-  </form>
-  <p class="muted">Host/puerto del panel y ajustes de red se editan sólo en el archivo de
-  configuración (por seguridad aplican al reiniciar). Ningún secreto se muestra en esta vista.</p>
-</section>
+  </div>
+</form>
+
+<p style="font-size: 0.8rem; color: var(--fg-muted); margin-top: 1rem;">
+  ℹ️ Los ajustes de red y puertos se editan en el archivo TOML y aplican al reiniciar por razones de seguridad. Ningún secreto ni credencial completa se expone en esta vista.
+</p>

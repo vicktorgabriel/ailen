@@ -1,0 +1,117 @@
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Herramientas & Conectividad Web</h1>
+    <p class="page-lede">Control de la allowlist estricta de tools locales, búsqueda web en vivo (DDGS) y reproductor musical MPRIS.</p>
+  </div>
+</div>
+
+<form method="post" action="/config" style="display: flex; flex-direction: column; gap: 1.25rem;">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="section" value="network">
+
+  <div class="grid grid-cols-2">
+    <!-- Bloque 1: Búsqueda Web Controlada -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">🌐 Búsqueda Web Controlada (DDGS)</h2>
+        <span class="status-pill ok">Sanitizada</span>
+      </div>
+      <div class="card-body">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.35rem 0;">
+          <div>
+            <div style="font-weight: 600; font-size: 0.88rem;">Habilitar Búsqueda Web en Vivo</div>
+            <div class="form-help">Permite a AILÉN consultar noticias o datos técnicos actuales.</div>
+          </div>
+          <label class="switch">
+            <input type="hidden" name="__present.network.outbound_web_enabled" value="1">
+            <input type="checkbox" name="network.outbound_web_enabled" value="true"{{ chk_web_search }}>
+            <span class="slider-toggle"></span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="f-web-provider">Proveedor de Búsqueda</label>
+          <select id="f-web-provider" name="network.web_search_provider">
+            <option value="ddgs"{{ sel_ddgs }}>DuckDuckGo Scraper (DDGS - Privado y Sin API Key)</option>
+            <option value="none"{{ sel_none }}>Desactivada (Sin acceso a internet)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="f-web-region">Región de Búsqueda</label>
+          <select id="f-web-region" name="network.web_search_region">
+            <option value="ar-es"{{ sel_reg_ar }}>Argentina (ar-es - Resultados locales)</option>
+            <option value="es-es"{{ sel_reg_es }}>España (es-es)</option>
+            <option value="wt-wt"{{ sel_reg_wt }}>Global (wt-wt)</option>
+          </select>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.35rem 0;">
+          <div>
+            <div style="font-weight: 600; font-size: 0.88rem;">Protección Anti-SSRF & Bloqueo IP Privada</div>
+            <div class="form-help">Impide que la IA acceda a routers o equipos en la red local.</div>
+          </div>
+          <span class="badge-neutral" style="color: var(--status-ok);">Activo (Core Guard)</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bloque 2: Herramientas Locales (Allowlist) -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">🧰 Herramientas Locales del Asistente</h2>
+        <span class="card-subtitle">Allowlist ejecutada de forma determinista</span>
+      </div>
+      <div class="card-body">
+        <div style="display: flex; flex-direction: column; gap: 0.85rem;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <div>
+              <div style="font-weight: 600; font-size: 0.88rem;">🕒 Reloj & Fecha (ClockTool)</div>
+              <div class="form-help">Respuestas instantáneas de hora del sistema en ~8ms.</div>
+            </div>
+            <span class="badge-neutral" style="color: var(--status-ok);">Habilitada</span>
+          </div>
+
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <div>
+              <div style="font-weight: 600; font-size: 0.88rem;">⏱️ Temporizadores (TimerTool)</div>
+              <div class="form-help">Timers acústicos en background sin consumo de LLM.</div>
+            </div>
+            <span class="badge-neutral" style="color: var(--status-ok);">Habilitada</span>
+          </div>
+
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <div>
+              <div style="font-weight: 600; font-size: 0.88rem;">📝 Notas de Taller (NotesTool)</div>
+              <div class="form-help">Guardado y recuperación en SQLite FTS5 local.</div>
+            </div>
+            <span class="badge-neutral" style="color: var(--status-ok);">Habilitada</span>
+          </div>
+
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <div>
+              <div style="font-weight: 600; font-size: 0.88rem;">⏰ Recordatorios Persistentes (ReminderService)</div>
+              <div class="form-help">Avisos con fecha u hora anunciados por voz.</div>
+            </div>
+            <span class="badge-neutral" style="color: var(--status-ok);">Habilitada</span>
+          </div>
+
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <div>
+              <div style="font-weight: 600; font-size: 0.88rem;">🎵 Reproductor Musical Local (MprisTool)</div>
+              <div class="form-help">Control de música sobre reproductores del sistema (`playerctl`).</div>
+            </div>
+            <span class="badge-neutral" style="color: var(--status-ok);">Habilitada</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-footer" style="display: flex; justify-content: space-between; align-items: center;">
+      <span>Las herramientas del Core se ejecutan bajo contratos deterministas de seguridad.</span>
+      <button type="submit" class="btn btn-primary">💾 Guardar Permisos de Herramientas</button>
+    </div>
+  </div>
+</form>

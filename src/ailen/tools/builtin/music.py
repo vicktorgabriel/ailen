@@ -6,8 +6,11 @@ See ADR-010.
 """
 
 import logging
+import os
 import shutil
 import subprocess
+import unicodedata
+from pathlib import Path
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from ailen.domain.enums import ErrorCode, PrivacyLevel, SocialMode
@@ -20,8 +23,8 @@ logger = logging.getLogger("ailen.tools.music")
 class MusicService(Protocol):
     """Protocol for music playback controllers."""
 
-    def play(self, track_or_query: str = "") -> bool:
-        """Start or resume playback."""
+    def play(self, track_or_query: str = "", source: str = "auto") -> bool:
+        """Start playback from a validated source/query."""
         ...
 
     def pause(self) -> bool:
@@ -48,7 +51,7 @@ class MusicService(Protocol):
 class UnavailableMusicService:
     """Fail-closed placeholder until a real playback backend is configured."""
 
-    def play(self, track_or_query: str = "") -> bool:
+    def play(self, track_or_query: str = "", source: str = "auto") -> bool:
         return False
 
     def pause(self) -> bool:
@@ -109,9 +112,9 @@ class MprisMusicService:
             logger.debug("MPRIS command failed: %s", exc)
             return None
 
-    def play(self, track_or_query: str = "") -> bool:
+    def play(self, track_or_query: str = "", source: str = "auto") -> bool:
         # Generic MPRIS transport cannot safely map free text to a local track.
-        if track_or_query.strip():
+        if track_or_query.strip() or source not in {"auto", "transport"}:
             return False
         return self._run("play") is not None
 
@@ -169,6 +172,175 @@ class MprisMusicService:
         }
 
 
+class DesktopMusicService:
+    """Safe desktop media launcher for local music and YouTube search results.
+
+    Local search is restricted to standard user music directories. YouTube lookup
+    uses yt-dlp only to resolve a public watch URL, which is then opened through
+    the desktop default handler. No arbitrary path or shell command is accepted.
+    """
+
+    _AUDIO_EXTENSIONS: ClassVar[set[str]] = {".mp3", ".flac", ".wav", ".ogg", ".opus", ".m4a", ".aac", ".wma"}
+
+    def __init__(self, home: Path | None = None) -> None:
+        self.home = (home or Path.home()).expanduser().resolve()
+        self.music_roots = tuple(
+            root for root in (
+                self.home / "Música",
+                self.home / "Music",
+                self.home / "musica",
+                self.home / "music",
+            ) if root.is_dir()
+        )
+        self._opener = shutil.which("xdg-open")
+        self._yt_dlp = shutil.which("yt-dlp")
+        self._transport = MprisMusicService()
+        self.state = "STOPPED"
+        self.current_track: str | None = None
+        self.current_source: str | None = None
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        value = "".join(
+            ch for ch in unicodedata.normalize("NFD", text.casefold())
+            if unicodedata.category(ch) != "Mn"
+        )
+        return " ".join(value.replace("_", " ").replace("-", " ").split())
+
+    def _find_local(self, query: str) -> Path | None:
+        wanted = self._normalize(query)
+        if not wanted or not self.music_roots:
+            return None
+        tokens = [token for token in wanted.split() if len(token) >= 2]
+        candidates: list[tuple[int, int, Path]] = []
+        for root in self.music_roots:
+            try:
+                for path in root.rglob("*"):
+                    if not path.is_file() or path.suffix.casefold() not in self._AUDIO_EXTENSIONS:
+                        continue
+                    name = self._normalize(path.stem)
+                    score = 100 if wanted in name else sum(token in name for token in tokens)
+                    if score:
+                        candidates.append((score, -len(name), path))
+            except OSError:
+                continue
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return candidates[0][2]
+
+    def _open(self, target: str) -> bool:
+        if not self._opener:
+            return False
+        try:
+            subprocess.Popen(
+                [self._opener, target],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return True
+        except OSError:
+            return False
+
+    def _youtube_url(self, query: str) -> str | None:
+        if not self._yt_dlp or not query.strip():
+            return None
+        try:
+            result = subprocess.run(
+                [
+                    self._yt_dlp,
+                    "--flat-playlist",
+                    "--no-warnings",
+                    "--playlist-end",
+                    "1",
+                    "--print",
+                    "webpage_url",
+                    f"ytsearch1:{query.strip()}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=12.0,
+                check=False,
+                env={**os.environ, "LC_ALL": "C.UTF-8"},
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        url = result.stdout.strip().splitlines()
+        if not url:
+            return None
+        candidate = url[0].strip()
+        if not candidate.startswith(("https://www.youtube.com/", "https://youtu.be/")):
+            return None
+        return candidate
+
+    def play(self, track_or_query: str = "", source: str = "auto") -> bool:
+        query = track_or_query.strip()
+        source = source.strip().lower() or "auto"
+        if not query:
+            ok = self._transport.play()
+            if ok:
+                self.state = "PLAYING"
+            return ok
+
+        if source in {"auto", "local"}:
+            local = self._find_local(query)
+            if local is not None and self._open(str(local)):
+                self.state = "PLAYING"
+                self.current_track = local.stem
+                self.current_source = "local"
+                return True
+            if source == "local":
+                return False
+
+        if source in {"auto", "youtube"}:
+            url = self._youtube_url(query)
+            if url and self._open(url):
+                self.state = "PLAYING"
+                self.current_track = query
+                self.current_source = "youtube"
+                return True
+        return False
+
+    def pause(self) -> bool:
+        ok = self._transport.pause()
+        if ok:
+            self.state = "PAUSED"
+        return ok
+
+    def resume(self) -> bool:
+        ok = self._transport.resume()
+        if ok:
+            self.state = "PLAYING"
+        return ok
+
+    def next_track(self) -> bool:
+        return self._transport.next_track()
+
+    def stop(self) -> bool:
+        ok = self._transport.stop()
+        if ok:
+            self.state = "STOPPED"
+        return ok
+
+    def get_status(self) -> dict[str, Any]:
+        transport = self._transport.get_status()
+        if transport.get("state") != "UNAVAILABLE":
+            return transport
+        available = bool(self._opener and (self.music_roots or self._yt_dlp))
+        return {
+            "state": self.state if available else "UNAVAILABLE",
+            "current_track": self.current_track,
+            "source": self.current_source,
+            "backend": "desktop-xdg",
+            "query_supported": available,
+            "local_roots": len(self.music_roots),
+            "youtube_available": bool(self._yt_dlp and self._opener),
+        }
+
+
 class LocalMusicService:
     """In-memory controlled music service state machine."""
 
@@ -182,7 +354,7 @@ class LocalMusicService:
         ]
         self._track_index: int = 0
 
-    def play(self, track_or_query: str = "") -> bool:
+    def play(self, track_or_query: str = "", source: str = "auto") -> bool:
         if track_or_query.strip():
             self.current_track = track_or_query.strip()
         elif not self.current_track:
@@ -241,6 +413,12 @@ class MusicTool:
                 "required": False,
                 "max_len": 100,
             },
+            "source": {
+                "type": "str",
+                "required": False,
+                "default": "auto",
+                "enum": ["auto", "local", "youtube", "transport"],
+            },
         },
     }
     permissions: ClassVar[list[str]] = ["media.playback"]
@@ -265,12 +443,22 @@ class MusicTool:
         except Exception:  # noqa: BLE001
             return False
 
+    def is_side_effecting(self, arguments: dict[str, Any]) -> bool:
+        return arguments.get("action") != "status"
+
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         action = validated_args["action"]
 
         if action == "play":
             query = validated_args.get("query", "")
-            if not self.service.play(query):
+            source = validated_args.get("source", "auto")
+            if source == "youtube" and (not context.internet_available or not context.network_access_allowed):
+                msg = "No puedo abrir YouTube porque el acceso a Internet está deshabilitado."
+                return ToolResult(
+                    success=False, tool_name=self.name, status_code="NETWORK_DISABLED",
+                    message=msg, summary=msg, error_code=ErrorCode.TOOL_UNAVAILABLE,
+                )
+            if not self.service.play(query, source=source):
                 status = self.service.get_status()
                 unsupported_query = bool(
                     query.strip()

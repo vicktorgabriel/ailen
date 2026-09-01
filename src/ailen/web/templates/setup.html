@@ -1,0 +1,52 @@
+<div class="page-header">
+  <div>
+    <h1 class="page-title">🚀 Asistente de Configuración Inicial (Setup Wizard)</h1>
+    <p class="page-lede">Paso a paso guiado para dejar a AILÉN 100% operativa en este equipo.</p>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div style="display: flex; gap: 1rem; align-items: center; width: 100%; justify-content: space-between;">
+      <span class="status-pill ok" id="wizard-step-badge">Paso 1 de 4</span>
+      <div style="display: flex; gap: 0.5rem; font-size: 0.82rem; color: var(--fg-muted);">
+        <strong style="color: var(--brand-primary);">1. Hardware</strong> ➔
+        <span>2. Voz & Mic</span> ➔
+        <span>3. Identidad</span> ➔
+        <span>4. Finalizar</span>
+      </div>
+    </div>
+  </div>
+  <div class="card-body">
+    <!-- Paso 1: Detección Hardware -->
+    <div id="wizard-step-1" class="wizard-step-content">
+      <h2 style="font-size: 1.15rem; color: var(--fg-primary); margin-bottom: 0.5rem;">Paso 1: Detección y Calibración de Hardware</h2>
+      <p style="color: var(--fg-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+        AILÉN analizó los componentes de esta computadora para sugerir el perfil de inferencia con menor latencia y mejor consumo:
+      </p>
+
+      <ul class="kv-list" style="margin-bottom: 1rem;">
+        <li class="kv-item">
+          <span class="kv-key">Procesador (CPU)</span>
+          <span class="kv-val">{{ cpu_name }} ({{ cpu_cores }} hilos)</span>
+        </li>
+        <li class="kv-item">
+          <span class="kv-key">Memoria RAM</span>
+          <span class="kv-val">{{ ram_total_mb }} MB</span>
+        </li>
+        <li class="kv-item">
+          <span class="kv-key">Perfil Sugerido</span>
+          <span class="kv-val" style="color: var(--brand-primary); font-weight: 700;">{{ rec_profile }}</span>
+        </li>
+      </ul>
+
+      <div class="notice warn">
+        <span>Este perfil es una recomendación de capacidad, no una certificación. El instalador debe generar un ProvisioningPlan y sólo ofrecer un modelo local calificado para esta clase de hardware, con margen para voz, rostro y sistema. Si no existe, propondrá LAN o remoto sin descargar pesos automáticamente.</span>
+      </div>
+    </div>
+  </div>
+  <div class="card-footer" style="justify-content: flex-end; gap: 0.75rem;">
+    <a href="/audio" class="btn btn-secondary">Saltar al Panel</a>
+    <a href="/audio" class="btn btn-primary">Siguiente: Calibrar Voz & Sonido ➔</a>
+  </div>
+</div>

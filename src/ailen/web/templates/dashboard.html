@@ -1,17 +1,173 @@
-<section class="cards">
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Overview del Asistente</h1>
+    <p class="page-lede">Estado general de salud, latencias de turno en vivo y telemetría de hardware.</p>
+  </div>
+  <div class="header-actions">
+    <a href="/audio" class="btn btn-secondary btn-sm">🎙️ Probar Micrófono</a>
+    <a href="/diagnostico" class="btn btn-primary btn-sm">🩺 Doctor de Sistema</a>
+  </div>
+</div>
+
+<!-- Tarjetas Resumen Principales -->
+<div class="grid grid-cols-3">
+  <!-- Tarjeta 1: Estado General -->
   <article class="card">
-    <h2>Estado</h2>
-    <p class="big" id="assistant-state">{{ assistant_state }}</p>
-    <p class="muted">Perfil {{ profile }} · uptime {{ uptime }}</p>
+    <div class="card-header">
+      <h2 class="card-title">
+        <span class="status-dot status-{{ health_class }}" id="health-overall-dot"></span>
+        <span>Estado Operativo</span>
+      </h2>
+      <span class="status-pill {{ health_class }}" id="health-overall">{{ health_overall }}</span>
+    </div>
+    <div class="card-body">
+      <div class="metric-box">
+        <span class="metric-big" id="assistant-state">{{ assistant_state }}</span>
+        <div class="metric-meta">
+          <span>Nodo <strong>{{ node_id }}</strong> ({{ profile }})</span>
+          <span>·</span>
+          <span>Uptime: <strong id="uptime-val">{{ uptime }}</strong></span>
+        </div>
+      </div>
+      <ul class="kv-list" id="health-components">
+        {{ raw:health_components }}
+      </ul>
+    </div>
+    <div class="card-footer">
+      <span>Modo Social: <strong>{{ social_mode }}</strong></span>
+      <a href="/personalidad" class="text-secondary" style="color: var(--brand-primary); text-decoration: none;">Ajustar ➔</a>
+    </div>
   </article>
+
+  <!-- Tarjeta 2: Percepción & Motores -->
   <article class="card">
-    <h2>Salud general</h2>
-    <p class="big status-{{ health_class }}" id="health-overall">{{ health_overall }}</p>
-    <ul class="kv" id="health-components">{{ raw:health_components }}</ul>
+    <div class="card-header">
+      <h2 class="card-title">
+        <span>🎙️ Motores de Voz & IA</span>
+      </h2>
+      <span class="status-pill ok">Activo</span>
+    </div>
+    <div class="card-body">
+      <ul class="kv-list">
+        <li class="kv-item">
+          <span class="kv-key">STT Transcripción</span>
+          <span class="kv-val">{{ stt_backend }}</span>
+        </li>
+        <li class="kv-item">
+          <span class="kv-key">TTS Síntesis</span>
+          <span class="kv-val">{{ tts_backend }}</span>
+        </li>
+        <li class="kv-item">
+          <span class="kv-key">LLM Principal</span>
+          <span class="kv-val">{{ llm_model }}</span>
+        </li>
+        <li class="kv-item">
+          <span class="kv-key">Cámara / Visión</span>
+          <span class="kv-val">{{ camera_status }}</span>
+        </li>
+        <li class="kv-item">
+          <span class="kv-key">Búsqueda Web</span>
+          <span class="kv-val">{{ web_status }}</span>
+        </li>
+      </ul>
+    </div>
+    <div class="card-footer">
+      <span>Enrutador: <strong>Adaptativo</strong></span>
+      <a href="/ia" style="color: var(--brand-primary); text-decoration: none;">Modelos ➔</a>
+    </div>
   </article>
+
+  <!-- Tarjeta 3: Servicios del Core -->
   <article class="card">
-    <h2>Servicios</h2>
-    <ul class="kv" id="services">{{ raw:services }}</ul>
+    <div class="card-header">
+      <h2 class="card-title">
+        <span>⚙️ Servicios del Sistema</span>
+      </h2>
+      <span class="badge-neutral" style="font-size: 0.75rem; color: var(--fg-muted);">systemd / bus</span>
+    </div>
+    <div class="card-body">
+      <ul class="kv-list" id="services">
+        {{ raw:services }}
+      </ul>
+    </div>
+    <div class="card-footer">
+      <span>Telemetría: <strong>SQLite Persistente</strong></span>
+      <a href="/diagnostico" style="color: var(--brand-primary); text-decoration: none;">Ver Logs ➔</a>
+    </div>
   </article>
-</section>
-<p class="muted">Datos del estado real del Core. Se actualizan cada 5 s vía <code>/api/status</code>.</p>
+</div>
+
+<!-- Waterfall de Latencia del Último Turno -->
+<div class="card">
+  <div class="card-header">
+    <div>
+      <h2 class="card-title">⏱️ Desglose de Latencia del Último Turno</h2>
+      <span class="card-subtitle">Tiempo total transcurrido desde la detección de habla hasta el primer byte de audio.</span>
+    </div>
+    <span class="metric-big" style="font-size: 1.3rem;" id="total-turn-latency">{{ total_latency }}</span>
+  </div>
+  <div class="card-body">
+    <div class="waterfall-container">
+      <div class="waterfall-track">
+        <div class="waterfall-segment segment-stt" style="width: {{ stt_pct }}%;" title="STT Transcripción ({{ stt_time }})">
+          STT {{ stt_time }}
+        </div>
+        <div class="waterfall-segment segment-resolver" style="width: {{ resolver_pct }}%;" title="Intent Resolver ({{ resolver_time }})">
+          {{ resolver_time }}
+        </div>
+        <div class="waterfall-segment segment-llm" style="width: {{ llm_pct }}%;" title="LLM Inferencia ({{ llm_time }})">
+          LLM {{ llm_time }}
+        </div>
+        <div class="waterfall-segment segment-tts" style="width: {{ tts_pct }}%;" title="TTS Síntesis ({{ tts_time }})">
+          TTS {{ tts_time }}
+        </div>
+      </div>
+      <div class="waterfall-legend">
+        <div class="legend-item">
+          <span class="legend-dot segment-stt"></span>
+          <span>STT (Vosk/Whisper): <strong>{{ stt_time }}</strong></span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-dot segment-resolver"></span>
+          <span>Resolver Determinista: <strong>{{ resolver_time }}</strong></span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-dot segment-llm"></span>
+          <span>Inferencia LLM: <strong>{{ llm_time }}</strong></span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-dot segment-tts"></span>
+          <span>TTS Primer Chunk (Piper): <strong>{{ tts_time }}</strong></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Última Interacción Conversacional -->
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">💬 Última Interacción Registrada</h2>
+    <span class="card-subtitle">Memoria conversacional reciente de Core</span>
+  </div>
+  <div class="card-body">
+    <div class="chat-preview-box">
+      <div class="chat-bubble user">
+        <div class="chat-bubble-avatar">👤</div>
+        <div class="chat-bubble-content">
+          <p>{{ last_user_message }}</p>
+        </div>
+      </div>
+      <div class="chat-bubble ailen">
+        <div class="chat-bubble-avatar">🔥</div>
+        <div class="chat-bubble-content">
+          <p>{{ last_assistant_message }}</p>
+          <div style="font-size: 0.72rem; color: var(--fg-muted); margin-top: 0.4rem;">
+            <span>Resolución: <strong>{{ last_resolution_source }}</strong></span> ·
+            <span>Privacidad: <strong>{{ last_privacy_level }}</strong></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

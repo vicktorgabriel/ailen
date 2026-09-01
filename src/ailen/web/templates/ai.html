@@ -1,0 +1,156 @@
+<div class="page-header">
+  <div>
+    <h1 class="page-title">IA &amp; Provider Manager</h1>
+    <p class="page-lede">Selección adaptativa entre inferencia local, LAN Brain y APIs remotas nombradas.</p>
+  </div>
+</div>
+
+<div class="notice info">
+  <span><strong>Privacidad:</strong> una API remota sólo puede recibir el turno actual saneado. Memoria, notas, herramientas, paths y secretos permanecen en Core.</span>
+</div>
+<div class="notice warn"><span>{{ restart_notice }}</span></div>
+
+<div class="card">
+  <div class="card-header"><h2 class="card-title">Selección actual</h2></div>
+  <div class="card-body">
+    <div class="form-grid">
+      <div><span class="form-help">Proveedor preferido</span><strong>{{ active_provider }}</strong></div>
+      <div><span class="form-help">Modelo seleccionado</span><strong>{{ active_model }}</strong></div>
+      <div><span class="form-help">RAM detectada</span><strong>{{ ram_total_mb }} MB</strong></div>
+    </div>
+    <p class="form-help">“Seleccionado” no significa “saludable”. El proveedor efectivo se registra por turno y un remoto sólo queda calificado mediante benchmark.</p>
+  </div>
+</div>
+
+<form method="post" action="/config" id="ai-config-form">
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="section" value="ai">
+
+  <section class="card">
+    <div class="card-header"><h2 class="card-title">Política de routing</h2></div>
+    <div class="card-body">
+      <label class="form-label" for="ai-provider">Proveedor preferido</label>
+      <select id="ai-provider" name="ai.provider">{{ raw:raw_provider_options }}</select>
+
+      <input type="hidden" name="__present.ai.allow_remote" value="1">
+      <label><input type="checkbox" name="ai.allow_remote" value="true"{{ chk_remote_allowed }}> Autorizar APIs remotas</label>
+
+      <input type="hidden" name="__present.ai.remote.enabled" value="1">
+      <label><input type="checkbox" name="ai.remote.enabled" value="true"{{ chk_remote_manager }}> Habilitar Provider Manager remoto</label>
+
+      <input type="hidden" name="__present.ai.allow_sanitized_external_prompts" value="1">
+      <label><input type="checkbox" name="ai.allow_sanitized_external_prompts" value="true"{{ chk_sanitized_external }}> Permitir sólo el turno actual saneado</label>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><h2 class="card-title">LLM local opcional</h2></div>
+    <div class="card-body">
+      <input type="hidden" name="__present.ai.local.enabled" value="1">
+      <label><input type="checkbox" name="ai.local.enabled" value="true"{{ chk_local }}> Habilitar runtime local explícitamente</label>
+      <div class="form-grid">
+        <label>Endpoint<input id="model-local-endpoint" type="text" name="ai.local.endpoint" value="{{ local_endpoint }}"></label>
+        <label>Modelo<input id="model-local" type="text" name="ai.local.model" value="{{ local_model }}"></label>
+        <label>Prioridad<input type="number" min="0" max="1000" name="ai.local.priority" value="{{ local_priority }}"></label>
+      </div>
+      <div class="input-row">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="loadModels('local','model-local')">Inventario local</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="testProvider('local')">Probar local</button>
+      </div>
+      <p class="form-help">Deshabilitado significa que AILEN no construye, precalienta ni consulta Ollama.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><h2 class="card-title">LAN Brain</h2></div>
+    <div class="card-body">
+      <input type="hidden" name="__present.ai.lan.enabled" value="1">
+      <label><input type="checkbox" name="ai.lan.enabled" value="true"{{ chk_lan }}> Habilitar nodo LAN confiable</label>
+      <div class="form-grid">
+        <label>Endpoint<input type="text" name="ai.lan.endpoint" value="{{ lan_endpoint }}"></label>
+        <label>Modelo<input type="text" name="ai.lan.model" value="{{ lan_model }}"></label>
+        <label>Prioridad<input type="number" min="0" max="1000" name="ai.lan.priority" value="{{ lan_priority }}"></label>
+      </div>
+    </div>
+  </section>
+
+  <h2 class="section-title">APIs remotas nombradas</h2>
+  <p class="form-help">Los presets definen protocolo y endpoint inicial, nunca un modelo vivo. Escribí el ID publicado por el proveedor o consultá su catálogo cuando esté soportado.</p>
+  <div class="grid grid-cols-2">{{ raw:raw_remote_provider_cards }}</div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">Guardar configuración de IA</button>
+  </div>
+</form>
+
+<div id="ai-alert" class="notice info" style="display:none"><span id="ai-alert-text"></span></div>
+
+<script>
+const csrfToken = '{{ csrf }}';
+
+async function postAi(path, fields) {
+  const body = new URLSearchParams({_csrf: csrfToken, ...fields});
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: body.toString()
+  });
+  const data = await response.json();
+  return {response, data};
+}
+
+function providerSuffix(routeId) {
+  return routeId.startsWith('remote:') ? routeId.slice(7) : routeId;
+}
+
+async function testProvider(routeId) {
+  const suffix = providerSuffix(routeId);
+  const target = document.getElementById('test-result-' + suffix);
+  if (target) target.textContent = 'Probando…';
+  const {data} = await postAi('/api/ai/test-provider', {provider: routeId});
+  if (target) {
+    target.textContent = data.ok
+      ? `OK · ${data.model || 'modelo'} · ${data.first_text_ms || data.latency_ms || '—'} ms primer texto`
+      : `Fallo · ${data.error_kind || data.error || 'sin respuesta'}`;
+  }
+}
+
+async function loadModels(routeId, inputId) {
+  const {data} = await postAi('/api/ai/models', {provider: routeId});
+  const input = document.getElementById(inputId);
+  if (data.models && data.models.length && input) {
+    const listId = inputId + '-catalog';
+    let list = document.getElementById(listId);
+    if (!list) {
+      list = document.createElement('datalist');
+      list.id = listId;
+      input.after(list);
+      input.setAttribute('list', listId);
+    }
+    list.innerHTML = '';
+    for (const model of data.models) {
+      const option = document.createElement('option');
+      option.value = model;
+      list.appendChild(option);
+    }
+  }
+  showAiAlert(data.ok ? `${data.catalog_source}: ${data.models.length} modelo(s)` : data.error);
+}
+
+async function saveProviderSecret(providerId) {
+  const input = document.getElementById('key-' + providerId);
+  if (!input || !input.value.trim()) return;
+  const {data} = await postAi('/api/ai/set-secret', {
+    provider: providerId,
+    secret_value: input.value.trim()
+  });
+  input.value = '';
+  showAiAlert(data.ok ? `Clave ${data.masked} guardada con permisos restringidos.` : data.error);
+}
+
+function showAiAlert(text) {
+  const box = document.getElementById('ai-alert');
+  document.getElementById('ai-alert-text').textContent = text || '';
+  box.style.display = 'block';
+}
+</script>

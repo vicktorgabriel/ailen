@@ -1,16 +1,24 @@
 """AILEN version management."""
 
+import re
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 from pathlib import Path
 
 
+def _semver_display(value: str) -> str:
+    """Normalize PEP 440 dev versions (0.4.0.dev0) to project display form."""
+    match = re.fullmatch(r"(\d+\.\d+\.\d+)\.dev(\d+)", value.strip())
+    if match:
+        return f"{match.group(1)}-dev.{match.group(2)}"
+    return value.strip()
+
+
 def get_version() -> str:
-    """Resolve the current AILEN version from VERSION file or fallback."""
-    # Try looking for VERSION relative to package root or repo root
+    """Resolve the current AILEN version from repo VERSION or installed metadata."""
     current_path = Path(__file__).resolve()
-    # Check parent dirs: src/ailen -> src -> repo root
     candidates = [
         current_path.parent.parent.parent / "VERSION",
-        current_path.parent / "VERSION",
         Path("VERSION"),
     ]
     for candidate in candidates:
@@ -21,7 +29,11 @@ def get_version() -> str:
                     return version_str
             except OSError:
                 pass
-    return "0.1.0-dev.0"
+
+    try:
+        return _semver_display(package_version("ailen"))
+    except PackageNotFoundError:
+        return "0.0.0-dev.0"
 
 
 __version__ = get_version()

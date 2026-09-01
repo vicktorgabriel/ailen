@@ -72,6 +72,9 @@ class NotesTool:
     def is_available(self) -> bool:
         return self.repository is not None
 
+    def is_side_effecting(self, arguments: dict[str, Any]) -> bool:
+        return arguments.get("action") in {"create", "add"}
+
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         del context
         repository = self.repository

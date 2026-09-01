@@ -61,6 +61,7 @@ class _Handler(BaseHTTPRequestHandler):
         request = WebRequest(
             method=self.command,
             path=parsed.path,
+            query=parsed.query,
             headers={k.lower(): v for k, v in self.headers.items()},
             body=body,
             remote_addr=self.client_address[0] if self.client_address else "unknown",
@@ -73,21 +74,27 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(response)
 
     def _send(self, response: WebResponse) -> None:
-        self.send_response(response.status)
-        self.send_header("Content-Type", response.content_type)
-        self.send_header("Content-Length", str(len(response.body)))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'")
-        if "Cache-Control" not in response.headers:
-            # HTML dinámico nunca cacheable; estáticos definen su propia política.
-            self.send_header("Cache-Control", "no-store")
-        for key, value in response.headers.items():
-            self.send_header(key, value)
-        self.end_headers()
-        if response.body and self.command != "HEAD":
-            self.wfile.write(response.body)
+        try:
+            self.send_response(response.status)
+            self.send_header("Content-Type", response.content_type)
+            self.send_header("Content-Length", str(len(response.body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            csp = "default-src 'self'" if self.path.split("?")[0] == "/login" else "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+            self.send_header("Content-Security-Policy", csp)
+            if "Cache-Control" not in response.headers:
+                # HTML dinámico nunca cacheable; estáticos definen su propia política.
+                self.send_header("Cache-Control", "no-store")
+            for key, value in response.headers.items():
+                self.send_header(key, value)
+            self.end_headers()
+            if response.body and self.command != "HEAD":
+                self.wfile.write(response.body)
+        except (BrokenPipeError, ConnectionResetError):
+            # Normal cuando el navegador recarga, navega a otra página o cancela
+            # un fetch antes de que termine la respuesta. No es un fallo de AILÉN.
+            logger.debug("Cliente cerró la conexión durante %s %s", self.command, self.path)
 
     do_GET = _dispatch
     do_POST = _dispatch

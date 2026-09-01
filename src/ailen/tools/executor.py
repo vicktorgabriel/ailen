@@ -36,6 +36,25 @@ class ToolExecutor:
         self.event_bus = event_bus
         self.repository = repository
 
+    def is_side_effecting(self, tool_name: str, args: dict[str, Any] | None = None) -> bool:
+        """Ask the allowlisted tool whether a request mutates state.
+
+        Unknown tools, missing declarations and classifier failures are
+        treated as side-effecting so voice safety fails closed.
+        """
+        tool = self.registry.get(tool_name)
+        if tool is None:
+            return True
+        classifier = getattr(tool, "is_side_effecting", None)
+        if not callable(classifier):
+            logger.warning("Tool '%s' has no side-effect declaration; failing closed", tool_name)
+            return True
+        try:
+            return bool(classifier(dict(args or {})))
+        except Exception:
+            logger.exception("Tool '%s' side-effect declaration failed; failing closed", tool_name)
+            return True
+
     def execute(
         self,
         tool_name: str,

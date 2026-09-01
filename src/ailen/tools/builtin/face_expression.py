@@ -3,7 +3,7 @@
 from typing import Any, ClassVar
 
 from ailen.domain.enums import ErrorCode, PrivacyLevel, SocialMode
-from ailen.face.contracts import FACE_EXPRESSIONS, FaceController
+from ailen.face.contracts import FaceController
 from ailen.tools.contracts import ToolContext, ToolResult
 
 
@@ -15,21 +15,6 @@ class FaceExpressionTool:
         "sonreí", "sonrei", "guiñá", "guina", "expresión", "expresion",
         "alegre", "curiosa", "sorprendida", "confundida",
     )
-    schema: ClassVar[dict[str, Any]] = {
-        "properties": {
-            "expression": {
-                "type": "str",
-                "required": True,
-                "enum": list(FACE_EXPRESSIONS),
-            },
-            "duration_seconds": {
-                "type": "float",
-                "default": 5.0,
-                "min": 0.5,
-                "max": 10.0,
-            },
-        }
-    }
     permissions: ClassVar[list[str]] = ["display.expression"]
     allowed_modes: ClassVar[set[SocialMode]] = set(SocialMode)
     privacy_level = PrivacyLevel.PUBLIC
@@ -39,6 +24,22 @@ class FaceExpressionTool:
 
     def __init__(self, controller: FaceController) -> None:
         self.controller = controller
+        self.allowed_expressions = controller.available_expressions
+        self.schema: dict[str, Any] = {
+            "properties": {
+                "expression": {
+                    "type": "str",
+                    "required": True,
+                    "enum": list(self.allowed_expressions),
+                },
+                "duration_seconds": {
+                    "type": "float",
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 10.0,
+                },
+            }
+        }
 
     @property
     def is_available(self) -> bool:
@@ -49,6 +50,10 @@ class FaceExpressionTool:
             return any(item.key == "face.expression" and item.available for item in provider())
         except Exception:  # noqa: BLE001
             return False
+
+    def is_side_effecting(self, arguments: dict[str, Any]) -> bool:
+        del arguments
+        return True
 
     def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
         del context
@@ -62,27 +67,22 @@ class FaceExpressionTool:
                 error_code=ErrorCode.TOOL_UNAVAILABLE,
             )
         expression = str(validated_args["expression"])
-        duration_seconds = float(validated_args.get("duration_seconds", 5.0))
+        current_allowed = self.controller.available_expressions
+        if expression not in current_allowed:
+            return ToolResult(
+                success=False,
+                tool_name=self.name,
+                status_code="TOOL_ARGS_INVALID",
+                message="Esa expresión no está disponible en el rostro activo.",
+                error_code=ErrorCode.TOOL_ARGS_INVALID,
+            )
+        duration_seconds = float(validated_args.get("duration_seconds", 0.0))
         self.controller.set_expression(expression, duration_seconds)
-        labels = {
-            "neutral": "neutral",
-            "happy": "alegre",
-            "curious": "curiosa",
-            "surprised": "sorprendida",
-            "confused": "confundida",
-            "wink": "guiñando",
-            "focused": "concentrada",
-            "sad": "triste",
-            "skeptical": "escéptica",
-            "excited": "entusiasmada",
-            "playful": "juguetona",
-        }
-        msg = f"Listo, expresión {labels[expression]}."
         return ToolResult(
             success=True,
             tool_name=self.name,
             status_code="OK",
-            message=msg,
+            message="Listo.",
             data={"expression": expression, "duration_seconds": duration_seconds},
             requires_llm_summary=False,
         )
