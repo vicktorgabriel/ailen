@@ -9,8 +9,9 @@ import queue
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, replace
+from itertools import chain
 
 from ailen.audio.contracts import (
     AudioFrameProcessor,
@@ -19,6 +20,7 @@ from ailen.audio.contracts import (
     AudioSegment,
     SpeechOutput,
     SpeechRequest,
+    StagedAudioFrameProcessor,
     StreamingTtsBackend,
     SttBackend,
     Transcript,
@@ -47,6 +49,13 @@ logger = logging.getLogger(__name__)
 class _ReadySpeechChunk:
     output: SpeechOutput
     ready_monotonic: float
+
+
+@dataclass(frozen=True)
+class _SpeechGeneration:
+    generation_id: int
+    turn_id: str
+    cancel_event: threading.Event
 
 
 class AudioInteractionCoordinator:
@@ -107,6 +116,13 @@ class AudioInteractionCoordinator:
         self._interruption_triggered = False
         self._speech_cancel = threading.Event()
         self._last_speech_interrupted = False
+        self._speech_lifecycle_lock = threading.RLock()
+        self._tts_synthesis_lock = threading.Lock()
+        self._tts_drain_lock = threading.Lock()
+        self._tts_drain_threads: set[int] = set()
+        self._speech_generation_sequence = 0
+        self._active_speech_generation: _SpeechGeneration | None = None
+        self._active_speech_running = False
 
         self._running = False
         self._loop_thread: threading.Thread | None = None
@@ -139,6 +155,105 @@ class AudioInteractionCoordinator:
     def last_speech_interrupted(self) -> bool:
         """Whether the most recent spoken response was stopped by user barge-in."""
         return self._last_speech_interrupted
+
+    @property
+    def speech_cancelled(self) -> bool:
+        """Whether barge-in cancelled the active speech/generation turn."""
+        with self._speech_lifecycle_lock:
+            return self._speech_cancel.is_set()
+
+    @property
+    def active_tts_drains(self) -> int:
+        """Number of TTS workers still draining an uncancellable backend call."""
+        with self._tts_drain_lock:
+            return len(self._tts_drain_threads)
+
+    def cancel_active_speech(self, *, reason: str = "cancelled") -> bool:
+        """Cancel playback/logical generation without claiming ONNX was aborted."""
+        with self._speech_lifecycle_lock:
+            generation = self._active_speech_generation
+            if generation is None or not self._active_speech_running:
+                generation = None
+                # Preserve the coordinator-level cancellation signal for
+                # playback that was already marked SPEAKING by a lower layer
+                # before a generation record existed. A future generation
+                # replaces this alias with its own isolated event.
+                self._speech_cancel.set()
+            else:
+                generation.cancel_event.set()
+        if generation is None:
+            # Barge-in can be exercised while an output process was started by
+            # a lower layer before the speech lifecycle became observable.
+            self.audio_output.stop()
+            return False
+        requested = self._clock()
+        self.audio_output.stop()
+        stopped = self._clock()
+        logger.info(
+            "audio_timing turn_id=%s speech_generation=%d stage=playback_stop "
+            "timestamp_monotonic=%.6f stop_latency_ms=%.1f reason=%s",
+            generation.turn_id,
+            generation.generation_id,
+            stopped,
+            (stopped - requested) * 1000.0,
+            reason,
+        )
+        logger.info(
+            "audio_timing turn_id=%s speech_generation=%d stage=generation_stop "
+            "timestamp_monotonic=%.6f logical_only=true reason=%s",
+            generation.turn_id,
+            generation.generation_id,
+            requested,
+            reason,
+        )
+        return True
+
+    def _begin_speech_generation(self, turn_id: str | None) -> _SpeechGeneration:
+        previous: _SpeechGeneration | None = None
+        with self._speech_lifecycle_lock:
+            if self._active_speech_running and self._active_speech_generation is not None:
+                previous = self._active_speech_generation
+                previous.cancel_event.set()
+            self._speech_generation_sequence += 1
+            generation = _SpeechGeneration(
+                generation_id=self._speech_generation_sequence,
+                turn_id=turn_id or f"speech-{self._speech_generation_sequence}",
+                cancel_event=threading.Event(),
+            )
+            self._active_speech_generation = generation
+            self._active_speech_running = True
+            # Compatibility for existing audio/barge-in observers. Workers
+            # always capture their generation-local event and never read this
+            # alias after a newer turn begins.
+            self._speech_cancel = generation.cancel_event
+        if previous is not None:
+            try:
+                self.audio_output.stop()
+            except Exception as exc:  # noqa: BLE001
+                self._publish_audio_error("supersede_playback_stop", exc)
+            logger.info(
+                "audio_timing turn_id=%s speech_generation=%d stage=generation_stop "
+                "timestamp_monotonic=%.6f logical_only=true reason=superseded",
+                previous.turn_id,
+                previous.generation_id,
+                self._clock(),
+            )
+        return generation
+
+    def _is_current_speech_generation(self, generation_id: int) -> bool:
+        with self._speech_lifecycle_lock:
+            return bool(
+                self._active_speech_generation is not None
+                and self._active_speech_generation.generation_id == generation_id
+            )
+
+    def _finish_speech_generation(self, generation_id: int) -> None:
+        with self._speech_lifecycle_lock:
+            if (
+                self._active_speech_generation is not None
+                and self._active_speech_generation.generation_id == generation_id
+            ):
+                self._active_speech_running = False
 
     @property
     def last_transcript(self) -> Transcript | None:
@@ -201,16 +316,27 @@ class AudioInteractionCoordinator:
         if raw_frame is None:
             return None, None
 
+        self._observe_rms("mic_raw", compute_pcm_rms(raw_frame))
         frame_for_processing = raw_frame
         if self.frame_processor is not None:
             try:
-                frame_for_processing = self.frame_processor.process(raw_frame)
+                if isinstance(self.frame_processor, StagedAudioFrameProcessor):
+                    stages = self.frame_processor.process_with_stages(raw_frame)
+                    if not stages:
+                        raise ValueError("staged audio processor returned no frames")
+                    frame_for_processing = stages[-1][1]
+                    for stage_name, stage_frame in stages[1:]:
+                        self._observe_rms(
+                            f"mic_after_{stage_name}",
+                            compute_pcm_rms(stage_frame),
+                        )
+                else:
+                    frame_for_processing = self.frame_processor.process(raw_frame)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Audio frame cleanup failed; using raw PCM: %s", exc)
                 self._publish_audio_error("frame_processor", exc)
                 frame_for_processing = raw_frame
-            self._observe_rms("mic_raw", compute_pcm_rms(frame_for_processing))
-            self._observe_rms("mic_clean", compute_pcm_rms(frame_for_processing))
+        self._observe_rms("mic_clean", compute_pcm_rms(frame_for_processing))
 
         # Normal STT remains isolated from speaker output, but cleaned microphone
         # audio can still request a barge-in while TTS is playing.
@@ -341,9 +467,10 @@ class AudioInteractionCoordinator:
         self._interruption_triggered = True
         self._last_speech_interrupted = True
         self._pending_interruption_frames.extend(self._interruption_buffer)
-        self._speech_cancel.set()
+        with self._speech_lifecycle_lock:
+            interrupted_generation = self._active_speech_generation
         stop_started = self._clock()
-        self.audio_output.stop()
+        logical_generation_cancelled = self.cancel_active_speech(reason="barge_in")
         stop_ended = self._clock()
         logger.info(
             "audio_timing stage=barge_in_trigger timestamp_monotonic=%.6f "
@@ -361,6 +488,20 @@ class AudioInteractionCoordinator:
                 payload={
                     "rms": round(rms, 4),
                     "threshold": round(effective_threshold, 4),
+                    "turn_id": (
+                        interrupted_generation.turn_id
+                        if interrupted_generation is not None
+                        else None
+                    ),
+                    "speech_generation": (
+                        interrupted_generation.generation_id
+                        if interrupted_generation is not None
+                        else None
+                    ),
+                    "buffered_frames": len(self._pending_interruption_frames),
+                    "playback_stop_ms": (stop_ended - stop_started) * 1000.0,
+                    "logical_generation_cancelled": logical_generation_cancelled,
+                    "synthesizer_draining": self.active_tts_drains > 0,
                 },
             )
 
@@ -450,7 +591,11 @@ class AudioInteractionCoordinator:
             self.event_bus.create_and_publish(
                 event_type=EventType.VOICE_ENDED,
                 source="audio_coordinator",
-                payload={"duration_ms": segment.duration_ms},
+                payload={
+                    "duration_ms": segment.duration_ms,
+                    "utterance_id": utterance_id,
+                    "audio_end_monotonic": audio_ended,
+                },
             )
             self.event_bus.create_and_publish(
                 event_type=EventType.SPEECH_CAPTURED,
@@ -459,6 +604,9 @@ class AudioInteractionCoordinator:
                     "duration_ms": segment.duration_ms,
                     "sample_rate": segment.sample_rate,
                     "channels": segment.channels,
+                    "utterance_id": utterance_id,
+                    "frame_count": round(segment.duration_ms / self.collector.frame_ms),
+                    "truncated": segment.truncated,
                 },
             )
 
@@ -485,6 +633,13 @@ class AudioInteractionCoordinator:
             logger.exception("STT backend failed")
             self._publish_audio_error("stt", exc)
             transcript = Transcript(text="", language="es", confidence=None, latency_ms=0.0)
+        transcript = replace(
+            transcript,
+            audio_duration_ms=segment.duration_ms,
+            utterance_id=utterance_id,
+            interrupted=self._interruption_triggered,
+            truncated=segment.truncated,
+        )
         stt_ended = self._clock()
         logger.info(
             "audio_timing utterance_id=%s stage=stt_end timestamp_monotonic=%.6f "
@@ -506,9 +661,18 @@ class AudioInteractionCoordinator:
                 source="audio_coordinator",
                 payload={
                     "text": transcript.text,
+                    "language": transcript.language,
                     "confidence": transcript.confidence,
                     "latency_ms": transcript.latency_ms,
+                    "engine": transcript.engine,
+                    "audio_duration_ms": transcript.audio_duration_ms,
                     "utterance_id": utterance_id,
+                    "interrupted": transcript.interrupted,
+                    "truncated": transcript.truncated,
+                    "alternatives": [
+                        {"text": item.text, "confidence": item.confidence}
+                        for item in transcript.alternatives
+                    ],
                     "audio_end_monotonic": audio_ended,
                 },
             )
@@ -539,17 +703,47 @@ class AudioInteractionCoordinator:
         volume: float = 1.0,
         emotion: str = "neutral",
         expressiveness: float = 0.6,
+        turn_id: str | None = None,
     ) -> SpeechOutput:
-        """Synthesize and play speech while blocking input and animating mouth.
+        """Synthesize and play one text as a cancelable speech turn."""
+        if not text.strip():
+            return SpeechOutput(duration_ms=0.0)
+        speech_rate = self.default_speech_rate if rate is None else rate
+        return self.speak_requests(
+            (
+                SpeechRequest(
+                    text=text,
+                    voice_id=voice_id,
+                    rate=speech_rate,
+                    volume=volume,
+                    emotion=emotion,
+                    expressiveness=max(0.0, min(1.0, expressiveness)),
+                ),
+            ),
+            turn_id=turn_id,
+        )
+
+    def speak_requests(
+        self,
+        requests: Iterable[SpeechRequest],
+        *,
+        turn_id: str | None = None,
+    ) -> SpeechOutput:
+        """Synthesize incremental text requests as one cancelable speech turn.
 
         If the backend exposes StreamingTtsBackend, sentence PCM chunks are
         played as they become available. SPEECH_STARTED means the first playable
-        PCM buffer is about to be submitted to the audio output backend.
+        PCM buffer is about to be submitted. The iterable may block while the
+        LLM produces its next phrase; only one decoded PCM chunk is prefetched.
         """
-        if not text.strip():
+        request_iterator = (request for request in requests if request.text.strip())
+        try:
+            first_request = next(request_iterator)
+        except StopIteration:
             return SpeechOutput(duration_ms=0.0)
 
-        self._speech_cancel.clear()
+        generation = self._begin_speech_generation(turn_id)
+        turn_cancel = generation.cancel_event
         self._last_speech_interrupted = False
         self._interruption_voice_frames = 0
         self._interruption_buffer.clear()
@@ -560,24 +754,22 @@ class AudioInteractionCoordinator:
         if self.interruption_vad is not None:
             self.interruption_vad.reset()
         self._playback_started = False
+
+        text = first_request.text
+        voice_id = first_request.voice_id
         speech_requested = self._clock()
         logger.info(
-            "audio_timing stage=tts_request timestamp_monotonic=%.6f text_chars=%d",
+            "audio_timing turn_id=%s speech_generation=%d stage=tts_request "
+            "timestamp_monotonic=%.6f text_chars=%d",
+            generation.turn_id,
+            generation.generation_id,
             speech_requested,
             len(text),
         )
         self.turn_gate.start_speaking()
         prev_state = self.state_manager.current_state if self.state_manager else AssistantState.IDLE
         restore_state = prev_state
-        speech_rate = self.default_speech_rate if rate is None else rate
-        req = SpeechRequest(
-            text=text,
-            voice_id=voice_id,
-            rate=speech_rate,
-            volume=volume,
-            emotion=emotion,
-            expressiveness=max(0.0, min(1.0, expressiveness)),
-        )
+        all_requests = chain((first_request,), request_iterator)
         output = SpeechOutput(duration_ms=0.0)
         success = False
         speech_started = False
@@ -586,11 +778,18 @@ class AudioInteractionCoordinator:
             nonlocal speech_started
             if speech_started:
                 return
+            if turn_cancel.is_set() or not self._is_current_speech_generation(
+                generation.generation_id
+            ):
+                return
             speech_started = True
             self._playback_started = True
             logger.info(
-                "audio_timing stage=first_pcm_submit timestamp_monotonic=%.6f "
+                "audio_timing turn_id=%s speech_generation=%d stage=first_pcm_submit "
+                "timestamp_monotonic=%.6f "
                 "request_to_pcm_ms=%.1f chunk_latency_ms=%.1f",
+                generation.turn_id,
+                generation.generation_id,
                 self._clock(),
                 (self._clock() - speech_requested) * 1000.0,
                 first_output.latency_ms,
@@ -610,6 +809,12 @@ class AudioInteractionCoordinator:
                         "text_len": len(text),
                         "voice_id": voice_id,
                         "first_audio_latency_ms": first_output.latency_ms,
+                        "request_to_pcm_ms": (
+                            self._clock() - speech_requested
+                        ) * 1000.0,
+                        "turn_id": generation.turn_id,
+                        "speech_generation": generation.generation_id,
+                        "expression_requested": first_request.emotion,
                     },
                 )
 
@@ -619,12 +824,19 @@ class AudioInteractionCoordinator:
             gap_ms: float | None,
             prefetch_lead_ms: float | None = None,
         ) -> None:
-            if not chunk.audio_data:
+            if (
+                not chunk.audio_data
+                or turn_cancel.is_set()
+                or not self._is_current_speech_generation(generation.generation_id)
+            ):
                 return
             logger.info(
-                "audio_timing stage=tts_chunk_ready timestamp_monotonic=%.6f "
+                "audio_timing turn_id=%s speech_generation=%d stage=tts_chunk_ready "
+                "timestamp_monotonic=%.6f "
                 "chunk=%d synthesis_latency_ms=%.1f audio_duration_ms=%.1f "
                 "gap_ms=%s prefetch_lead_ms=%s",
+                generation.turn_id,
+                generation.generation_id,
                 self._clock(),
                 chunk_index,
                 chunk.latency_ms,
@@ -637,6 +849,10 @@ class AudioInteractionCoordinator:
                 ),
             )
             start_playback(chunk)
+            if turn_cancel.is_set() or not self._is_current_speech_generation(
+                generation.generation_id
+            ):
+                return
             envelope_stop = threading.Event()
             envelope_thread: threading.Thread | None = None
             face_controller = self.face_controller
@@ -648,7 +864,7 @@ class AudioInteractionCoordinator:
 
                 def animate_speech_envelope() -> None:
                     for offset in range(0, len(pcm), window_bytes):
-                        if envelope_stop.is_set() or self._speech_cancel.is_set():
+                        if envelope_stop.is_set() or turn_cancel.is_set():
                             break
                         window = pcm[offset : offset + window_bytes]
                         rms = compute_pcm_rms(window)
@@ -668,7 +884,7 @@ class AudioInteractionCoordinator:
                     chunk.audio_data,
                     sample_rate=chunk.sample_rate,
                     channels=chunk.channels,
-                    cancel_event=self._speech_cancel,
+                    cancel_event=turn_cancel,
                 )
             finally:
                 envelope_stop.set()
@@ -677,156 +893,250 @@ class AudioInteractionCoordinator:
                 if face_controller:
                     face_controller.set_speech_level(0.0)
             logger.info(
-                "audio_timing stage=tts_chunk_played timestamp_monotonic=%.6f chunk=%d",
+                "audio_timing turn_id=%s speech_generation=%d stage=tts_chunk_played "
+                "timestamp_monotonic=%.6f chunk=%d",
+                generation.turn_id,
+                generation.generation_id,
                 self._clock(),
                 chunk_index,
             )
 
         try:
-            if isinstance(self.tts, StreamingTtsBackend):
-                streaming_tts = self.tts
-                combined = bytearray()
-                total_duration_ms = 0.0
-                first_audio_latency_ms = 0.0
-                sample_rate = 22050
-                channels = 1
-                stream_format: tuple[int, int] | None = None
-                combined_compatible = True
-                previous_playback_ended: float | None = None
-                ready_chunks: queue.Queue[object] = queue.Queue(maxsize=1)
-                synthesis_stop = threading.Event()
-                stream_end = object()
+            combined = bytearray()
+            total_duration_ms = 0.0
+            first_audio_latency_ms = 0.0
+            sample_rate = 22050
+            channels = 1
+            stream_format: tuple[int, int] | None = None
+            combined_compatible = True
+            previous_playback_ended: float | None = None
+            ready_chunks: queue.Queue[object] = queue.Queue(maxsize=1)
+            synthesis_stop = threading.Event()
+            stream_end = object()
 
-                def synthesis_cancelled() -> bool:
-                    return synthesis_stop.is_set() or self._speech_cancel.is_set()
+            def synthesis_cancelled() -> bool:
+                return bool(
+                    synthesis_stop.is_set()
+                    or turn_cancel.is_set()
+                    or not self._is_current_speech_generation(generation.generation_id)
+                )
 
-                def queue_prefetch(item: object) -> bool:
-                    while not synthesis_cancelled():
-                        try:
-                            ready_chunks.put(item, timeout=0.05)
-                            return True
-                        except queue.Full:
-                            continue
-                    return False
-
-                def synthesize_ahead() -> None:
+            def queue_prefetch(item: object) -> bool:
+                while not synthesis_cancelled():
                     try:
-                        chunks = iter(streaming_tts.synthesize_chunks(req))
-                        while not synthesis_cancelled():
-                            try:
-                                chunk = next(chunks)
-                            except StopIteration:
-                                queue_prefetch(stream_end)
-                                return
-                            if synthesis_cancelled():
-                                logger.info(
-                                    "audio_timing stage=tts_prefetch_discarded "
-                                    "timestamp_monotonic=%.6f",
-                                    self._clock(),
-                                )
-                                return
-                            if not queue_prefetch(
-                                _ReadySpeechChunk(
-                                    output=chunk,
-                                    ready_monotonic=self._clock(),
-                                )
-                            ):
-                                return
-                    except Exception as exc:  # noqa: BLE001
-                        if not synthesis_cancelled():
-                            queue_prefetch(exc)
+                        ready_chunks.put(item, timeout=0.05)
+                        return True
+                    except queue.Full:
+                        continue
+                return False
 
-                synthesis_thread = threading.Thread(
-                    target=synthesize_ahead,
-                    name="ailen-tts-prefetch",
-                    daemon=True,
-                )
-                synthesis_thread.start()
-                chunk_index = 0
+            def synthesize_ahead() -> None:
+                thread_key = id(threading.current_thread())
+                with self._tts_drain_lock:
+                    self._tts_drain_threads.add(thread_key)
+                drain_published = False
+
+                def publish_drained() -> None:
+                    nonlocal drain_published
+                    if drain_published:
+                        return
+                    drain_published = True
+                    cancelled = turn_cancel.is_set()
+                    stale = not self._is_current_speech_generation(
+                        generation.generation_id
+                    )
+                    logger.info(
+                        "audio_timing turn_id=%s speech_generation=%d "
+                        "stage=stale_tts_drain_complete timestamp_monotonic=%.6f "
+                        "cancelled=%s stale=%s",
+                        generation.turn_id,
+                        generation.generation_id,
+                        self._clock(),
+                        cancelled,
+                        stale,
+                    )
+                    try:
+                        if self.event_bus:
+                            self.event_bus.create_and_publish(
+                                event_type=EventType.SPEECH_SYNTHESIS_DRAINED,
+                                source="audio_coordinator",
+                                payload={
+                                    "turn_id": generation.turn_id,
+                                    "speech_generation": generation.generation_id,
+                                    "cancelled": cancelled,
+                                    "stale": stale,
+                                },
+                            )
+                    except Exception:
+                        logger.exception("Failed to publish TTS drain event")
+                    finally:
+                        # Observers must see the drain event before the public
+                        # count reaches zero.
+                        with self._tts_drain_lock:
+                            self._tts_drain_threads.discard(thread_key)
                 try:
-                    while not self._speech_cancel.is_set():
+                    for request_index, request in enumerate(all_requests, start=1):
+                        if synthesis_cancelled():
+                            return
+                        logger.info(
+                            "audio_timing turn_id=%s speech_generation=%d "
+                            "stage=tts_phrase_request timestamp_monotonic=%.6f "
+                            "phrase=%d text_chars=%d emotion=%s",
+                            generation.turn_id,
+                            generation.generation_id,
+                            self._clock(),
+                            request_index,
+                            len(request.text),
+                            request.emotion,
+                        )
+                        acquired = False
+                        while not synthesis_cancelled():
+                            acquired = self._tts_synthesis_lock.acquire(timeout=0.05)
+                            if acquired:
+                                break
+                        if not acquired:
+                            return
                         try:
-                            item = ready_chunks.get(timeout=0.05)
-                        except queue.Empty:
-                            continue
-                        if item is stream_end:
-                            break
-                        if isinstance(item, Exception):
-                            raise item
-                        if not isinstance(item, _ReadySpeechChunk):
-                            raise TypeError("Unexpected TTS prefetch result")
-
-                        chunk = item.output
-                        if not chunk.audio_data:
-                            continue
-                        chunk_index += 1
-                        if not combined:
-                            first_audio_latency_ms = chunk.latency_ms
-                        if previous_playback_ended is None:
-                            gap_ms = None
-                            prefetch_lead_ms = None
-                        else:
-                            gap_ms = max(
-                                0.0,
-                                (item.ready_monotonic - previous_playback_ended) * 1000.0,
-                            )
-                            prefetch_lead_ms = max(
-                                0.0,
-                                (previous_playback_ended - item.ready_monotonic) * 1000.0,
-                            )
-                        play_chunk(chunk, chunk_index, gap_ms, prefetch_lead_ms)
-                        previous_playback_ended = self._clock()
-                        if self._speech_cancel.is_set():
-                            break
-                        chunk_format = (chunk.sample_rate, chunk.channels)
-                        if stream_format is None:
-                            stream_format = chunk_format
-                            sample_rate, channels = chunk_format
-                        elif chunk_format != stream_format:
-                            combined_compatible = False
-                        if combined_compatible:
-                            combined.extend(chunk.audio_data)
-                        total_duration_ms += chunk.duration_ms
+                            outputs: Iterable[SpeechOutput]
+                            if isinstance(self.tts, StreamingTtsBackend):
+                                outputs = self.tts.synthesize_chunks(request)
+                            else:
+                                outputs = (self.tts.synthesize(request),)
+                            for chunk in outputs:
+                                if synthesis_cancelled():
+                                    logger.info(
+                                        "audio_timing turn_id=%s speech_generation=%d "
+                                        "stage=tts_prefetch_discarded "
+                                        "timestamp_monotonic=%.6f",
+                                        generation.turn_id,
+                                        generation.generation_id,
+                                        self._clock(),
+                                    )
+                                    return
+                                if not queue_prefetch(
+                                    _ReadySpeechChunk(
+                                        output=chunk,
+                                        ready_monotonic=self._clock(),
+                                    )
+                                ):
+                                    return
+                        finally:
+                            if synthesis_cancelled():
+                                # Keep the non-concurrent backend lock until the
+                                # stale/cancelled drain is observable. A newer
+                                # generation cannot overtake this lifecycle edge.
+                                publish_drained()
+                            self._tts_synthesis_lock.release()
+                    queue_prefetch(stream_end)
+                except Exception as exc:  # noqa: BLE001
+                    if not synthesis_cancelled():
+                        queue_prefetch(exc)
                 finally:
-                    synthesis_stop.set()
-                output = SpeechOutput(
-                    audio_data=bytes(combined) if combined and combined_compatible else None,
-                    sample_rate=sample_rate,
-                    channels=channels,
-                    duration_ms=total_duration_ms,
-                    latency_ms=first_audio_latency_ms,
-                )
-            else:
-                output = self.tts.synthesize(req)
-                if not self._speech_cancel.is_set():
-                    play_chunk(output, 1, None)
-            success = speech_started or bool(output.audio_data)
+                    publish_drained()
+
+            synthesis_thread = threading.Thread(
+                target=synthesize_ahead,
+                name="ailen-tts-prefetch",
+                daemon=True,
+            )
+            synthesis_thread.start()
+            chunk_index = 0
+            try:
+                while not turn_cancel.is_set():
+                    try:
+                        item = ready_chunks.get(timeout=0.05)
+                    except queue.Empty:
+                        continue
+                    if item is stream_end:
+                        break
+                    if isinstance(item, Exception):
+                        raise item
+                    if not isinstance(item, _ReadySpeechChunk):
+                        raise TypeError("Unexpected TTS prefetch result")
+
+                    chunk = item.output
+                    if not chunk.audio_data:
+                        continue
+                    chunk_index += 1
+                    if not combined:
+                        first_audio_latency_ms = chunk.latency_ms
+                    if previous_playback_ended is None:
+                        gap_ms = None
+                        prefetch_lead_ms = None
+                    else:
+                        gap_ms = max(
+                            0.0,
+                            (item.ready_monotonic - previous_playback_ended) * 1000.0,
+                        )
+                        prefetch_lead_ms = max(
+                            0.0,
+                            (previous_playback_ended - item.ready_monotonic) * 1000.0,
+                        )
+                    play_chunk(chunk, chunk_index, gap_ms, prefetch_lead_ms)
+                    previous_playback_ended = self._clock()
+                    if turn_cancel.is_set():
+                        break
+                    chunk_format = (chunk.sample_rate, chunk.channels)
+                    if stream_format is None:
+                        stream_format = chunk_format
+                        sample_rate, channels = chunk_format
+                    elif chunk_format != stream_format:
+                        combined_compatible = False
+                    if combined_compatible:
+                        combined.extend(chunk.audio_data)
+                    total_duration_ms += chunk.duration_ms
+            finally:
+                synthesis_stop.set()
+                synthesis_thread.join(timeout=0.05 if turn_cancel.is_set() else 0.25)
+                if synthesis_thread.is_alive():
+                    logger.info(
+                        "audio_timing turn_id=%s speech_generation=%d "
+                        "stage=tts_synthesizer_draining timestamp_monotonic=%.6f "
+                        "backend_cancel_supported=false",
+                        generation.turn_id,
+                        generation.generation_id,
+                        self._clock(),
+                    )
+            output = SpeechOutput(
+                audio_data=bytes(combined) if combined and combined_compatible else None,
+                sample_rate=sample_rate,
+                channels=channels,
+                duration_ms=total_duration_ms,
+                latency_ms=first_audio_latency_ms,
+            )
+            success = (speech_started or bool(output.audio_data)) and not turn_cancel.is_set()
         except Exception as exc:
             logger.exception("TTS/playback failed")
             self._publish_audio_error("tts_or_playback", exc)
             output = SpeechOutput(audio_data=None, duration_ms=0.0, latency_ms=0.0)
         finally:
-            if self.face_controller:
-                self.face_controller.set_speech_level(0.0)
-                self.face_controller.set_state(restore_state)
+            if self._is_current_speech_generation(generation.generation_id):
+                if self.face_controller:
+                    self.face_controller.set_speech_level(0.0)
+                    self.face_controller.set_state(restore_state)
 
-            if self.state_manager:
-                try:
-                    self.state_manager.transition_to(restore_state, reason="tts_finished")
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("Ignored state transition back: %s", exc)
+                if self.state_manager:
+                    try:
+                        self.state_manager.transition_to(restore_state, reason="tts_finished")
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("Ignored state transition back: %s", exc)
 
-            self.turn_gate.stop_speaking()
+                self.turn_gate.stop_speaking()
 
-            if self.event_bus:
-                self.event_bus.create_and_publish(
-                    event_type=EventType.SPEECH_FINISHED,
-                    source="audio_coordinator",
-                    payload={
-                        "duration_ms": output.duration_ms,
-                        "latency_ms": output.latency_ms,
-                        "success": success,
-                    },
-                )
+                if self.event_bus:
+                    self.event_bus.create_and_publish(
+                        event_type=EventType.SPEECH_FINISHED,
+                        source="audio_coordinator",
+                        payload={
+                            "duration_ms": output.duration_ms,
+                            "latency_ms": output.latency_ms,
+                            "success": success,
+                            "interrupted": self._last_speech_interrupted,
+                            "speech_generation": generation.generation_id,
+                            "turn_id": generation.turn_id,
+                            "synthesizer_draining": self.active_tts_drains > 0,
+                        },
+                    )
+                self._finish_speech_generation(generation.generation_id)
 
         return output

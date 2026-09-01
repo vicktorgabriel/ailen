@@ -2,7 +2,13 @@
 
 import logging
 
-from ailen.audio.contracts import AudioBackendHealth, AudioSegment, SttBackend, Transcript
+from ailen.audio.contracts import (
+    AudioBackendHealth,
+    AudioSegment,
+    SttBackend,
+    Transcript,
+    TranscriptAlternative,
+)
 from ailen.domain.enums import ServiceStatus
 
 logger = logging.getLogger(__name__)
@@ -74,4 +80,18 @@ class CascadingSttBackend:
             language=fallback.language or primary.language,
             confidence=fallback.confidence,
             latency_ms=primary.latency_ms + fallback.latency_ms,
+            engine=f"cascade:{fallback.engine}",
+            alternatives=(
+                *fallback.alternatives,
+                *(
+                    ()
+                    if not primary_text
+                    else (
+                        TranscriptAlternative(
+                            text=primary_text,
+                            confidence=primary.confidence,
+                        ),
+                    )
+                ),
+            ),
         )

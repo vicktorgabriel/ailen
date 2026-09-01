@@ -42,6 +42,7 @@ class FakeSttBackend(SttBackend):
             language="es",
             confidence=0.99,
             latency_ms=(time.monotonic() - start) * 1000.0,
+            engine="fake",
         )
 
 

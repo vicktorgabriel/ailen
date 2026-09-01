@@ -19,15 +19,31 @@ class AudioSegment:
     sample_rate: int = 16000
     channels: int = 1
     duration_ms: float = 0.0
+    truncated: bool = False
+
+
+@dataclass
+class TranscriptAlternative:
+    """One STT-provided alternative without synthetic scoring."""
+
+    text: str
+    confidence: float | None = None
 
 
 @dataclass
 class Transcript:
-    """Normalized STT output."""
+    """Normalized finalized voice-turn evidence produced by STT/Core."""
+
     text: str
     language: str = "es"
     confidence: float | None = None
     latency_ms: float = 0.0
+    engine: str = "unknown"
+    audio_duration_ms: float = 0.0
+    utterance_id: str | None = None
+    interrupted: bool = False
+    truncated: bool = False
+    alternatives: tuple[TranscriptAlternative, ...] = ()
 
 
 @dataclass
@@ -71,6 +87,11 @@ class AudioDevice:
     is_input: bool = True
     is_output: bool = False
     is_default: bool = False
+    backend: str = "unknown"
+    state: str = ""
+    volume_percent: float | None = None
+    volume_db: float | None = None
+    is_monitor: bool = False
 
 
 @dataclass
@@ -101,6 +122,15 @@ class AudioFrameProcessor(Protocol):
 
     def reset(self) -> None:
         """Reset adaptive processor state."""
+        ...
+
+
+@runtime_checkable
+class StagedAudioFrameProcessor(AudioFrameProcessor, Protocol):
+    """Processor that exposes RAM-only outputs for scalar stage telemetry."""
+
+    def process_with_stages(self, frame: bytes) -> list[tuple[str, bytes]]:
+        """Return raw plus each ordered in-memory stage output."""
         ...
 
 

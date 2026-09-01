@@ -64,7 +64,79 @@ class AlsaDeviceEnumerator(AudioDeviceEnumerator):
             except Exception as e:  # noqa: BLE001
                 logger.debug("Failed to list ALSA playback devices: %s", e)
 
+        devices.extend(self.list_pipewire_devices(is_input=True))
+        devices.extend(self.list_pipewire_devices(is_input=False))
+
         return devices
+
+    def list_pipewire_devices(self, is_input: bool) -> list[AudioDevice]:
+        """List PipeWire/Pulse nodes with stable names and observed levels."""
+
+        if not shutil.which("pactl"):
+            return []
+        collection = "sources" if is_input else "sinks"
+        try:
+            result = subprocess.run(
+                ["pactl", "-f", "json", "list", collection],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                check=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to list PipeWire %s: %s", collection, exc)
+            return []
+        if result.returncode != 0:
+            return []
+        try:
+            entries = json.loads(result.stdout)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(entries, list):
+            return []
+        default_route = self.get_default_route(is_input=is_input)
+        devices: list[AudioDevice] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            node_name = str(entry.get("name", "") or "").strip()
+            if not node_name:
+                continue
+            percent, db = self._pipewire_volume(entry.get("volume"))
+            devices.append(
+                AudioDevice(
+                    id=f"pipewire:{node_name}",
+                    name=str(entry.get("description") or node_name),
+                    is_input=is_input,
+                    is_output=not is_input,
+                    is_default=node_name == default_route,
+                    backend="pipewire",
+                    state=str(entry.get("state", "") or ""),
+                    volume_percent=percent,
+                    volume_db=db,
+                    is_monitor=node_name.endswith(".monitor"),
+                )
+            )
+        return devices
+
+    @staticmethod
+    def _pipewire_volume(volume: object) -> tuple[float | None, float | None]:
+        if not isinstance(volume, dict):
+            return None, None
+        percents: list[float] = []
+        decibels: list[float] = []
+        for channel in volume.values():
+            if not isinstance(channel, dict):
+                continue
+            percent_match = re.search(r"[-+]?\d+(?:\.\d+)?", str(channel.get("value_percent", "")))
+            db_match = re.search(r"[-+]?\d+(?:\.\d+)?", str(channel.get("db", "")))
+            if percent_match:
+                percents.append(float(percent_match.group(0)))
+            if db_match:
+                decibels.append(float(db_match.group(0)))
+        percent = sum(percents) / len(percents) if percents else None
+        db = sum(decibels) / len(decibels) if decibels else None
+        return percent, db
 
     def get_default_route(self, is_input: bool) -> str | None:
         """Return the current PipeWire/Pulse default source or sink when available."""
@@ -238,6 +310,7 @@ class AlsaAudioInputBackend(AudioInputBackend):
         self.sample_rate = sample_rate
         self.channels = channels
         self.frame_ms = frame_ms
+        self.effective_device = device
 
         # 16-bit mono: 2 bytes per sample
         samples_per_frame = int(sample_rate * (frame_ms / 1000.0))
@@ -247,6 +320,7 @@ class AlsaAudioInputBackend(AudioInputBackend):
         self._running = False
         self._health_status = ServiceStatus.UNKNOWN
         self._health_detail = "Uninitialized"
+        self._read_buffer = bytearray()
 
     def start(self) -> None:
         """Start capturing audio stream from arecord."""
@@ -254,7 +328,7 @@ class AlsaAudioInputBackend(AudioInputBackend):
             return
 
         backend_name = "arecord"
-        if self.device == "pipewire":
+        if self.device == "pipewire" or self.device.startswith("pipewire:"):
             binary = shutil.which("pw-record")
             if not binary:
                 self._health_status = ServiceStatus.DISABLED
@@ -268,8 +342,20 @@ class AlsaAudioInputBackend(AudioInputBackend):
                 "--rate", str(self.sample_rate),
                 "--channels", str(self.channels),
                 "--latency", f"{max(20, round(self.frame_ms * 2))}ms",
-                "-",
             ]
+            if self.device.startswith("pipewire:"):
+                target = self.device.removeprefix("pipewire:").strip()
+                if not target:
+                    self._health_status = ServiceStatus.UNHEALTHY
+                    self._health_detail = "Explicit PipeWire capture target is empty"
+                    return
+                cmd.extend(("--target", target))
+                self.effective_device = f"pipewire:{target}"
+            else:
+                # Bare ``pipewire`` deliberately delegates source selection to
+                # pw-record/PipeWire. It remains usable when pactl is absent.
+                self.effective_device = "pipewire"
+            cmd.append("-")
         else:
             binary = shutil.which("arecord")
             if not binary:
@@ -323,7 +409,7 @@ class AlsaAudioInputBackend(AudioInputBackend):
             self._running = True
             self._health_status = ServiceStatus.HEALTHY
             self._health_detail = (
-                f"Recording via {backend_name} from {self.device} @ {self.sample_rate}Hz"
+                f"Recording via {backend_name} from {self.effective_device} @ {self.sample_rate}Hz"
             )
         except Exception as e:
             self._health_status = ServiceStatus.UNHEALTHY
@@ -345,6 +431,7 @@ class AlsaAudioInputBackend(AudioInputBackend):
                     logger.debug("Exception killing arecord: %s", e_kill)
             self._process = None
 
+        self._read_buffer.clear()
         self._health_status = ServiceStatus.DISABLED
         self._health_detail = "Stopped"
 
@@ -354,21 +441,24 @@ class AlsaAudioInputBackend(AudioInputBackend):
             return None
 
         try:
-            ready, _, _ = select.select(
-                [self._process.stdout], [], [], max(0.0, timeout_seconds)
-            )
-            if not ready:
-                return None
-            data = self._process.stdout.read(self.frame_bytes_size)
-            if len(data) == self.frame_bytes_size:
-                return data
-            if len(data) == 0:
-                return_code = self._process.poll()
-                if return_code is not None:
-                    self._health_status = ServiceStatus.UNHEALTHY
-                    self._health_detail = f"capture process exited with code {return_code}"
-                return None
-            return data
+            deadline = time.monotonic() + max(0.0, timeout_seconds)
+            while len(self._read_buffer) < self.frame_bytes_size:
+                remaining = max(0.0, deadline - time.monotonic())
+                ready, _, _ = select.select([self._process.stdout], [], [], remaining)
+                if not ready:
+                    return None
+                need = self.frame_bytes_size - len(self._read_buffer)
+                data = self._process.stdout.read(need)
+                if len(data) == 0:
+                    return_code = self._process.poll()
+                    if return_code is not None:
+                        self._health_status = ServiceStatus.UNHEALTHY
+                        self._health_detail = f"capture process exited with code {return_code}"
+                    return None
+                self._read_buffer.extend(data)
+            frame = bytes(self._read_buffer[: self.frame_bytes_size])
+            del self._read_buffer[: self.frame_bytes_size]
+            return frame
         except Exception as e:  # noqa: BLE001
             logger.debug("Error reading PCM frame from arecord: %s", e)
             return None

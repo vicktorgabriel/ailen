@@ -107,6 +107,9 @@ class WebRtcVad(VoiceActivityDetector):
     def process_frame(self, frame: bytes) -> VadResult:
         rms = compute_pcm_rms(frame)
         energy = rms * rms
+        expected_bytes = int(self.sample_rate * (self.frame_ms / 1000.0)) * 2
+        if len(frame) != expected_bytes:
+            return VadResult(is_speech=False, rms=rms, energy=energy, is_trigger=False)
         is_trigger = bool(self._vad.is_speech(frame, self.sample_rate)) and rms >= self.min_rms
 
         if is_trigger:
@@ -240,13 +243,15 @@ class UtteranceCollector:
         is_max_length_reached = len(self._collected_frames) >= self._max_frames
 
         if is_silence_timeout or is_max_length_reached:
-            completed_segment = self._build_segment()
+            completed_segment = self._build_segment(
+                truncated=is_max_length_reached and not is_silence_timeout,
+            )
             self.reset()
             return completed_segment, False
 
         return None, True
 
-    def _build_segment(self) -> AudioSegment:
+    def _build_segment(self, *, truncated: bool = False) -> AudioSegment:
         """Combine accumulated frames into an AudioSegment."""
         raw_pcm = b"".join(self._collected_frames)
         duration_ms = compute_pcm_duration_ms(
@@ -259,6 +264,7 @@ class UtteranceCollector:
             sample_rate=self.sample_rate,
             channels=self.channels,
             duration_ms=duration_ms,
+            truncated=truncated,
         )
 
     def reset(self) -> None:

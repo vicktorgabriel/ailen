@@ -86,10 +86,10 @@ class VoskSttBackend(SttBackend):
         start_t = time.monotonic()
 
         if not segment.data:
-            return Transcript(text="", confidence=0.0, latency_ms=0.0)
+            return Transcript(text="", confidence=0.0, latency_ms=0.0, engine="vosk")
 
         if not self._init_model() or self._model is None:
-            return Transcript(text="", confidence=0.0, latency_ms=0.0)
+            return Transcript(text="", confidence=0.0, latency_ms=0.0, engine="vosk")
 
         try:
             rec = self._vosk_module.KaldiRecognizer(self._model, segment.sample_rate)
@@ -115,6 +115,7 @@ class VoskSttBackend(SttBackend):
                 language="es",
                 confidence=confidence,
                 latency_ms=latency_ms,
+                engine="vosk",
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("Vosk transcription error: %s", e)
@@ -122,4 +123,5 @@ class VoskSttBackend(SttBackend):
                 text="",
                 confidence=0.0,
                 latency_ms=(time.monotonic() - start_t) * 1000.0,
+                engine="vosk",
             )

@@ -85,10 +85,14 @@ class WhisperCppSttBackend(SttBackend):
         start_t = time.monotonic()
 
         if not segment.data:
-            return Transcript(text="", confidence=0.0, latency_ms=0.0)
+            return Transcript(
+                text="", confidence=0.0, latency_ms=0.0, engine="whisper_cpp"
+            )
 
         if not self._check_availability() or self._resolved_binary is None:
-            return Transcript(text="", confidence=0.0, latency_ms=0.0)
+            return Transcript(
+                text="", confidence=0.0, latency_ms=0.0, engine="whisper_cpp"
+            )
 
         binary = self._resolved_binary
         temp_wav: str | None = None
@@ -136,10 +140,16 @@ class WhisperCppSttBackend(SttBackend):
                     language=self.language,
                     confidence=None,
                     latency_ms=latency_ms,
+                    engine="whisper_cpp",
                 )
             else:
                 logger.warning("whisper.cpp exited with code %d: %s", res.returncode, res.stderr)
-                return Transcript(text="", confidence=0.0, latency_ms=latency_ms)
+                return Transcript(
+                    text="",
+                    confidence=0.0,
+                    latency_ms=latency_ms,
+                    engine="whisper_cpp",
+                )
 
         except Exception as e:  # noqa: BLE001
             logger.warning("Error running whisper.cpp: %s", e)
@@ -147,6 +157,7 @@ class WhisperCppSttBackend(SttBackend):
                 text="",
                 confidence=0.0,
                 latency_ms=(time.monotonic() - start_t) * 1000.0,
+                engine="whisper_cpp",
             )
         finally:
             if temp_wav and os.path.exists(temp_wav):

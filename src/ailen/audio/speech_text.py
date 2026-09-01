@@ -2,6 +2,87 @@
 
 import re
 
+_FACE_MARKER_RE = re.compile(r"\[\[(?:face:)?[a-z_]+\]\]", flags=re.IGNORECASE)
+
+
+class IncrementalSpeechSegmenter:
+    """Turn streamed model deltas into bounded, speakable phrases.
+
+    Only completed punctuation boundaries or a bounded word boundary are
+    emitted. A short opener is held for the next phrase to avoid robotic
+    ``"Sí."`` chunks, and face metadata is consumed rather than pronounced.
+    """
+
+    def __init__(self, min_chars: int = 24, max_chars: int = 96) -> None:
+        self.min_chars = max(8, min(min_chars, max_chars))
+        self.max_chars = max(self.min_chars, max_chars)
+        self._buffer = ""
+        self._short_lead = ""
+
+    def feed(self, delta: str) -> list[str]:
+        """Consume one text delta and return newly completed phrases."""
+        if not delta:
+            return []
+        self._buffer += delta
+        self._buffer = _FACE_MARKER_RE.sub(" ", self._buffer)
+        emitted: list[str] = []
+
+        while True:
+            safe_end = len(self._buffer)
+            unmatched_marker = self._buffer.rfind("[[")
+            if unmatched_marker >= 0 and "]]" not in self._buffer[unmatched_marker:]:
+                safe_end = unmatched_marker
+            safe_text = self._buffer[:safe_end]
+            boundary = re.search(r"[.!?](?=\s|$)", safe_text)
+            if boundary is not None:
+                raw_phrase = self._buffer[: boundary.end()]
+                self._buffer = self._buffer[boundary.end() :].lstrip()
+                self._accept_phrase(raw_phrase, emitted, final=False)
+                continue
+
+            if len(safe_text) > self.max_chars:
+                cut = safe_text.rfind(" ", self.min_chars, self.max_chars + 1)
+                if cut < self.min_chars:
+                    cut = safe_text.find(" ", self.max_chars)
+                if cut > 0:
+                    raw_phrase = self._buffer[:cut]
+                    self._buffer = self._buffer[cut:].lstrip()
+                    self._accept_phrase(raw_phrase, emitted, final=False)
+                    continue
+            break
+        return emitted
+
+    def finish(self) -> list[str]:
+        """Flush the final non-empty tail after model generation completes."""
+        # An incomplete control marker is metadata, never speech.
+        tail = re.sub(r"\[\[.*$", " ", self._buffer, flags=re.DOTALL)
+        self._buffer = ""
+        emitted: list[str] = []
+        self._accept_phrase(tail, emitted, final=True)
+        if self._short_lead:
+            final_text = normalize_text_for_speech(self._short_lead)
+            self._short_lead = ""
+            if final_text:
+                emitted.append(final_text)
+        return emitted
+
+    def discard(self) -> None:
+        """Discard an unfinished tail after cancellation or truncation."""
+        self._buffer = ""
+        self._short_lead = ""
+
+    def _accept_phrase(self, raw: str, emitted: list[str], *, final: bool) -> None:
+        phrase = normalize_text_for_speech(_FACE_MARKER_RE.sub(" ", raw))
+        if not phrase:
+            return
+        if self._short_lead:
+            phrase = smooth_speech_pacing(f"{self._short_lead} {phrase}")
+            self._short_lead = ""
+        if not final and len(phrase) < self.min_chars:
+            self._short_lead = phrase
+            return
+        emitted.append(phrase)
+
 
 def normalize_text_for_speech(text: str) -> str:
     """Clean text for Text-to-Speech synthesis without altering original AI response text.

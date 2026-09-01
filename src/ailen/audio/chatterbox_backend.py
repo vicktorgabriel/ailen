@@ -49,6 +49,8 @@ class ChatterboxHttpTtsBackend(TtsBackend):
         self.rate_scale = max(0.85, min(1.15, float(rate_scale)))
         self._health_status = ServiceStatus.UNKNOWN
         self._health_detail = "Uninitialized"
+        self._last_failure_time: float = 0.0
+        self._circuit_open_seconds: float = 15.0
 
     @classmethod
     def _params_for_request(cls, request: SpeechRequest) -> tuple[float, float, float, float, float]:
@@ -129,10 +131,11 @@ class ChatterboxHttpTtsBackend(TtsBackend):
         )
 
     def synthesize_chunks(self, request: SpeechRequest) -> Iterable[SpeechOutput]:
-        phrases = split_speech_for_streaming(request.text)
+        phrases = split_speech_for_streaming(request.text, min_chars=22, max_chars=48)
         if not phrases:
             return
-        primary_failed = False
+        circuit_open = (time.time() - self._last_failure_time < self._circuit_open_seconds)
+        primary_failed = circuit_open
         for phrase in phrases:
             if not primary_failed:
                 try:
@@ -143,6 +146,7 @@ class ChatterboxHttpTtsBackend(TtsBackend):
                     continue
                 except Exception as exc:  # noqa: BLE001
                     primary_failed = True
+                    self._last_failure_time = time.time()
                     self._health_status = ServiceStatus.UNHEALTHY
                     self._health_detail = f"Chatterbox synthesis failed: {exc}"
                     logger.warning("Chatterbox synthesis failed; using fallback if available: %s", exc)
