@@ -1,6 +1,7 @@
 """Tests for text normalization before TTS."""
 
 from ailen.audio.speech_text import (
+    IncrementalSpeechSegmenter,
     normalize_text_for_speech,
     smooth_speech_pacing,
     split_speech_for_streaming,
@@ -55,3 +56,21 @@ def test_split_speech_for_streaming_avoids_tiny_tail() -> None:
         max_chars=60,
     )
     assert len(chunks[-1]) >= 20
+
+
+def test_incremental_segmenter_emits_complete_phrase_without_waiting_for_full_reply() -> None:
+    segmenter = IncrementalSpeechSegmenter(min_chars=20, max_chars=80)
+
+    assert segmenter.feed("Esta frase ya puede empezar a sonar.") == [
+        "Esta frase ya puede empezar a sonar."
+    ]
+    assert segmenter.feed(" La respuesta sigue") == []
+    assert segmenter.finish() == ["La respuesta sigue"]
+
+
+def test_incremental_segmenter_merges_short_opener_and_never_speaks_face_metadata() -> None:
+    segmenter = IncrementalSpeechSegmenter(min_chars=18, max_chars=80)
+
+    assert segmenter.feed("[[face:happy]] Sí.") == []
+    assert segmenter.feed(" Me alegra mucho verte.") == ["Sí, me alegra mucho verte."]
+    assert segmenter.finish() == []

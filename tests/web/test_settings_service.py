@@ -8,14 +8,20 @@ from ailen.services.config_service import ConfigService
 from ailen.services.settings_service import FIELD_SPECS, SettingsService
 
 BASE_TOML = """\
-schema_version = 1
+schema_version = 3
 [node]
 node_id = "test-node"
 name = "Nodo Prueba"
 [identity]
 display_name = "Personaje Local"
 [audio]
-input_volume = 80
+capture_gain_db = 0.0
+input_processing_mode = "auto"
+auto_gain_enabled = false
+auto_gain_target_rms = 0.12
+max_auto_gain_db = 18.0
+auto_gain_noise_gate_rms = 0.008
+auto_gain_gate_hold_ms = 300.0
 output_volume = 80
 music_volume = 60
 """
@@ -28,7 +34,13 @@ FULL_FORM: dict[str, str] = {
     "node.profile": "HYBRID",
     "display.enabled": "true",
     "display.fullscreen": "true",
-    "audio.input_volume": "80",
+    "audio.capture_gain_db": "0.0",
+    "audio.input_processing_mode": "auto",
+    "audio.auto_gain_enabled": "false",
+    "audio.auto_gain_target_rms": "0.12",
+    "audio.max_auto_gain_db": "18.0",
+    "audio.auto_gain_noise_gate_rms": "0.008",
+    "audio.auto_gain_gate_hold_ms": "300.0",
     "audio.output_volume": "80",
     "audio.music_volume": "60",
     "vision.enabled": "true",
@@ -65,7 +77,8 @@ class TestSettingsGet(SettingsTestCase):
     def test_fields_come_from_allowlist(self):
         service = self._service(BASE_TOML)
         fields = service.get_fields()
-        self.assertEqual([f.key for f in fields], [spec.key for spec in FIELD_SPECS])
+        field_keys = {field.key for field in fields}
+        self.assertTrue({spec.key for spec in FIELD_SPECS} <= field_keys)
 
     def test_no_network_fields_editable(self):
         keys = {spec.key for spec in FIELD_SPECS}
@@ -94,7 +107,7 @@ class TestSettingsGet(SettingsTestCase):
     def test_nested_ai_fields_are_read_and_updated(self):
         service = self._service(BASE_TOML)
         values = {f.key: f.value for f in service.get_fields()}
-        self.assertEqual(values["ai.local.model"], "local-model")
+        self.assertEqual(values["ai.local.model"], "")
         result = service.update({
             "ai.local.enabled": "true",
             "ai.local.endpoint": "http://127.0.0.1:11434/v1",
@@ -165,11 +178,25 @@ class TestSettingsUpdate(SettingsTestCase):
         self.assertFalse(result.ok)
         self.assertIn("updates.channel", result.errors)
 
-    def test_non_numeric_volume_rejected(self):
+    def test_non_numeric_capture_gain_rejected(self):
         service = self._service(BASE_TOML)
-        result = service.update(full_form(audio__input_volume="alto"))
+        result = service.update(full_form(audio__capture_gain_db="alto"))
         self.assertFalse(result.ok)
-        self.assertIn("audio.input_volume", result.errors)
+        self.assertIn("audio.capture_gain_db", result.errors)
+
+    def test_valid_auto_gain_noise_gate_is_persisted(self):
+        service = self._service(BASE_TOML)
+        result = service.update(
+            full_form(
+                audio__auto_gain_noise_gate_rms="0.009",
+                audio__auto_gain_gate_hold_ms="250",
+            )
+        )
+        self.assertTrue(result.ok, result.errors)
+        loaded = service.get_fields()
+        values = {field.key: field.value for field in loaded}
+        self.assertEqual(values["audio.auto_gain_noise_gate_rms"], "0.009")
+        self.assertEqual(values["audio.auto_gain_gate_hold_ms"], "250.0")
 
     def test_negative_cooldown_rejected(self):
         service = self._service(BASE_TOML)

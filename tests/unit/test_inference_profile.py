@@ -77,20 +77,23 @@ def test_2gb_cpu_only_satellite_tier() -> None:
     assert "RAM_UNDER_3500MB_FORCES_RULE_ONLY" in rec.reason_codes
 
 
-def test_4gb_cpu_only_conservative_rule_only_by_default() -> None:
+def test_4gb_cpu_only_exposes_bounded_local_fast_path_by_default() -> None:
     rep = make_report(4096)  # 4 GB (e.g. Netbook SF20BA)
     rec = recommend_inference_profile(rep)
-    assert rec.profile == InferenceProfile.RULE_ONLY
-    assert not rec.local_allowed
+    assert rec.profile == InferenceProfile.FAST
+    assert rec.local_allowed
+    assert rec.preferred_runtime == "llama.cpp"
+    assert rec.max_model_ram_mb == 1400
+    assert "TARGET_4GB_BENCHMARK_REQUIRED" in rec.reason_codes
 
 
-def test_4gb_cpu_only_experimental_fast_opt_in() -> None:
+def test_legacy_4gb_opt_in_no_longer_changes_the_canonical_profile() -> None:
     rep = make_report(4096)
     rec = recommend_inference_profile(rep, user_preferences={"allow_4gb_cpu_llm": True})
     assert rec.profile == InferenceProfile.FAST
     assert rec.local_allowed
     assert rec.preferred_runtime == "llama.cpp"
-    assert rec.max_model_ram_mb == 1200
+    assert rec.max_model_ram_mb == 1400
 
 
 def test_8gb_cpu_only_fast_tier() -> None:
@@ -99,7 +102,7 @@ def test_8gb_cpu_only_fast_tier() -> None:
     assert rec.profile == InferenceProfile.FAST
     assert rec.local_allowed
     assert rec.preferred_runtime == "llama.cpp"
-    assert rec.max_model_ram_mb == 3500
+    assert rec.max_model_ram_mb == 3000
 
 
 def test_16gb_cpu_only_balanced_tier() -> None:
@@ -109,6 +112,16 @@ def test_16gb_cpu_only_balanced_tier() -> None:
     assert rec.local_allowed
     assert rec.preferred_runtime == "llama.cpp"
     assert rec.max_model_ram_mb > 5000
+
+
+def test_32gb_and_64gb_cpu_envelopes_keep_scaling() -> None:
+    rec_32 = recommend_inference_profile(make_report(32768))
+    rec_64 = recommend_inference_profile(make_report(65536))
+
+    assert rec_32.max_model_ram_mb > 6000
+    assert rec_32.recommended_context == 8192
+    assert rec_64.max_model_ram_mb > rec_32.max_model_ram_mb
+    assert rec_64.recommended_context == 16384
 
 
 def test_modest_gpu_tier() -> None:
@@ -159,6 +172,30 @@ def test_asrock_lab_gpu_quality_tier() -> None:
     assert rec.local_allowed
     assert rec.preferred_runtime == "ollama"
     assert rec.recommended_context == 8192
+
+
+def test_shared_gpu_memory_is_not_added_to_dedicated_vram_budget() -> None:
+    dedicated = GpuInfo(
+        vendor="nvidia",
+        model="Dedicated 8 GB",
+        vram_total_mb=8192,
+        vram_available_mb=7000,
+        is_dedicated=True,
+        backend="cuda",
+    )
+    shared = GpuInfo(
+        vendor="intel",
+        model="Shared iGPU",
+        vram_total_mb=8192,
+        vram_available_mb=7000,
+        is_dedicated=False,
+        backend="vulkan",
+    )
+
+    rec = recommend_inference_profile(make_report(32768, gpus=[dedicated, shared]))
+
+    assert rec.max_model_vram_mb == min(7000, int(8192 * 0.8))
+    assert "DEDICATED_GPU_DETECTED_VRAM_8192MB" in rec.reason_codes
 
 
 def test_user_forced_profile_override() -> None:

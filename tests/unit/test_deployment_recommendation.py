@@ -14,6 +14,6 @@ def test_deployment_does_not_fabricate_local_model_before_planner() -> None:
 
 def test_external_cost_remains_unknown_until_provider_is_configured() -> None:
     rec = create_deployment_recommendation(
-        make_report(2048), allow_cloud=True, user_preferences={"enable_web_search": True}
+        make_report(2048), allow_remote=True, user_preferences={"enable_web_search": True}
     )
     assert rec.estimated_external_cost == "UNKNOWN_EXTERNAL_PROVIDER_COST"

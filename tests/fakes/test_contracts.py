@@ -58,41 +58,45 @@ class TestRouter(unittest.TestCase):
             self.assertEqual(plan.primary_backend, "rule", intent)
             self.assertEqual(plan.fallback_backends, [])
 
-    def test_private_privacy_never_routes_to_cloud(self):
+    def test_private_privacy_never_routes_to_unsanitized_remote(self):
         request = RouteRequest(
             intent="chat",
             privacy_level=PrivacyLevel.PRIVATE,
             internet_available=True,
-            cloud_allowed=True,
+            external_allowed=True,
+            remote_backends=("remote:test",),
             lan_brain_available=True,
             local_backend_available=True,
         )
         plan = self.router.route(request)
         self.assertEqual(plan.primary_backend, "local")
-        self.assertNotIn("cloud", plan.fallback_backends)
+        self.assertFalse(any(item.startswith("remote:") for item in plan.fallback_backends))
 
-    def test_cloud_used_when_allowed_and_available(self):
+    def test_named_remote_used_when_allowed_and_available(self):
         request = RouteRequest(
             intent="chat",
             privacy_level=PrivacyLevel.PUBLIC,
             internet_available=True,
-            cloud_allowed=True,
+            external_allowed=True,
+            remote_backends=("remote:test",),
         )
         plan = self.router.route(request)
-        self.assertEqual(plan.primary_backend, "cloud")
-        self.assertIn(plan.reason_code, ("CLOUD_FAST_PATH", "CLOUD_ALLOWED_WITHIN_BUDGET"))
+        self.assertEqual(plan.primary_backend, "remote:test")
+        self.assertEqual(plan.reason_code, "AUTO_REMOTE_ONLY")
 
-    def test_budget_exceeded_blocks_cloud(self):
+    def test_budget_exceeded_blocks_named_remote(self):
         request = RouteRequest(
             intent="chat",
             privacy_level=PrivacyLevel.PUBLIC,
             internet_available=True,
-            cloud_allowed=True,
-            budget_exceeded=True,
+            external_allowed=True,
+            remote_backends=("remote:test",),
+            budget_blocked_backends=frozenset({"remote:test"}),
         )
         plan = self.router.route(request)
-        self.assertNotIn("cloud", [plan.primary_backend, *plan.fallback_backends])
+        self.assertNotIn("remote:test", [plan.primary_backend, *plan.fallback_backends])
         self.assertEqual(plan.primary_backend, "degraded")
+        self.assertEqual(plan.reason_code, "REMOTE_BUDGET_EXCEEDED")
 
     def test_no_backend_degrades_to_rule(self):
         plan = self.router.route(RouteRequest(intent="chat", privacy_level=PrivacyLevel.PUBLIC))
@@ -144,6 +148,12 @@ class TestVisionFake(unittest.TestCase):
 class TestNullFace(unittest.TestCase):
     def test_protocol(self):
         self.assertIsInstance(NullFaceController(), FaceController)
+
+    def test_headless_does_not_advertise_visible_expressions(self):
+        face = NullFaceController()
+        self.assertEqual(face.available_expressions, ())
+        self.assertEqual(face.conversational_expressions, ())
+        self.assertFalse(face.is_display_active())
 
     def test_gaze_clamped(self):
         face = NullFaceController()

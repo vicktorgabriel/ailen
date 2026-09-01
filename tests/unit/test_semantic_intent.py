@@ -135,6 +135,21 @@ def test_semantic_resolver_does_not_route_on_generic_temporal_words(tmp_path: Pa
     assert resolver.should_attempt("qué novedades hubo hoy sobre Python") is True
 
 
+def test_generic_conversation_about_a_consultation_does_not_pay_semantic_web_inference(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    resolver = SemanticToolIntentResolver(
+        FakeAiBackend(),
+        ToolRegistry([WebSearchTool(provider=FakeWebSearchProvider())]),
+        repo,
+        allow_network_tools=True,
+    )
+
+    assert resolver.should_attempt("te quería hacer una consulta personal") is False
+    assert resolver.should_attempt("consultá en internet las noticias de hoy") is True
+
+
 def test_semantic_history_hints_do_not_match_inside_unrelated_words(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     session = repo.create_session(mode=SocialMode.WORKSHOP)

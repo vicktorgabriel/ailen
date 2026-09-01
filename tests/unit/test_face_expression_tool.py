@@ -3,6 +3,8 @@
 from ailen.core.capabilities import CapabilityDescriptor
 from ailen.domain.enums import AssistantState
 from ailen.face.animator import FaceAnimator
+from ailen.face.contracts import FACE_EXPRESSIONS
+from ailen.face.null import NullFaceController
 from ailen.tools.builtin.face_expression import FaceExpressionTool
 from ailen.tools.contracts import ToolContext
 
@@ -12,6 +14,11 @@ class FaceStub:
         self.expression = "neutral"
         self.duration_seconds = 0.0
         self.ready = True
+        self._available_expressions = FACE_EXPRESSIONS
+
+    @property
+    def available_expressions(self) -> tuple[str, ...]:
+        return self._available_expressions
 
     def capabilities(self) -> list[CapabilityDescriptor]:
         return [
@@ -49,7 +56,7 @@ def test_face_expression_tool_changes_real_controller_state() -> None:
 
     assert result.success is True
     assert face.expression == "happy"
-    assert face.duration_seconds == 5.0
+    assert face.duration_seconds == 0.0
     assert result.data["expression"] == "happy"
 
 
@@ -75,3 +82,28 @@ def test_face_expression_tool_fails_closed_when_display_is_unavailable() -> None
     assert result.success is False
     assert result.status_code == "UNAVAILABLE"
     assert face.expression == "neutral"
+
+
+def test_face_expression_tool_uses_active_renderer_allowlist() -> None:
+    face = FaceStub()
+    face._available_expressions = ("neutral", "embarrassed")
+    tool = FaceExpressionTool(face)
+
+    assert tool.schema["properties"]["expression"]["enum"] == ["neutral", "embarrassed"]
+    result = tool.execute({"expression": "embarrassed"}, ToolContext())
+    rejected = tool.execute({"expression": "happy"}, ToolContext())
+
+    assert result.success is True
+    assert face.expression == "embarrassed"
+    assert rejected.success is False
+    assert rejected.status_code == "TOOL_ARGS_INVALID"
+
+
+def test_face_expression_tool_headless_schema_is_empty_and_unavailable() -> None:
+    tool = FaceExpressionTool(NullFaceController())
+
+    assert tool.allowed_expressions == ()
+    assert tool.schema["properties"]["expression"]["enum"] == []
+    result = tool.execute({"expression": "happy"}, ToolContext())
+    assert result.success is False
+    assert result.status_code == "UNAVAILABLE"

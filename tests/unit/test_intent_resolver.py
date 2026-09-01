@@ -65,6 +65,15 @@ def test_intent_resolver_music() -> None:
     assert resolver.resolve("Siguiente canción").tool_args == {"action": "next"}
     assert resolver.resolve("Pará la música").tool_args == {"action": "stop"}
     assert resolver.resolve("Qué está sonando").tool_args == {"action": "status"}
+    assert resolver.resolve("Poné en YouTube Soda Stereo De Música Ligera").tool_args == {
+        "action": "play", "query": "Soda Stereo De Música Ligera", "source": "youtube"
+    }
+    assert resolver.resolve("Poné de mi música Los Redondos").tool_args == {
+        "action": "play", "query": "Los Redondos", "source": "local"
+    }
+    assert resolver.resolve("Poné la canción Persiana Americana").tool_args == {
+        "action": "play", "query": "Persiana Americana", "source": "auto"
+    }
 
 
 def test_intent_resolver_notes() -> None:
@@ -317,6 +326,22 @@ def test_freshness_words_in_casual_chat_do_not_trigger_web() -> None:
         result = resolver.resolve(text)
         assert result.intent == "chat", text
         assert result.tool_name is None, text
+
+
+def test_observed_open_conversation_examples_reach_the_llm_route() -> None:
+    resolver = IntentResolver()
+
+    for text in (
+        "todo bien",
+        "recién terminé de comer",
+        "contame un chiste",
+        "no quiero hablar de componentes",
+        "podés mirar para los costados",
+    ):
+        result = resolver.resolve(text)
+        assert result.intent == "chat", text
+        assert result.tool_name is None, text
+        assert result.requires_llm is True, text
 
 
 def test_local_clock_still_precedes_fresh_web_fallback() -> None:

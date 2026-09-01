@@ -2,8 +2,11 @@
 
 import json
 import unittest
+from unittest.mock import patch
 from urllib.parse import quote
 
+from ailen.audio.contracts import AudioDevice
+from ailen.core.config import AILENConfig
 from ailen.web.app import AILENWebApp, WebRequest
 from ailen.web.services import FakeAuthService, FakeStatusService
 
@@ -69,7 +72,7 @@ class TestWebApp(unittest.TestCase):
 
         response = self.app.handle(get("/", headers={"cookie": cookie}))
         self.assertEqual(response.status, 200)
-        self.assertIn(b"Panel", response.body)
+        self.assertIn(b"AIL", response.body)
 
         # CSRF requerido para logout
         response = self.app.handle(post("/logout", {}, headers={"cookie": cookie}))
@@ -117,12 +120,134 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("overall", data)
         self.assertIn("components", data)
 
-    def test_skeleton_pages(self):
+    def test_all_admin_pages_render(self):
         cookie = self._login_cookie()
-        for path in ("/comercio", "/personalidad", "/ia", "/audio-camara", "/sistema"):
+        pages = (
+            "/",
+            "/personalidad",
+            "/audio",
+            "/ia",
+            "/memoria",
+            "/herramientas",
+            "/vision",
+            "/rostro",
+            "/sistema",
+            "/diagnostico",
+            "/setup",
+            "/comercio",
+            "/audio-camara",
+        )
+        for path in pages:
             response = self.app.handle(get(path, headers={"cookie": cookie}))
-            self.assertEqual(response.status, 200, path)
-            self.assertIn(b"Skeleton", response.body)
+            self.assertEqual(response.status, 200, f"Ruta falló: {path}")
+            self.assertIn(b"AIL", response.body, f"Branding ausente en: {path}")
+
+    def test_audio_page_exposes_agc_noise_gate_without_changing_device_default(self):
+        cookie = self._login_cookie()
+
+        response = self.app.handle(get("/audio", headers={"cookie": cookie}))
+        body = response.body.decode("utf-8")
+
+        self.assertIn('name="audio.auto_gain_noise_gate_rms"', body)
+        self.assertIn('name="audio.auto_gain_gate_hold_ms"', body)
+        self.assertIn('name="audio.input_processing_mode"', body)
+
+    def test_audio_page_is_honest_dynamic_and_has_no_global_alsa_control(self):
+        cfg = AILENConfig()
+        cfg.speech.vad_threshold = 0.031
+
+        class Settings:
+            @staticmethod
+            def get_config() -> AILENConfig:
+                return cfg
+
+        class Enumerator:
+            @staticmethod
+            def get_default_route(*, is_input: bool) -> str:
+                assert is_input is True
+                return "test.source"
+
+            @staticmethod
+            def list_pipewire_devices(*, is_input: bool) -> list[AudioDevice]:
+                assert is_input is True
+                return [
+                    AudioDevice(
+                        id="pipewire:test.source",
+                        name="Micrófono inyectado",
+                        backend="pipewire",
+                        is_default=True,
+                        state="RUNNING",
+                    )
+                ]
+
+            @staticmethod
+            def list_hardware_devices(*, is_input: bool) -> list[AudioDevice]:
+                assert is_input is True
+                return []
+
+        self.app._settings = Settings()  # type: ignore[assignment]
+        cookie = self._login_cookie()
+        with patch("ailen.audio.alsa_backend.AlsaDeviceEnumerator", Enumerator):
+            response = self.app.handle(get("/audio", headers={"cookie": cookie}))
+        body = response.body.decode("utf-8")
+
+        self.assertIn("Micrófono inyectado", body)
+        self.assertIn('name="section" value="audio"', body)
+        self.assertIn("Umbral VAD (0.031)", body)
+        self.assertIn("medición acotada", body.lower())
+        for forbidden in (
+            "getUserMedia",
+            "cancelación de eco",
+            "~110ms",
+            "Nivelar Ganancias ALSA",
+            "/api/audio/reset-alsa",
+            "0.022",
+            "G600",
+            "USB Composite",
+        ):
+            self.assertNotIn(forbidden, body)
+
+    def test_removed_global_alsa_gain_endpoint_is_not_routable(self):
+        cookie = self._login_cookie()
+        html = self.app.handle(get("/", headers={"cookie": cookie})).body.decode()
+        csrf = html.split('name="_csrf" value="')[1].split('"')[0]
+
+        with patch("subprocess.run") as run:
+            response = self.app.handle(
+                post(
+                    "/api/audio/reset-alsa",
+                    {"_csrf": csrf},
+                    headers={"cookie": cookie},
+                )
+            )
+
+        self.assertEqual(response.status, 405)
+        run.assert_not_called()
+
+    def test_diagnostics_does_not_claim_a_fixed_piper_latency(self):
+        cookie = self._login_cookie()
+
+        response = self.app.handle(get("/diagnostico", headers={"cookie": cookie}))
+        diagnostics = response.body.decode("utf-8")
+        overview = self.app.handle(get("/", headers={"cookie": cookie})).body.decode(
+            "utf-8"
+        )
+
+        self.assertIn("Sin medición", diagnostics)
+        for body in (diagnostics, overview):
+            for fixed_latency in ("110 ms", "180 ms", "95ms", "120ms"):
+                self.assertNotIn(fixed_latency, body)
+
+    def test_setup_does_not_claim_detected_hardware_is_certified(self):
+        cookie = self._login_cookie()
+
+        response = self.app.handle(get("/setup", headers={"cookie": cookie}))
+        body = response.body.decode()
+
+        self.assertIn("ProvisioningPlan", body)
+        self.assertIn("no una certificación", body)
+        self.assertNotIn("hardware es óptimo", body)
+        self.assertNotIn("respuesta instantánea", body)
 
     def test_404(self):
         cookie = self._login_cookie()
@@ -140,6 +265,12 @@ class TestWebApp(unittest.TestCase):
         response = self.app.handle(get("/static/css/main.css"))
         self.assertEqual(response.status, 200)
         self.assertTrue(response.content_type.startswith("text/css"))
+        self.assertIn(b"--bg-app", response.body)
+
+    def test_static_js(self):
+        response = self.app.handle(get("/static/js/main.js"))
+        self.assertEqual(response.status, 200)
+        self.assertTrue(response.content_type.startswith("application/javascript"))
 
     def test_static_traversal_blocked(self):
         for evil in ("/static/../app.py", "/static/css/../../app.py", "/static/%2e%2e/app.py"):

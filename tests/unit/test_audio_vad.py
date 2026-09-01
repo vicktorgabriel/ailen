@@ -136,6 +136,7 @@ def test_utterance_collector_completes_utterance_on_silence_timeout() -> None:
     assert is_act_final is False
     assert collector.is_in_utterance is False
     assert final_seg.duration_ms > 100.0
+    assert final_seg.truncated is False
 
 
 def test_utterance_collector_maximum_utterance_limit() -> None:
@@ -157,6 +158,7 @@ def test_utterance_collector_maximum_utterance_limit() -> None:
         seg, _ = collector.process_frame(voice)
 
     assert seg is not None
+    assert seg.truncated is True
     assert collector.is_in_utterance is False
 
 

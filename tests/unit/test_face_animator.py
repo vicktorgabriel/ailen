@@ -1,7 +1,10 @@
 """Unit tests for FaceAnimator and normalized FacePose generation."""
 
 import random
+from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 from ailen.domain.enums import AssistantState
 from ailen.face.animator import FaceAnimator
@@ -223,8 +226,69 @@ def test_null_face_controller_with_animator() -> None:
 def test_tkinter_face_controller_accepts_pixel_style_without_opening_window() -> None:
     controller = TkinterFaceController(style="pixel", width=640, height=360, fullscreen=False)
     assert controller.style == "pixel"
-    fallback = TkinterFaceController(style="unknown")
-    assert fallback.style == "vector"
+    with pytest.raises(ValueError, match="unknown face renderer style"):
+        TkinterFaceController(style="unknown")
+
+
+def test_portrait_renderer_assets_are_packaged() -> None:
+    asset_dir = TkinterFaceController._portrait_asset_dir()
+    required = {
+        "ailen_portrait_base.png",
+        "eyes_left.png",
+        "eyes_right.png",
+        "eyes_up.png",
+        "eyes_down.png",
+        "eyes_blink.png",
+        "eyes_blink_left.png",
+        "eyes_blink_right.png",
+        "mouth_small.png",
+        "mouth_open.png",
+    }
+    assert required <= {path.name for path in asset_dir.glob("*.png")}
+
+
+def test_portrait_asset_failure_never_selects_pixel_implicitly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = TkinterFaceController(style="portrait")
+    fake_tk = MagicMock()
+    fake_tk.TclError = RuntimeError
+    monkeypatch.setattr(controller, "_portrait_asset_dir", lambda: tmp_path)
+
+    with pytest.raises(RuntimeError, match="portrait renderer assets are unavailable"):
+        controller._load_portrait_assets(fake_tk)
+
+    assert controller.style == "portrait"
+
+
+def test_portrait_renderer_composes_base_gaze_and_speech_patches() -> None:
+    controller = TkinterFaceController(style="portrait", width=800, height=480)
+    canvas = MagicMock()
+    controller._canvas = canvas
+    base = MagicMock()
+    base.width.return_value = 800
+    base.height.return_value = 480
+    controller._portrait_assets = {
+        "base": base,
+        "eyes_left": MagicMock(),
+        "eyes_right": MagicMock(),
+        "eyes_up": MagicMock(),
+        "eyes_down": MagicMock(),
+        "eyes_blink": MagicMock(),
+        "eyes_blink_left": MagicMock(),
+        "eyes_blink_right": MagicMock(),
+        "mouth_small": MagicMock(),
+        "mouth_open": MagicMock(),
+    }
+
+    controller._draw_portrait_face(
+        FacePose(gaze_x=0.8, mouth_open=0.7, left_eye_open=1.0, right_eye_open=1.0),
+        800,
+        480,
+    )
+
+    assert canvas.create_image.call_count == 3
 
 
 def test_pixel_renderer_uses_finer_grid_at_asrock_resolution() -> None:

@@ -6,7 +6,12 @@ from datetime import UTC, datetime
 import ailen.tools.builtin.music as music_module
 from ailen.domain.enums import ErrorCode
 from ailen.tools.builtin.clock import ClockTool
-from ailen.tools.builtin.music import LocalMusicService, MprisMusicService, MusicTool
+from ailen.tools.builtin.music import (
+    DesktopMusicService,
+    LocalMusicService,
+    MprisMusicService,
+    MusicTool,
+)
 from ailen.tools.builtin.system_status import SystemStatusTool
 from ailen.tools.builtin.timer import TimerService, TimerTool
 from ailen.tools.builtin.volume import (
@@ -228,3 +233,40 @@ def test_volume_step_unavailable_does_not_guess_current_level() -> None:
     result = tool.execute({"action": "step_up", "step": 10}, ToolContext())
     assert result.success is False
     assert result.status_code == "UNAVAILABLE"
+
+
+def test_desktop_music_service_finds_only_standard_music_roots(tmp_path, monkeypatch) -> None:
+    music_dir = tmp_path / "Música"
+    music_dir.mkdir()
+    track = music_dir / "Soda Stereo - Persiana Americana.mp3"
+    track.write_bytes(b"fake")
+    outside = tmp_path / "secret.mp3"
+    outside.write_bytes(b"fake")
+    service = DesktopMusicService(home=tmp_path)
+    opened: list[str] = []
+    monkeypatch.setattr(service, "_open", lambda target: opened.append(target) or True)
+
+    assert service.play("Persiana Americana", source="local") is True
+    assert opened == [str(track)]
+    assert service.current_source == "local"
+
+
+def test_desktop_music_youtube_requires_network_in_tool(monkeypatch, tmp_path) -> None:
+    service = DesktopMusicService(home=tmp_path)
+    monkeypatch.setattr(service, "_youtube_url", lambda query: "https://www.youtube.com/watch?v=test")
+    monkeypatch.setattr(service, "_open", lambda target: True)
+    tool = MusicTool(service=service)
+
+    blocked = tool.execute(
+        {"action": "play", "query": "Soda Stereo", "source": "youtube"},
+        ToolContext(internet_available=True, network_access_allowed=False),
+    )
+    assert blocked.success is False
+    assert blocked.status_code == "NETWORK_DISABLED"
+
+    allowed = tool.execute(
+        {"action": "play", "query": "Soda Stereo", "source": "youtube"},
+        ToolContext(internet_available=True, network_access_allowed=True),
+    )
+    assert allowed.success is True
+    assert allowed.data["source"] == "youtube"

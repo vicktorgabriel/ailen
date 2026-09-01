@@ -69,7 +69,7 @@ def test_cli_lab_doctor_text_and_json() -> None:
 
 def test_cli_lab_prepare_ai() -> None:
     with patch("sys.stdout", new=StringIO()) as fake_out:
-        ret = main(["lab", "prepare-ai", "--purpose", "SANITY"])
+        ret = main(["lab", "prepare-ai"])
         assert ret == 0
         out_text = fake_out.getvalue()
         assert "AILEN LAB AI PREPARATION" in out_text

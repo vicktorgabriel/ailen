@@ -257,7 +257,12 @@ def test_pipewire_input_uses_pw_record_for_raw_pcm(monkeypatch) -> None:
     monkeypatch.setattr("ailen.audio.alsa_backend.subprocess.Popen", fake_popen)
     monkeypatch.setattr("ailen.audio.alsa_backend.time.sleep", lambda _seconds: None)
 
-    backend = AlsaAudioInputBackend(device="pipewire", sample_rate=16000, channels=1, frame_ms=20.0)
+    backend = AlsaAudioInputBackend(
+        device="pipewire:test.source",
+        sample_rate=16000,
+        channels=1,
+        frame_ms=20.0,
+    )
     backend.start()
 
     assert captured_cmd == [
@@ -266,10 +271,54 @@ def test_pipewire_input_uses_pw_record_for_raw_pcm(monkeypatch) -> None:
         "--rate", "16000",
         "--channels", "1",
         "--latency", "40ms",
+        "--target", "test.source",
         "-",
     ]
     assert backend.health().status == ServiceStatus.HEALTHY
     assert "pw-record" in backend.health().detail
+    backend.stop()
+
+
+def test_pipewire_default_uses_pw_record_native_default_without_pactl(
+    monkeypatch,
+) -> None:
+    """Removing native-default capture or adding --target is the regression."""
+
+    captured_cmd: list[str] = []
+
+    class RunningProcess:
+        stdout = object()
+        stderr = None
+
+        def poll(self):  # type: ignore[no-untyped-def]
+            return None
+
+        def terminate(self) -> None:
+            return None
+
+        def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+            del timeout
+            return 0
+
+    def fake_which(name: str) -> str | None:
+        return "/usr/bin/pw-record" if name == "pw-record" else None
+
+    def fake_popen(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        captured_cmd.extend(cmd)
+        return RunningProcess()
+
+    monkeypatch.setattr("ailen.audio.alsa_backend.shutil.which", fake_which)
+    monkeypatch.setattr("ailen.audio.alsa_backend.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("ailen.audio.alsa_backend.time.sleep", lambda _seconds: None)
+
+    backend = AlsaAudioInputBackend(device="pipewire")
+    backend.start()
+
+    assert captured_cmd[0] == "/usr/bin/pw-record"
+    assert "--target" not in captured_cmd
+    assert backend.effective_device == "pipewire"
+    assert backend.health().status == ServiceStatus.HEALTHY
     backend.stop()
 
 

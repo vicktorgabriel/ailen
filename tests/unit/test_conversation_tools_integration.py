@@ -189,6 +189,110 @@ def test_handle_transcript_convenience() -> None:
     assert "14:00" in response.text
 
 
+def test_low_confidence_voice_side_effect_reprompts_without_execution() -> None:
+    coordinator, _executor, fake_ai, _audio = build_test_coordinator()
+    fake_ai.generate = MagicMock(side_effect=fake_ai.generate)
+
+    response, plan = coordinator.handle_transcript(
+        Transcript(
+            text="Subí el volumen",
+            confidence=0.58,
+            engine="vosk",
+            audio_duration_ms=840.0,
+            utterance_id="utterance-low",
+        )
+    )
+
+    assert response.finish_reason == "stt_reprompt"
+    assert response.provider == "rule"
+    assert plan.reason_code == "VOICE_ACTION_UNCERTAIN"
+    assert not fake_ai.generate.called
+    status, _ = coordinator.handle_user_input("volumen actual")
+    assert status.text == "El volumen actual es 50%."
+
+
+def test_complete_barge_in_voice_side_effect_can_execute_with_high_confidence() -> None:
+    coordinator, _executor, fake_ai, _audio = build_test_coordinator()
+    fake_ai.generate = MagicMock(side_effect=fake_ai.generate)
+
+    response, plan = coordinator.handle_transcript(
+        Transcript(
+            text="Subí el volumen",
+            confidence=0.97,
+            engine="vosk",
+            audio_duration_ms=600.0,
+            utterance_id="utterance-barge-in",
+            interrupted=True,
+        )
+    )
+
+    assert response.finish_reason == "tool_direct"
+    assert plan.reason_code == "RULE_ONLY_TOOL"
+    status, _ = coordinator.handle_user_input("volumen actual")
+    assert status.text == "El volumen actual es 60%."
+    assert not fake_ai.generate.called
+
+
+def test_truncated_voice_side_effect_reprompts_even_with_high_confidence() -> None:
+    coordinator, _executor, fake_ai, _audio = build_test_coordinator()
+    fake_ai.generate = MagicMock(side_effect=fake_ai.generate)
+
+    response, plan = coordinator.handle_transcript(
+        Transcript(
+            text="Subí el volumen",
+            confidence=0.97,
+            engine="vosk",
+            audio_duration_ms=15_000.0,
+            utterance_id="utterance-cut",
+            truncated=True,
+        )
+    )
+
+    assert response.finish_reason == "stt_reprompt"
+    assert plan.reason_code == "VOICE_ACTION_TRUNCATED"
+    status, _ = coordinator.handle_user_input("volumen actual")
+    assert status.text == "El volumen actual es 50%."
+    assert not fake_ai.generate.called
+
+
+def test_high_confidence_voice_side_effect_executes_once() -> None:
+    coordinator, _executor, fake_ai, _audio = build_test_coordinator()
+    fake_ai.generate = MagicMock(side_effect=fake_ai.generate)
+
+    response, plan = coordinator.handle_transcript(
+        Transcript(
+            text="Subí el volumen",
+            confidence=0.91,
+            engine="vosk",
+            audio_duration_ms=760.0,
+            utterance_id="utterance-clear",
+        )
+    )
+
+    assert response.finish_reason == "tool_direct"
+    assert response.text == "Listo, volumen al 60%."
+    assert plan.reason_code == "RULE_ONLY_TOOL"
+    assert not fake_ai.generate.called
+
+
+def test_unknown_confidence_does_not_block_read_only_voice_tool() -> None:
+    coordinator, _executor, fake_ai, _audio = build_test_coordinator()
+    fake_ai.generate = MagicMock(side_effect=fake_ai.generate)
+
+    response, _plan = coordinator.handle_transcript(
+        Transcript(
+            text="¿Qué hora es?",
+            confidence=None,
+            engine="whisper_cpp",
+            utterance_id="utterance-read",
+        )
+    )
+
+    assert response.finish_reason == "tool_direct"
+    assert "14:00" in response.text
+    assert not fake_ai.generate.called
+
+
 def test_tool_network_policy_is_separate_from_cloud_internet_flag() -> None:
     provider = FakeWebSearchProvider(
         canned_results={
@@ -569,7 +673,8 @@ def test_live_weather_without_provider_never_reaches_llm() -> None:
 
 def test_conversation_affect_metadata_is_stripped_and_applied() -> None:
     assert ConversationCoordinator._extract_conversational_expression(
-        "Qué bueno verte así. [[face:happy]]"
+        "Qué bueno verte así. [[face:happy]]",
+        ("happy", "confused"),
     ) == ("Qué bueno verte así.", "happy")
     assert ConversationCoordinator._extract_conversational_expression(
         "Hola. [[face:wink]]"
@@ -581,7 +686,8 @@ def test_conversation_affect_metadata_is_stripped_and_applied() -> None:
 
 def test_conversation_expression_prefix_is_stripped_for_early_voice_reaction() -> None:
     assert ConversationCoordinator._extract_conversational_expression(
-        "[[face:happy]] Qué bueno, salió bien."
+        "[[face:happy]] Qué bueno, salió bien.",
+        ("happy", "confused"),
     ) == ("Qué bueno, salió bien.", "happy")
     assert ConversationCoordinator._extract_conversational_expression(
         "[[face:not_real]] Hola."
@@ -590,8 +696,13 @@ def test_conversation_expression_prefix_is_stripped_for_early_voice_reaction() -
 
 def test_conversation_expression_accepts_compact_model_prefix_but_keeps_whitelist() -> None:
     assert ConversationCoordinator._extract_conversational_expression(
-        "[[confused]] No entendí bien."
+        "[[confused]] No entendí bien.",
+        ("happy", "confused"),
     ) == ("No entendí bien.", "confused")
     assert ConversationCoordinator._extract_conversational_expression(
         "[[exhausted]] Hola."
     ) == ("Hola.", None)
+    assert ConversationCoordinator._extract_conversational_expression(
+        "[[face:embarrassed]] Bueno...",
+        ("neutral", "embarrassed"),
+    ) == ("Bueno...", "embarrassed")

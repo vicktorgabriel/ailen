@@ -1,5 +1,12 @@
 """Unit tests for LabComponentFactory verifying real, missing, and simulated resolution."""
 
+from ailen.audio.fake import (
+    FakeAudioInputBackend,
+    FakeAudioOutputBackend,
+    FakeSttBackend,
+    FakeTtsBackend,
+)
+from ailen.audio.level import AudioProcessorChain, CaptureLevelProcessor
 from ailen.core.config import AILENConfig
 from ailen.hardware.contracts import (
     CameraDeviceReport,
@@ -35,6 +42,28 @@ def test_factory_face_simulated() -> None:
     _face, status = factory.build_face(simulate=True)
     assert status.state == "SIMULATED"
     assert "Simulated" in status.detail
+
+
+def test_factory_builds_the_canonical_audio_coordinator_from_speech_config() -> None:
+    cfg = AILENConfig()
+    cfg.speech.vad_engine = "energy"
+    cfg.speech.silence_timeout_ms = 600
+    cfg.speech.vad_hangover_ms = 140
+    cfg.speech.interruption_enabled = True
+
+    coordinator = LabComponentFactory(config=cfg).build_audio_coordinator(
+        audio_input=FakeAudioInputBackend(),
+        audio_output=FakeAudioOutputBackend(),
+        stt=FakeSttBackend(),
+        tts=FakeTtsBackend(),
+    )
+
+    assert coordinator is not None
+    assert coordinator.collector.silence_timeout_ms == 600
+    assert coordinator.interruption_enabled is True
+    assert coordinator.default_speech_rate == cfg.speech.tts_rate
+    assert isinstance(coordinator.frame_processor, AudioProcessorChain)
+    assert isinstance(coordinator.frame_processor.processors[0], CaptureLevelProcessor)
 
 
 def test_factory_vision_disabled() -> None:
@@ -291,6 +320,7 @@ def test_factory_ai_simulated() -> None:
 
 def test_factory_ai_no_runtimes_not_running() -> None:
     cfg = AILENConfig()
+    cfg.ai.local.enabled = True
     factory = LabComponentFactory(config=cfg)
     backends, status = factory.build_ai_backends(simulate=False, runtime_descriptors=[])
     assert "local" not in backends
@@ -310,6 +340,7 @@ def test_factory_ai_does_not_pick_arbitrary_ollama_model() -> None:
     )
 
     cfg = AILENConfig()
+    cfg.ai.local.enabled = True
     desc = ModelCatalog().get_model("qwen3.5-0.8b-q8_0")
     assert desc is not None
     plan = ModelPlan(
@@ -344,6 +375,60 @@ def test_factory_ai_does_not_pick_arbitrary_ollama_model() -> None:
     assert status.state == "MISSING_MODEL"
 
 
+def test_factory_ai_does_not_auto_run_matching_unqualified_candidate() -> None:
+    from unittest.mock import patch
+
+    from ailen.models.catalog import ModelCatalog
+    from ailen.models.planner import ModelPlan
+    from ailen.runtime.contracts import (
+        ExternalRuntimeDescriptor,
+        RuntimeHealth,
+        RuntimeStatus,
+        RuntimeType,
+    )
+
+    cfg = AILENConfig()
+    cfg.ai.local.enabled = True
+    cfg.ai.local.model = ""
+    descriptor = ModelCatalog().get_model("qwen3.5-0.8b-q8_0")
+    assert descriptor is not None
+    assert descriptor.qualification_status.value == "candidate"
+    plan = ModelPlan(
+        selected_model_id=descriptor.model_id,
+        runtime="llama.cpp",
+        device="cpu",
+        gpu_layers=0,
+        is_viable=True,
+        model_descriptor=descriptor,
+    )
+    runtime = ExternalRuntimeDescriptor(
+        runtime_type=RuntimeType.LLAMA_SERVER,
+        executable_path="/usr/bin/llama-server",
+        endpoint="http://127.0.0.1:8080/v1",
+        is_detected=True,
+        status=RuntimeStatus.HEALTHY,
+        health=RuntimeHealth(
+            status=RuntimeStatus.HEALTHY,
+            endpoint="http://127.0.0.1:8080/v1",
+            is_running=True,
+        ),
+    )
+
+    with patch(
+        "ailen.runtime.inventory.RuntimeModelInventory.list_models",
+        return_value=[descriptor.model_id],
+    ) as list_models:
+        backends, status = LabComponentFactory(cfg).build_ai_backends(
+            model_plan=plan,
+            runtime_descriptors=[runtime],
+        )
+
+    assert "local" not in backends
+    assert status.state == "MISSING_MODEL"
+    assert "not target-hardware qualified" in status.detail
+    list_models.assert_not_called()
+
+
 def test_factory_ai_uses_exact_configured_ollama_model() -> None:
     from unittest.mock import patch
 
@@ -356,6 +441,7 @@ def test_factory_ai_uses_exact_configured_ollama_model() -> None:
 
     cfg = AILENConfig()
     cfg.ai.local.enabled = True
+    cfg.ai.local.runtime = "ollama"
     cfg.ai.local.model = "qwen3.5:9b"
     runtime = ExternalRuntimeDescriptor(
         runtime_type=RuntimeType.OLLAMA,
@@ -378,3 +464,277 @@ def test_factory_ai_uses_exact_configured_ollama_model() -> None:
     assert "local" in backends
     assert getattr(backends["local"], "model", None) == "qwen3.5:9b"
     assert status.state == "READY"
+
+
+def test_factory_ai_does_not_cross_provisioned_runtime_evidence() -> None:
+    """A llama.cpp-qualified plan must not silently execute through Ollama."""
+
+    from dataclasses import replace
+    from unittest.mock import patch
+
+    from ailen.models.catalog import ModelCatalog, ModelQualificationStatus
+    from ailen.models.planner import ModelPlan
+    from ailen.runtime.contracts import (
+        ExternalRuntimeDescriptor,
+        RuntimeHealth,
+        RuntimeStatus,
+        RuntimeType,
+    )
+
+    cfg = AILENConfig()
+    cfg.ai.local.enabled = True
+    cfg.ai.local.model = ""
+    cfg.ai.local.runtime = "auto"
+    desc = ModelCatalog().get_model("qwen3.5-0.8b-q8_0")
+    assert desc is not None
+    desc = replace(
+        desc,
+        qualification_status=ModelQualificationStatus.QUALIFIED,
+        benchmark_status="measured_target",
+    )
+    plan = ModelPlan(
+        selected_model_id=desc.model_id,
+        runtime="llama.cpp",
+        device="cpu",
+        gpu_layers=0,
+        is_viable=True,
+        model_descriptor=desc,
+    )
+    ollama = ExternalRuntimeDescriptor(
+        runtime_type=RuntimeType.OLLAMA,
+        executable_path="/usr/bin/ollama",
+        endpoint="http://127.0.0.1:11434/v1",
+        is_detected=True,
+        status=RuntimeStatus.HEALTHY,
+        health=RuntimeHealth(
+            status=RuntimeStatus.HEALTHY,
+            endpoint="http://127.0.0.1:11434/v1",
+            is_running=True,
+        ),
+    )
+
+    with patch(
+        "ailen.runtime.inventory.RuntimeModelInventory.list_models",
+        return_value=[desc.model_id],
+    ) as list_models:
+        backends, status = LabComponentFactory(cfg).build_ai_backends(
+            model_plan=plan,
+            runtime_descriptors=[ollama],
+        )
+
+    assert "local" not in backends
+    assert status.state == "NOT_RUNNING"
+    list_models.assert_not_called()
+    assert "llama.cpp" in status.detail
+
+
+def test_factory_ai_explicit_runtime_filters_other_healthy_runtime() -> None:
+    from unittest.mock import patch
+
+    from ailen.runtime.contracts import (
+        ExternalRuntimeDescriptor,
+        RuntimeHealth,
+        RuntimeStatus,
+        RuntimeType,
+    )
+
+    cfg = AILENConfig()
+    cfg.ai.local.enabled = True
+    cfg.ai.local.model = "configured-model"
+    cfg.ai.local.runtime = "llama_cpp"
+    ollama = ExternalRuntimeDescriptor(
+        runtime_type=RuntimeType.OLLAMA,
+        executable_path="/usr/bin/ollama",
+        endpoint="http://127.0.0.1:11434/v1",
+        is_detected=True,
+        status=RuntimeStatus.HEALTHY,
+        health=RuntimeHealth(
+            status=RuntimeStatus.HEALTHY,
+            endpoint="http://127.0.0.1:11434/v1",
+            is_running=True,
+        ),
+    )
+
+    with patch(
+        "ailen.runtime.inventory.RuntimeModelInventory.list_models",
+        return_value=["configured-model"],
+    ) as list_models:
+        backends, status = LabComponentFactory(cfg).build_ai_backends(
+            runtime_descriptors=[ollama]
+        )
+
+    assert "local" not in backends
+    assert status.state == "NOT_RUNNING"
+    list_models.assert_not_called()
+    assert "llama.cpp" in status.detail
+
+
+def test_factory_local_disabled_ignores_matching_model_plan() -> None:
+    from unittest.mock import patch
+
+    from ailen.models.catalog import ModelCatalog
+    from ailen.models.planner import ModelPlan
+    from ailen.runtime.contracts import (
+        ExternalRuntimeDescriptor,
+        RuntimeHealth,
+        RuntimeStatus,
+        RuntimeType,
+    )
+
+    cfg = AILENConfig()
+    cfg.ai.local.enabled = False
+    desc = ModelCatalog().get_model("qwen3.5-0.8b-q8_0")
+    assert desc is not None
+    plan = ModelPlan(
+        selected_model_id=desc.model_id, runtime="ollama", device="cpu", gpu_layers="0",
+        is_viable=True, model_descriptor=desc,
+    )
+    runtime = ExternalRuntimeDescriptor(
+        runtime_type=RuntimeType.OLLAMA, executable_path="/usr/bin/ollama",
+        endpoint="http://127.0.0.1:11434/v1", is_detected=True, status=RuntimeStatus.HEALTHY,
+        health=RuntimeHealth(status=RuntimeStatus.HEALTHY, endpoint="http://127.0.0.1:11434/v1", is_running=True),
+    )
+    factory = LabComponentFactory(config=cfg)
+    with patch(
+        "ailen.runtime.inventory.RuntimeModelInventory.list_models",
+        return_value=[desc.model_id],
+    ) as list_models:
+        backends, _status = factory.build_ai_backends(model_plan=plan, runtime_descriptors=[runtime])
+    assert "local" not in backends
+    list_models.assert_not_called()
+
+
+def test_named_remote_backend_is_independent_from_other_remote_presets() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from ailen.ai.contracts import BackendHealth
+    from ailen.domain.enums import ServiceStatus
+
+    cfg = AILENConfig()
+    cfg.ai.local.enabled = False
+    cfg.ai.provider = "remote:openai"
+    cfg.ai.remote.providers["openai"].enabled = True
+    cfg.ai.remote.providers["openai"].model = "operator-selected-model"
+    backend = MagicMock()
+    backend.health.return_value = BackendHealth(ServiceStatus.HEALTHY, "synthetic")
+
+    with patch(
+        "ailen.runtime.factory.build_remote_backend",
+        return_value=backend,
+    ) as build_remote:
+        backends, _ = LabComponentFactory(cfg).build_ai_backends(
+            runtime_descriptors=[]
+        )
+
+    assert set(backends) == {"remote:openai"}
+    build_remote.assert_called_once()
+    assert build_remote.call_args.args[0] == "openai"
+    assert build_remote.call_args.args[1].model == "operator-selected-model"
+
+
+def test_disabled_remote_provider_is_not_constructed() -> None:
+    from unittest.mock import patch
+
+    cfg = AILENConfig()
+    cfg.ai.local.enabled = False
+    assert all(not provider.enabled for provider in cfg.ai.remote.providers.values())
+
+    with patch("ailen.runtime.factory.build_remote_backend") as build_remote:
+        backends, status = LabComponentFactory(cfg).build_ai_backends(
+            runtime_descriptors=[]
+        )
+
+    assert backends == {}
+    assert status.state == "UNAVAILABLE"
+    assert "No eligible AI provider" in status.detail
+    build_remote.assert_not_called()
+
+
+def test_two_named_remotes_keep_independent_routes_and_models() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from ailen.ai.contracts import BackendHealth
+    from ailen.domain.enums import ServiceStatus
+
+    cfg = AILENConfig()
+    cfg.ai.local.enabled = False
+    for provider_id, model in (
+        ("openai", "operator-openai-model"),
+        ("anthropic", "operator-anthropic-model"),
+    ):
+        cfg.ai.remote.providers[provider_id].enabled = True
+        cfg.ai.remote.providers[provider_id].model = model
+        cfg.ai.remote.providers[provider_id].qualification_status = "qualified"
+
+    def make_backend(provider_id, provider_config, *, api_key):  # type: ignore[no-untyped-def]
+        del provider_id, provider_config, api_key
+        backend = MagicMock()
+        backend.health.return_value = BackendHealth(ServiceStatus.HEALTHY, "synthetic")
+        return backend
+
+    with patch(
+        "ailen.runtime.factory.build_remote_backend",
+        side_effect=make_backend,
+    ) as build_remote:
+        backends, _ = LabComponentFactory(cfg).build_ai_backends(
+            runtime_descriptors=[]
+        )
+
+    assert set(backends) == {"remote:openai", "remote:anthropic"}
+    assert [call.args[1].model for call in build_remote.call_args_list] == [
+        "operator-openai-model",
+        "operator-anthropic-model",
+    ]
+
+
+def test_auto_does_not_construct_configured_but_unqualified_remote() -> None:
+    from unittest.mock import patch
+
+    cfg = AILENConfig()
+    cfg.ai.provider = "auto"
+    cfg.ai.local.enabled = False
+    provider = cfg.ai.remote.providers["openai"]
+    provider.enabled = True
+    provider.model = "operator-selected-model"
+    provider.qualification_status = "configured"
+
+    with patch("ailen.runtime.factory.build_remote_backend") as build_remote:
+        backends, status = LabComponentFactory(cfg).build_ai_backends(
+            runtime_descriptors=[]
+        )
+
+    assert backends == {}
+    assert status.state == "UNAVAILABLE"
+    build_remote.assert_not_called()
+
+
+def test_auto_accepts_target_qualified_manual_catalog_without_fake_health() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from ailen.ai.contracts import BackendHealth
+    from ailen.domain.enums import ServiceStatus
+
+    cfg = AILENConfig()
+    cfg.ai.provider = "auto"
+    cfg.ai.local.enabled = False
+    provider = cfg.ai.remote.providers["anthropic"]
+    provider.enabled = True
+    provider.model = "operator-selected-model"
+    provider.qualification_status = "qualified"
+    provider.catalog_mode = "manual"
+    backend = MagicMock()
+    backend.health.return_value = BackendHealth(
+        ServiceStatus.UNKNOWN,
+        "configured manual catalog; runtime request is the health probe",
+    )
+
+    with patch(
+        "ailen.runtime.factory.build_remote_backend", return_value=backend
+    ) as build_remote:
+        backends, status = LabComponentFactory(cfg).build_ai_backends(
+            runtime_descriptors=[]
+        )
+
+    assert set(backends) == {"remote:anthropic"}
+    assert status.state == "READY"
+    build_remote.assert_called_once()

@@ -35,24 +35,30 @@ def test_outbound_privacy_lan_brain() -> None:
     assert reason_priv == "UNTRUSTED_LAN_BLOCKED"
 
 
-def test_outbound_privacy_cloud_strict_isolation() -> None:
+def test_outbound_privacy_remote_strict_isolation() -> None:
     # Public is allowed
-    allowed_pub, reason_pub = OutboundPrivacyPolicy.is_destination_allowed(PrivacyLevel.PUBLIC, "cloud")
+    allowed_pub, reason_pub = OutboundPrivacyPolicy.is_destination_allowed(
+        PrivacyLevel.PUBLIC, "remote:test"
+    )
     assert allowed_pub is True
-    assert reason_pub == "CLOUD_PUBLIC_ALLOWED"
+    assert reason_pub == "REMOTE_PUBLIC_ALLOWED"
 
     # Restricted is blocked
-    allowed_res, reason_res = OutboundPrivacyPolicy.is_destination_allowed(PrivacyLevel.RESTRICTED, "cloud")
+    allowed_res, reason_res = OutboundPrivacyPolicy.is_destination_allowed(
+        PrivacyLevel.RESTRICTED, "remote:test"
+    )
     assert allowed_res is False
-    assert reason_res == "RESTRICTED_CLOUD_BLOCKED"
+    assert reason_res == "RESTRICTED_REMOTE_BLOCKED"
 
     # Private is strictly blocked
-    allowed_priv, reason_priv = OutboundPrivacyPolicy.is_destination_allowed(PrivacyLevel.PRIVATE, "cloud")
+    allowed_priv, reason_priv = OutboundPrivacyPolicy.is_destination_allowed(
+        PrivacyLevel.PRIVATE, "remote:test"
+    )
     assert allowed_priv is False
     assert reason_priv == "PRIVATE_REMOTE_BLOCKED"
 
 
-def test_private_request_to_cloud_fails_closed() -> None:
+def test_private_request_to_remote_fails_closed() -> None:
     req = AiRequest(
         request_id="req-123",
         system_context="Sys context",
@@ -63,7 +69,7 @@ def test_private_request_to_cloud_fails_closed() -> None:
     )
 
     with pytest.raises(PermissionError, match="PRIVATE_REMOTE_BLOCKED"):
-        OutboundPrivacyPolicy.sanitize_request_for_destination(req, "cloud")
+        OutboundPrivacyPolicy.sanitize_request_for_destination(req, "remote:test")
 
 
 def test_restricted_request_to_untrusted_lan_fails_closed() -> None:

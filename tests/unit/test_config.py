@@ -3,10 +3,12 @@
 import os
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
 from ailen.core.config import (
     AILENConfig,
+    RemoteProviderConfig,
     dump_config_toml,
     load_config,
     save_config,
@@ -20,12 +22,41 @@ class TestConfig(unittest.TestCase):
 
     def test_default_config(self):
         cfg = AILENConfig()
-        self.assertEqual(cfg.schema_version, 1)
+        self.assertEqual(cfg.schema_version, 3)
         self.assertEqual(cfg.node.profile, DeviceProfile.HYBRID)
         self.assertEqual(cfg.social.default_mode, SocialMode.WORKSHOP)
         self.assertTrue(cfg.display.enabled)
+        self.assertEqual(cfg.audio.auto_gain_noise_gate_rms, 0.008)
+        self.assertEqual(cfg.audio.auto_gain_gate_hold_ms, 300.0)
+        self.assertEqual(cfg.audio.input_processing_mode, "auto")
+        self.assertEqual(cfg.ai.local.runtime, "auto")
         errors = validate_config(cfg)
         self.assertEqual(errors, [])
+
+    def test_invalid_input_processing_mode_is_rejected(self):
+        cfg = AILENConfig()
+        cfg.audio.input_processing_mode = "mystery"
+
+        self.assertIn(
+            "audio.input_processing_mode must be one of: auto, raw, easyeffects",
+            validate_config(cfg),
+        )
+
+    def test_legacy_decorative_input_volume_migrates_to_neutral_dsp(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "legacy.toml"
+            target.write_text(
+                "schema_version = 2\n[audio]\ninput_volume = 95\n",
+                encoding="utf-8",
+            )
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                loaded = load_config(target)
+
+        self.assertEqual(loaded.schema_version, 3)
+        self.assertEqual(loaded.audio.capture_gain_db, 0.0)
+        self.assertFalse(hasattr(loaded.audio, "input_volume"))
+        self.assertTrue(any("decorative" in str(item.message) for item in caught))
 
     def test_dump_and_load_toml(self):
         cfg = AILENConfig()
@@ -59,6 +90,7 @@ class TestConfig(unittest.TestCase):
     def test_nested_ai_config_round_trip(self):
         cfg = AILENConfig()
         cfg.ai.local.enabled = True
+        cfg.ai.local.runtime = "ollama"
         cfg.ai.local.endpoint = "http://127.0.0.1:11434/v1"
         cfg.ai.local.model = "test-local"
         cfg.ai.local.intent_model = "test-intent"
@@ -66,10 +98,13 @@ class TestConfig(unittest.TestCase):
         cfg.ai.lan.enabled = True
         cfg.ai.lan.endpoint = "http://192.168.1.50:8080/v1"
         cfg.ai.lan.model = "test-lan"
-        cfg.ai.cloud.enabled = True
-        cfg.ai.cloud.endpoint = "https://example.invalid/v1"
-        cfg.ai.cloud.model = "test-cloud"
-        cfg.ai.cloud.input_cost_per_million = 0.123
+        cfg.ai.remote.providers["test"] = RemoteProviderConfig(
+            enabled=True,
+            endpoint="https://example.invalid/v1",
+            model="test-remote",
+            api_key_env="AILEN_TEST_KEY",
+            input_cost_per_million=0.123,
+        )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             target = Path(tmp_dir) / "ailen.toml"
@@ -77,16 +112,25 @@ class TestConfig(unittest.TestCase):
             text = target.read_text(encoding="utf-8")
             self.assertIn("[ai.local]", text)
             self.assertIn("[ai.lan]", text)
-            self.assertIn("[ai.cloud]", text)
+            self.assertIn("[ai.remote.providers.test]", text)
             loaded = load_config(target)
 
         self.assertTrue(loaded.ai.local.enabled)
+        self.assertEqual(loaded.ai.local.runtime, "ollama")
         self.assertEqual(loaded.ai.local.model, "test-local")
         self.assertEqual(loaded.ai.local.intent_model, "test-intent")
         self.assertEqual(loaded.ai.local.intent_timeout_seconds, 4.5)
         self.assertEqual(loaded.ai.lan.endpoint, "http://192.168.1.50:8080/v1")
-        self.assertEqual(loaded.ai.cloud.model, "test-cloud")
-        self.assertEqual(loaded.ai.cloud.input_cost_per_million, 0.123)
+        self.assertEqual(loaded.ai.remote.providers["test"].model, "test-remote")
+        self.assertEqual(loaded.ai.remote.providers["test"].input_cost_per_million, 0.123)
+
+    def test_local_model_may_be_empty_for_provisioned_selection(self):
+        cfg = AILENConfig()
+        cfg.ai.local.enabled = True
+        cfg.ai.local.runtime = "auto"
+        cfg.ai.local.model = ""
+
+        self.assertEqual(validate_config(cfg), [])
 
     def test_network_camera_config_round_trip(self):
         cfg = AILENConfig()
@@ -150,6 +194,47 @@ class TestConfig(unittest.TestCase):
         self.assertTrue(loaded.speech.interruption_enabled)
         self.assertEqual(loaded.speech.interruption_min_ms, 200)
 
+    def test_voice_action_confidence_floor_round_trips_and_validates(self):
+        cfg = AILENConfig()
+        cfg.speech.voice_action_min_confidence = 0.77
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "voice-policy.toml"
+            save_config(cfg, target)
+            loaded = load_config(target)
+        self.assertEqual(loaded.speech.voice_action_min_confidence, 0.77)
+        self.assertEqual(validate_config(loaded), [])
+
+        loaded.speech.voice_action_min_confidence = 1.1
+        self.assertTrue(
+            any(
+                "speech.voice_action_min_confidence" in error
+                for error in validate_config(loaded)
+            )
+        )
+
+    def test_stt_confidence_bands_round_trip_and_validate_order(self):
+        cfg = AILENConfig()
+        cfg.speech.stt_noise_confidence_max = 0.18
+        cfg.speech.stt_conversation_min_confidence = 0.46
+        cfg.speech.voice_action_min_confidence = 0.74
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "stt-bands.toml"
+            save_config(cfg, target)
+            loaded = load_config(target)
+
+        self.assertEqual(loaded.speech.stt_noise_confidence_max, 0.18)
+        self.assertEqual(loaded.speech.stt_conversation_min_confidence, 0.46)
+        self.assertEqual(validate_config(loaded), [])
+
+        loaded.speech.stt_noise_confidence_max = 0.60
+        loaded.speech.stt_conversation_min_confidence = 0.40
+        self.assertTrue(
+            any(
+                "STT confidence thresholds" in error
+                for error in validate_config(loaded)
+            )
+        )
+
     def test_web_search_provider_validation(self):
         cfg = AILENConfig()
         cfg.network.web_search_provider = "unknown"
@@ -172,12 +257,15 @@ class TestConfig(unittest.TestCase):
 
     def test_enabled_ai_backend_requires_valid_endpoint_and_model(self):
         cfg = AILENConfig()
-        cfg.ai.cloud.enabled = True
-        cfg.ai.cloud.endpoint = "not-a-url"
-        cfg.ai.cloud.model = ""
+        cfg.ai.remote.providers["broken"] = RemoteProviderConfig(
+            enabled=True,
+            endpoint="not-a-url",
+            model="",
+            api_key_env="AILEN_BROKEN_KEY",
+        )
         errors = validate_config(cfg)
-        self.assertTrue(any("ai.cloud.endpoint" in e for e in errors))
-        self.assertTrue(any("ai.cloud.model" in e for e in errors))
+        self.assertTrue(any("ai.remote.providers.broken.endpoint" in e for e in errors))
+        self.assertTrue(any("ai.remote.providers.broken.model" in e for e in errors))
 
     def test_validation_errors(self):
         cfg = AILENConfig()
@@ -257,6 +345,75 @@ def test_invalid_local_context_tokens_rejected() -> None:
     cfg = AILENConfig()
     cfg.ai.local.context_tokens = 256
     assert any("ai.local.context_tokens" in error for error in validate_config(cfg))
+
+
+def test_invalid_local_runtime_rejected() -> None:
+    cfg = AILENConfig()
+    cfg.ai.local.runtime = "arbitrary"
+    assert "ai.local.runtime must be one of: auto, ollama, llama_cpp" in validate_config(cfg)
+
+
+def test_updates_config_round_trip_has_one_canonical_source_shape(tmp_path: Path) -> None:
+    cfg = AILENConfig()
+    cfg.updates.channel = "stable"
+    cfg.updates.auto_check = True
+    cfg.updates.check_interval_hours = 12
+    cfg.updates.manifest_url = "https://updates.example.invalid/stable/manifest.json"
+    cfg.updates.manifest_signature_url = (
+        "https://updates.example.invalid/stable/manifest.json.sig"
+    )
+    cfg.updates.trust_public_key_path = "/etc/ailen/trust/update-ed25519.pub"
+    cfg.updates.auto_install = False
+    cfg.updates.maintenance_window = "04:30"
+    target = tmp_path / "ailen.toml"
+
+    save_config(cfg, target)
+    loaded = load_config(target)
+
+    assert loaded.updates == cfg.updates
+    assert validate_config(loaded) == []
+
+
+def test_updates_config_defaults_are_disabled_and_complete() -> None:
+    updates = AILENConfig().updates
+
+    assert updates.channel == "beta"
+    assert updates.auto_check is False
+    assert updates.check_interval_hours == 24
+    assert updates.manifest_url == ""
+    assert updates.manifest_signature_url == ""
+    assert updates.trust_public_key_path == ""
+    assert updates.auto_install is False
+    assert updates.maintenance_window == "03:00"
+
+
+def test_updates_config_rejects_invalid_policy_and_incomplete_trust() -> None:
+    cfg = AILENConfig()
+    cfg.updates.channel = "experimental"
+    cfg.updates.check_interval_hours = 0
+    cfg.updates.maintenance_window = "25:90"
+    cfg.updates.manifest_url = "http://updates.example.invalid/manifest.json"
+    cfg.updates.auto_install = True
+
+    errors = validate_config(cfg)
+
+    assert any("updates.channel" in error for error in errors)
+    assert any("updates.check_interval_hours" in error for error in errors)
+    assert any("updates.maintenance_window" in error for error in errors)
+    assert any("updates manifest and signature URLs" in error for error in errors)
+    assert any("updates.manifest_url" in error for error in errors)
+    assert any("updates source and trust" in error for error in errors)
+    assert any("updates.auto_install" in error for error in errors)
+
+
+def test_updates_config_rejects_unpaired_signature_and_non_https_url() -> None:
+    cfg = AILENConfig()
+    cfg.updates.manifest_signature_url = "ftp://updates.example.invalid/manifest.sig"
+
+    errors = validate_config(cfg)
+
+    assert any("updates manifest and signature URLs" in error for error in errors)
+    assert any("updates.manifest_signature_url" in error for error in errors)
 
 
 def test_invalid_context_budget_rejected() -> None:

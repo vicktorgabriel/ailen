@@ -9,12 +9,13 @@ import unittest
 import urllib.error
 import urllib.request
 from http.cookies import SimpleCookie
+from unittest.mock import MagicMock
 from urllib.parse import quote
 
 from ailen.services.config_service import ConfigService
 from ailen.services.settings_service import SettingsService
-from ailen.web.app import AILENWebApp
-from ailen.web.server import MAX_BODY_BYTES, create_server
+from ailen.web.app import AILENWebApp, WebResponse
+from ailen.web.server import MAX_BODY_BYTES, _Handler, create_server
 from ailen.web.services import FakeAuthService, FakeStatusService
 
 PASSWORD = "secreto-prueba"
@@ -78,6 +79,19 @@ class TestHTTPSmoke(unittest.TestCase):
         cookie = SimpleCookie(headers["Set-Cookie"])
         return f"ailen_session={cookie['ailen_session'].value}"
 
+    def test_client_disconnect_during_send_is_ignored(self) -> None:
+        handler = _Handler.__new__(_Handler)
+        handler.command = "GET"
+        handler.path = "/ia"
+        handler.send_response = MagicMock()  # type: ignore[method-assign]
+        handler.send_header = MagicMock()  # type: ignore[method-assign]
+        handler.end_headers = MagicMock()  # type: ignore[method-assign]
+        handler.wfile = MagicMock()
+        handler.wfile.write.side_effect = BrokenPipeError(32, "Broken pipe")
+
+        handler._send(WebResponse(status=200, body=b"panel"))
+        handler.wfile.write.assert_called_once_with(b"panel")
+
     def test_login_page_has_security_headers(self):
         status, headers, _ = self._request("/login")
         self.assertEqual(status, 200)
@@ -125,7 +139,12 @@ class TestHTTPSmoke(unittest.TestCase):
             "node.profile": "HYBRID",
             "display.enabled": "true",
             "display.fullscreen": "true",
-            "audio.input_volume": "80",
+            "audio.capture_gain_db": "0.0",
+            "audio.auto_gain_enabled": "false",
+            "audio.auto_gain_target_rms": "0.12",
+            "audio.max_auto_gain_db": "18.0",
+            "audio.auto_gain_noise_gate_rms": "0.008",
+            "audio.auto_gain_gate_hold_ms": "300.0",
             "audio.output_volume": "80",
             "audio.music_volume": "60",
             "vision.enabled": "true",
@@ -155,6 +174,17 @@ class TestHTTPSmoke(unittest.TestCase):
     def test_api_status_requires_auth_over_tcp(self):
         status, _, _ = self._request("/api/status")
         self.assertEqual(status, 303)
+
+    def test_update_status_query_reaches_app_over_tcp(self):
+        cookie = self._login()
+
+        status, _, body = self._request(
+            "/api/updates/status?operation_id=operation-1",
+            headers={"Cookie": cookie},
+        )
+
+        self.assertEqual(status, 404)
+        self.assertIn(b'"code": "NOT_FOUND"', body)
 
 
 if __name__ == "__main__":

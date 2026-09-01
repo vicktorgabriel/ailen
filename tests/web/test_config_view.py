@@ -116,7 +116,13 @@ class TestConfigView(ConfigViewTestCase):
             "node.name": "Nodo Vista",
             "node.profile": "LOCAL",
             "display.enabled": "true",
-            "audio.input_volume": "70",
+            "audio.capture_gain_db": "3.0",
+            "audio.input_processing_mode": "raw",
+            "audio.auto_gain_enabled": "true",
+            "audio.auto_gain_target_rms": "0.12",
+            "audio.max_auto_gain_db": "18.0",
+            "audio.auto_gain_noise_gate_rms": "0.009",
+            "audio.auto_gain_gate_hold_ms": "250.0",
             "audio.output_volume": "65",
             "audio.music_volume": "40",
             "vision.enabled": "true",
@@ -135,11 +141,41 @@ class TestConfigView(ConfigViewTestCase):
         self.assertIn('display_name = "Renamed"', text)
         self.assertIn('profile = "LOCAL"', text)
         self.assertIn("output_volume = 65", text)
+        self.assertIn('input_processing_mode = "raw"', text)
+        self.assertIn("auto_gain_noise_gate_rms = 0.009", text)
+        self.assertIn("auto_gain_gate_hold_ms = 250.0", text)
         self.assertIn('camera_device = "/dev/video1"', text)
         self.assertIn('default_mode = "SHOP"', text)
         self.assertIn("greeting_cooldown_seconds = 120.0", text)
         self.assertIn('channel = "stable"', text)
         self.assertIn("fullscreen = false", text)
+
+    def test_audio_form_persists_audio_and_speech_fields_as_one_section(self):
+        cookie = self._login_cookie()
+        csrf = self._csrf(cookie)
+        form = {
+            "_csrf": csrf,
+            "section": "audio",
+            "audio.capture_gain_db": "2.5",
+            "audio.input_processing_mode": "easyeffects",
+            "__present.audio.auto_gain_enabled": "1",
+            "audio.auto_gain_enabled": "true",
+            "speech.vad_threshold": "0.031",
+            "speech.noise_suppression_engine": "none",
+            "__present.speech.interruption_enabled": "1",
+        }
+
+        response = self.app.handle(post("/config", form, headers={"cookie": cookie}))
+
+        self.assertEqual(response.status, 303)
+        self.assertEqual(response.headers["Location"], "/audio?saved=1")
+        loaded = ConfigService(self.cfg_path).reload()
+        self.assertEqual(loaded.audio.capture_gain_db, 2.5)
+        self.assertEqual(loaded.audio.input_processing_mode, "easyeffects")
+        self.assertTrue(loaded.audio.auto_gain_enabled)
+        self.assertEqual(loaded.speech.vad_threshold, 0.031)
+        self.assertEqual(loaded.speech.noise_suppression_engine, "none")
+        self.assertFalse(loaded.speech.interruption_enabled)
 
     def test_post_invalid_shows_errors_and_keeps_file(self):
         cookie = self._login_cookie()

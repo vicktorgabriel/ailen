@@ -93,6 +93,29 @@ def test_ollama_native_warmup_loads_without_prompt(monkeypatch) -> None:
     }
 
 
+def test_ollama_native_releases_model_with_official_keep_alive_zero(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return _FakeResponse({"model": "tiny", "done": True, "done_reason": "unload"})
+
+    monkeypatch.setattr("ailen.ai.ollama_backend.urllib.request.urlopen", fake_urlopen)
+    backend = OllamaNativeBackend(model="tiny", timeout_seconds=12.0)
+
+    assert backend.release_if_idle() is True
+    assert captured["url"] == "http://127.0.0.1:11434/api/chat"
+    assert captured["timeout"] == 2.0
+    assert captured["payload"] == {
+        "model": "tiny",
+        "messages": [],
+        "stream": False,
+        "keep_alive": 0,
+    }
+
+
 class _FakeStreamingResponse:
     def __init__(self, payloads: list[dict], status: int = 200) -> None:
         self._lines = [json.dumps(item).encode("utf-8") + b"\n" for item in payloads]

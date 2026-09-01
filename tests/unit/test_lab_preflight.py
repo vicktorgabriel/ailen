@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -48,6 +48,48 @@ def test_lab_preflight_skipped_flags() -> None:
         assert states["STT"] == "SKIP"
         assert states["TTS"] == "SKIP"
         assert states["Local AI"] == "SKIP"
+
+
+def test_preflight_facepack_missing_library_warns_and_preserves_fallback() -> None:
+    cfg = AILENConfig()
+    cfg.display.face_style = "facepack"
+    cfg.display.face_engine_library = "/tmp/ailen-definitely-missing-face-engine.so"
+
+    with TemporaryDirectory() as tmpdir:
+        store = SpeechAssetStore(base_dir=tmpdir)
+        checker = LabPreflightChecker(config=cfg, speech_store=store)
+        report = checker.run_all(no_camera=True, no_audio=True, no_ai=True)
+
+    item = next(c for c in report.checks if c.name == "Native FacePack")
+    assert item.status == "WARN"
+    assert item.is_required is False
+    assert "face display will stay disabled" in item.detail
+    assert "Native FacePack" in report.missing_optional
+
+
+def test_preflight_facepack_passes_only_after_pack_load() -> None:
+    cfg = AILENConfig()
+    cfg.display.face_style = "facepack"
+    engine = MagicMock()
+    engine.__enter__.return_value = engine
+    engine.pack_id = "ailen.test"
+    engine.pack_version = "1.2"
+    engine.width = 480
+    engine.height = 480
+
+    with TemporaryDirectory() as tmpdir:
+        store = SpeechAssetStore(base_dir=tmpdir)
+        checker = LabPreflightChecker(config=cfg, speech_store=store)
+        with patch("ailen.face.native_engine.NativeFaceEngine", return_value=engine):
+            report = checker.run_all(no_camera=True, no_audio=True, no_ai=True)
+
+    engine.load_pack.assert_called_once_with(
+        cfg.display.facepack_path,
+        allowed_root=cfg.display.facepack_root,
+    )
+    item = next(c for c in report.checks if c.name == "Native FacePack")
+    assert item.status == "PASS"
+    assert "ailen.test v1.2" in item.detail
 
 
 def _vision_library_item(checker: LabPreflightChecker):

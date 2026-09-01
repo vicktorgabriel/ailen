@@ -85,6 +85,12 @@ def test_audio_coordinator_speech_capture_and_stt_transcription() -> None:
     assert seg is not None
     assert transcript is not None
     assert transcript.text == "comando de voz detectado"
+    assert transcript.engine == "fake"
+    assert transcript.audio_duration_ms == seg.duration_ms
+    assert transcript.utterance_id == "utterance-1"
+    assert transcript.interrupted is False
+    assert transcript.truncated is False
+    assert transcript.alternatives == ()
     assert state_mgr.current_state == AssistantState.IDLE
 
     # Verify lightweight events emitted
@@ -92,8 +98,19 @@ def test_audio_coordinator_speech_capture_and_stt_transcription() -> None:
     event_types = [e.event_type for e in history]
     assert EventType.VOICE_STARTED in event_types
     assert EventType.VOICE_ENDED in event_types
+    voice_ended = next(event for event in history if event.event_type is EventType.VOICE_ENDED)
+    assert voice_ended.payload["utterance_id"] == "utterance-1"
     assert EventType.SPEECH_CAPTURED in event_types
     assert EventType.TRANSCRIPT_READY in event_types
+    transcript_event = next(
+        event for event in history if event.event_type is EventType.TRANSCRIPT_READY
+    )
+    assert transcript_event.payload["engine"] == "fake"
+    assert transcript_event.payload["audio_duration_ms"] == seg.duration_ms
+    assert transcript_event.payload["utterance_id"] == "utterance-1"
+    assert transcript_event.payload["interrupted"] is False
+    assert transcript_event.payload["truncated"] is False
+    assert transcript_event.payload["alternatives"] == []
 
 
 def test_audio_coordinator_speak_tts_and_mouth_sync() -> None:
@@ -242,11 +259,49 @@ def test_audio_coordinator_plays_streaming_tts_chunks_incrementally() -> None:
         face_controller=NullFaceController(),
     )
 
-    out = coordinator.speak("Primera frase. Segunda frase.")
+    out = coordinator.speak("Primera frase. Segunda frase.", turn_id="turn-stream")
     assert len(output_backend.played_chunks) == 2
     assert out.audio_data == output_backend.played_chunks[0] + output_backend.played_chunks[1]
     assert out.latency_ms == 20.0
     assert [e.event_type for e in event_bus.history].count(EventType.SPEECH_STARTED) == 1
+    started = next(event for event in event_bus.history if event.event_type is EventType.SPEECH_STARTED)
+    assert started.payload["turn_id"] == "turn-stream"
+    assert started.payload["speech_generation"] == 1
+
+
+def test_audio_coordinator_speaks_incremental_requests_as_one_cancelable_turn() -> None:
+    seen_text: list[str] = []
+
+    class RecordingTts:
+        def health(self):  # type: ignore[no-untyped-def]
+            return None
+
+        def synthesize(self, request: SpeechRequest) -> SpeechOutput:
+            seen_text.append(request.text)
+            return SpeechOutput(audio_data=request.text.encode(), duration_ms=50.0)
+
+    output = FakeAudioOutputBackend()
+    event_bus = EventBus()
+    coordinator = AudioInteractionCoordinator(
+        audio_output=output,
+        tts=RecordingTts(),
+        event_bus=event_bus,
+    )
+
+    result = coordinator.speak_requests(
+        iter(
+            (
+                SpeechRequest(text="Primera frase completa."),
+                SpeechRequest(text="Segunda frase completa."),
+            )
+        )
+    )
+
+    assert seen_text == ["Primera frase completa.", "Segunda frase completa."]
+    assert output.played_chunks == [b"Primera frase completa.", b"Segunda frase completa."]
+    assert result.duration_ms == 100.0
+    assert [event.event_type for event in event_bus.history].count(EventType.SPEECH_STARTED) == 1
+    assert [event.event_type for event in event_bus.history].count(EventType.SPEECH_FINISHED) == 1
 
 
 def test_audio_coordinator_prefetches_multiple_tts_chunks_during_playback() -> None:
@@ -335,6 +390,164 @@ def test_streaming_tts_cancel_does_not_wait_for_inflight_prefetch() -> None:
     assert elapsed < 0.2
     assert output.played_chunks == []
 
+
+def test_cancelled_tts_generation_is_discarded_and_backend_calls_are_serialized() -> None:
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    active_calls = 0
+    max_active_calls = 0
+    calls_lock = threading.Lock()
+
+    class BlockingTts:
+        def health(self):  # type: ignore[no-untyped-def]
+            return None
+
+        def synthesize(self, request: SpeechRequest) -> SpeechOutput:
+            nonlocal active_calls, max_active_calls
+            with calls_lock:
+                active_calls += 1
+                max_active_calls = max(max_active_calls, active_calls)
+            try:
+                if request.text == "viejo":
+                    first_started.set()
+                    assert release_first.wait(timeout=2.0)
+                else:
+                    second_started.set()
+                return SpeechOutput(audio_data=request.text.encode(), duration_ms=40.0)
+            finally:
+                with calls_lock:
+                    active_calls -= 1
+
+    output = FakeAudioOutputBackend()
+    event_bus = EventBus()
+    coordinator = AudioInteractionCoordinator(
+        audio_output=output,
+        tts=BlockingTts(),
+        event_bus=event_bus,
+    )
+    old_turn = threading.Thread(
+        target=coordinator.speak_requests,
+        args=((SpeechRequest(text="viejo"),),),
+    )
+    old_turn.start()
+    assert first_started.wait(timeout=1.0)
+
+    coordinator.cancel_active_speech(reason="test_superseded")
+    old_turn.join(timeout=0.3)
+    assert not old_turn.is_alive()
+
+    new_turn = threading.Thread(
+        target=coordinator.speak_requests,
+        args=((SpeechRequest(text="nuevo"),),),
+    )
+    new_turn.start()
+    assert not second_started.wait(timeout=0.1)
+
+    release_first.set()
+    new_turn.join(timeout=1.0)
+
+    assert not new_turn.is_alive()
+    assert max_active_calls == 1
+    assert output.played_chunks == [b"nuevo"]
+    assert coordinator.active_tts_drains == 0
+    drained = [
+        event
+        for event in event_bus.history
+        if event.event_type is EventType.SPEECH_SYNTHESIS_DRAINED
+    ]
+    assert any(
+        event.payload["turn_id"] == "speech-1"
+        and event.payload["cancelled"] is True
+        and event.payload["stale"] is True
+        for event in drained
+    )
+
+
+def test_cancelled_tts_drain_is_observable_before_zero_count_and_next_call() -> None:
+    """Publishing drain after lock release/count removal is the lifecycle race."""
+
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    drain_publish_entered = threading.Event()
+    allow_drain_publish = threading.Event()
+
+    class BlockingDrainEventBus(EventBus):
+        def create_and_publish(  # type: ignore[no-untyped-def]
+            self,
+            event_type,
+            payload=None,
+            correlation_id=None,
+            source="core",
+        ):
+            if (
+                event_type is EventType.SPEECH_SYNTHESIS_DRAINED
+                and payload
+                and payload.get("turn_id") == "speech-1"
+            ):
+                drain_publish_entered.set()
+                assert allow_drain_publish.wait(timeout=1.0)
+            return super().create_and_publish(
+                event_type,
+                payload=payload,
+                correlation_id=correlation_id,
+                source=source,
+            )
+
+    class BlockingTts:
+        def health(self):  # type: ignore[no-untyped-def]
+            return None
+
+        def synthesize(self, request: SpeechRequest) -> SpeechOutput:
+            if request.text == "viejo":
+                first_started.set()
+                assert release_first.wait(timeout=2.0)
+            else:
+                second_started.set()
+            return SpeechOutput(audio_data=request.text.encode(), duration_ms=40.0)
+
+    event_bus = BlockingDrainEventBus()
+    coordinator = AudioInteractionCoordinator(
+        audio_output=FakeAudioOutputBackend(),
+        tts=BlockingTts(),
+        event_bus=event_bus,
+    )
+    old_turn = threading.Thread(
+        target=coordinator.speak_requests,
+        args=((SpeechRequest(text="viejo"),),),
+    )
+    old_turn.start()
+    assert first_started.wait(timeout=1.0)
+    coordinator.cancel_active_speech(reason="test_drain_order")
+    old_turn.join(timeout=0.3)
+    assert not old_turn.is_alive()
+
+    release_first.set()
+    assert drain_publish_entered.wait(timeout=1.0)
+    new_turn: threading.Thread | None = None
+    try:
+        assert coordinator.active_tts_drains == 1
+        new_turn = threading.Thread(
+            target=coordinator.speak_requests,
+            args=((SpeechRequest(text="nuevo"),),),
+        )
+        new_turn.start()
+        assert not second_started.wait(timeout=0.1)
+    finally:
+        allow_drain_publish.set()
+
+    assert new_turn is not None
+    assert second_started.wait(timeout=1.0)
+    new_turn.join(timeout=1.0)
+    assert not new_turn.is_alive()
+    assert coordinator.active_tts_drains == 0
+    assert any(
+        event.event_type is EventType.SPEECH_SYNTHESIS_DRAINED
+        and event.payload.get("turn_id") == "speech-1"
+        for event in event_bus.history
+    )
+
 def test_barge_in_stops_playback_after_sustained_user_voice() -> None:
     output = FakeAudioOutputBackend()
     event_bus = EventBus()
@@ -363,6 +576,13 @@ def test_barge_in_stops_playback_after_sustained_user_voice() -> None:
     assert coordinator._speech_cancel.is_set()
     assert output.stopped is True
     assert EventType.SPEECH_INTERRUPTED in [event.event_type for event in event_bus.history]
+    interrupted = next(
+        event
+        for event in event_bus.history
+        if event.event_type is EventType.SPEECH_INTERRUPTED
+    )
+    assert interrupted.payload["logical_generation_cancelled"] is False
+    assert interrupted.payload["synthesizer_draining"] is False
 
 
 def test_short_noise_does_not_trigger_barge_in() -> None:
@@ -504,6 +724,8 @@ def test_interrupted_turn_buffers_through_gate_cooldown_and_reaches_stt() -> Non
     assert segment is not None
     assert transcript is not None
     assert transcript.text == "seguí escuchando"
+    assert transcript.interrupted is True
+    assert transcript.truncated is False
 
 
 def test_pending_interruption_drain_keeps_frames_after_first_segment() -> None:

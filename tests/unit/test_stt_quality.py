@@ -1,6 +1,7 @@
 """Unit tests for SttQualityEvaluator and reprompt policy."""
 
-from ailen.audio.stt_quality import SttQualityEvaluator
+from ailen.audio.contracts import TranscriptAlternative
+from ailen.audio.stt_quality import SttConfidenceBand, SttQualityEvaluator
 
 
 def test_empty_transcript_triggers_reprompt() -> None:
@@ -50,12 +51,12 @@ def test_vague_single_word_fragment_reprompts() -> None:
     assert evaluator.evaluate("notas").should_reprompt is False
 
 
-def test_low_confidence_tiny_transcript_is_dropped_silently() -> None:
+def test_doubtful_short_transcript_reprompts_instead_of_being_assumed_noise() -> None:
     evaluator = SttQualityEvaluator()
     assessment = evaluator.evaluate("hola", confidence=0.31)
-    assert assessment.should_drop_silently
-    assert not assessment.should_reprompt
-    assert assessment.reprompt_reason == "LOW_CONFIDENCE_NOISE"
+    assert not assessment.should_drop_silently
+    assert assessment.should_reprompt
+    assert assessment.reprompt_reason == "DOUBTFUL_ACOUSTIC_CONFIDENCE"
 
 
 def test_confident_short_conversation_remains_valid() -> None:
@@ -66,9 +67,54 @@ def test_confident_short_conversation_remains_valid() -> None:
         assert not assessment.should_reprompt, text
 
 
-def test_low_confidence_longer_speech_is_dropped_only_when_very_uncertain() -> None:
+def test_low_confidence_longer_speech_requires_repetition() -> None:
     evaluator = SttQualityEvaluator()
-    assert evaluator.evaluate("hola como estas", confidence=0.25).should_drop_silently
+    uncertain = evaluator.evaluate("hola como estas", confidence=0.25)
+    assert not uncertain.should_drop_silently
+    assert uncertain.should_reprompt
+    assert uncertain.confidence_band is SttConfidenceBand.DOUBTFUL
+    assert uncertain.reprompt_reason == "DOUBTFUL_ACOUSTIC_CONFIDENCE"
     usable = evaluator.evaluate("hola como estas", confidence=0.58)
     assert not usable.should_drop_silently
     assert not usable.should_reprompt
+    assert usable.confidence_band is SttConfidenceBand.CONVERSATION
+
+
+def test_extremely_low_confidence_multiword_is_not_valid_speech() -> None:
+    evaluator = SttQualityEvaluator(noise_confidence_max=0.20)
+
+    assessment = evaluator.evaluate("muchas ahora", confidence=0.08)
+
+    assert assessment.should_reprompt
+    assert not assessment.should_drop_silently
+    assert assessment.confidence_band is SttConfidenceBand.NOISE
+    assert assessment.reprompt_reason == "ACOUSTIC_NOISE_CONFIDENCE"
+
+
+def test_real_higher_confidence_alternative_can_rescue_doubtful_primary() -> None:
+    evaluator = SttQualityEvaluator(conversation_min_confidence=0.45)
+
+    assessment = evaluator.evaluate(
+        "muchas ahora",
+        confidence=0.25,
+        alternatives=(
+            TranscriptAlternative("poné música ahora", 0.67),
+            TranscriptAlternative("mucha ahora", 0.28),
+        ),
+    )
+
+    assert not assessment.should_reprompt
+    assert assessment.cleaned_text == "poné música ahora"
+    assert assessment.acoustic_confidence == 0.67
+    assert assessment.selected_alternative
+    assert assessment.confidence_band is SttConfidenceBand.CONVERSATION
+
+
+def test_missing_engine_confidence_remains_unknown_not_fabricated() -> None:
+    evaluator = SttQualityEvaluator()
+
+    assessment = evaluator.evaluate("recién terminé de comer", confidence=None)
+
+    assert not assessment.should_reprompt
+    assert assessment.acoustic_confidence is None
+    assert assessment.confidence_band is SttConfidenceBand.UNKNOWN

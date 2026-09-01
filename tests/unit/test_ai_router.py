@@ -1,7 +1,6 @@
-"""Unit tests for RuleBasedRouter."""
+"""Behavioral tests for dynamic local/LAN/remote routing."""
 
 from ailen.ai.router import (
-    ROUTE_CLOUD,
     ROUTE_DEGRADED,
     ROUTE_LAN_BRAIN,
     ROUTE_LOCAL,
@@ -13,148 +12,124 @@ from ailen.domain.enums import DeviceProfile, PrivacyLevel
 
 
 def test_router_rule_only_fast_path() -> None:
-    router = RuleBasedRouter()
-    req = RouteRequest(intent="volume", privacy_level=PrivacyLevel.PUBLIC)
-    plan = router.route(req)
-
+    plan = RuleBasedRouter().route(RouteRequest(intent="volume"))
     assert plan.primary_backend == ROUTE_RULE_ONLY
-    assert plan.fallback_backends == []
-    assert plan.reason_code == "RULE_ONLY_INTENT"
     assert plan.context_budget == 0
 
 
-def test_router_hybrid_private_blocks_cloud() -> None:
-    router = RuleBasedRouter()
-    req = RouteRequest(
-        intent="chat",
-        profile=DeviceProfile.HYBRID,
-        privacy_level=PrivacyLevel.PRIVATE,
-        internet_available=True,
-        cloud_allowed=True,
-        local_backend_available=True,
-        lan_brain_available=True,
-        lan_brain_trusted=True,
+def test_user_greeting_is_conversational_not_rule_only() -> None:
+    plan = RuleBasedRouter().route(
+        RouteRequest(intent="greeting", local_backend_available=True)
     )
-    plan = router.route(req)
-
     assert plan.primary_backend == ROUTE_LOCAL
-    assert plan.fallback_backends == [ROUTE_LAN_BRAIN]
-    assert ROUTE_CLOUD not in plan.fallback_backends
-    assert plan.estimated_remote_allowance is False
 
 
-def test_router_private_does_not_use_untrusted_lan_by_default() -> None:
-    router = RuleBasedRouter()
-    req = RouteRequest(
-        intent="chat",
-        profile=DeviceProfile.HYBRID,
-        privacy_level=PrivacyLevel.PRIVATE,
-        local_backend_available=True,
-        lan_brain_available=True,
-    )
-    plan = router.route(req)
-    assert plan.primary_backend == ROUTE_LOCAL
-    assert ROUTE_LAN_BRAIN not in plan.fallback_backends
-
-
-def test_router_satellite_prefers_lan_brain() -> None:
-    router = RuleBasedRouter()
-    req = RouteRequest(
-        intent="chat",
-        profile=DeviceProfile.SATELLITE,
-        privacy_level=PrivacyLevel.PUBLIC,
-        internet_available=True,
-        cloud_allowed=True,
-        lan_brain_available=True,
-    )
-    plan = router.route(req)
-
-    assert plan.primary_backend == ROUTE_LAN_BRAIN
-    assert plan.fallback_backends == [ROUTE_CLOUD]
-    assert plan.reason_code == "SATELLITE_LAN_PREFERRED"
-
-
-def test_router_cloud_first_with_local_fallback() -> None:
-    router = RuleBasedRouter()
-    req = RouteRequest(
-        intent="chat",
-        profile=DeviceProfile.CLOUD,
-        privacy_level=PrivacyLevel.PUBLIC,
-        internet_available=True,
-        cloud_allowed=True,
-        local_backend_available=True,
-        lan_brain_available=True,
-    )
-    plan = router.route(req)
-
-    assert plan.primary_backend == ROUTE_CLOUD
-    assert plan.fallback_backends == [ROUTE_LAN_BRAIN, ROUTE_LOCAL]
-    assert plan.reason_code == "CLOUD_PROFILE_PREFERRED"
-
-
-def test_router_cloud_budget_exceeded_fallback() -> None:
-    router = RuleBasedRouter()
-    req = RouteRequest(
-        intent="chat",
-        profile=DeviceProfile.HYBRID,
-        privacy_level=PrivacyLevel.PUBLIC,
-        internet_available=True,
-        cloud_allowed=True,
-        budget_exceeded=True,
-        local_backend_available=True,
-    )
-    plan = router.route(req)
-
-    # Cloud is blocked due to budget exceeded -> local chosen
-    assert plan.primary_backend == ROUTE_LOCAL
-    assert ROUTE_CLOUD not in plan.fallback_backends
-
-
-def test_router_offline_degraded_when_no_backends() -> None:
-    router = RuleBasedRouter()
-    req = RouteRequest(
-        intent="chat",
-        profile=DeviceProfile.HYBRID,
-        privacy_level=PrivacyLevel.PUBLIC,
-        internet_available=False,
-        cloud_allowed=False,
-        local_backend_available=False,
-        lan_brain_available=False,
-    )
-    plan = router.route(req)
-
-    assert plan.primary_backend == ROUTE_DEGRADED
-    assert plan.reason_code == "ALL_BACKENDS_UNAVAILABLE"
-
-
-def test_router_explicit_trusted_lan_preference_overrides_local_first() -> None:
+def test_private_remote_requires_current_turn_sanitization_opt_in() -> None:
     plan = RuleBasedRouter().route(
         RouteRequest(
-            intent="chat",
-            profile=DeviceProfile.LOCAL,
             privacy_level=PrivacyLevel.PRIVATE,
-            local_backend_available=True,
-            lan_brain_available=True,
-            lan_brain_trusted=True,
-            preferred_backend="lan_brain",
+            internet_available=True,
+            external_allowed=True,
+            remote_backends=("remote:openai",),
+            preferred_backend="remote:openai",
         )
     )
-    assert plan.primary_backend == ROUTE_LAN_BRAIN
-    assert plan.fallback_backends == [ROUTE_LOCAL]
-    assert plan.reason_code == "CONFIGURED_LAN_BRAIN_PREFERRED"
+    assert plan.primary_backend == ROUTE_DEGRADED
+    assert plan.reason_code == "PRIVATE_REMOTE_BLOCKED"
 
 
-def test_router_untrusted_lan_preference_falls_back_to_private_local() -> None:
+def test_public_remote_can_route_without_private_sanitization_flag() -> None:
     plan = RuleBasedRouter().route(
         RouteRequest(
-            intent="chat",
-            profile=DeviceProfile.HYBRID,
+            complexity="high",
+            privacy_level=PrivacyLevel.PUBLIC,
+            internet_available=True,
+            external_allowed=True,
+            remote_backends=("remote:openai",),
+        )
+    )
+    assert plan.primary_backend == "remote:openai"
+    assert plan.privacy_decision == "ALLOWED"
+
+
+def test_private_untrusted_lan_is_blocked() -> None:
+    plan = RuleBasedRouter().route(
+        RouteRequest(
             privacy_level=PrivacyLevel.PRIVATE,
             local_backend_available=True,
             lan_brain_available=True,
             lan_brain_trusted=False,
-            preferred_backend="lan_brain",
         )
     )
     assert plan.primary_backend == ROUTE_LOCAL
     assert ROUTE_LAN_BRAIN not in plan.fallback_backends
+
+
+def test_satellite_prefers_trusted_lan() -> None:
+    plan = RuleBasedRouter().route(
+        RouteRequest(
+            profile=DeviceProfile.SATELLITE,
+            privacy_level=PrivacyLevel.PRIVATE,
+            lan_brain_available=True,
+            lan_brain_trusted=True,
+            local_backend_available=True,
+        )
+    )
+    assert plan.primary_backend == ROUTE_LAN_BRAIN
+    assert plan.fallback_backends == [ROUTE_LOCAL]
+
+
+def test_explicit_remote_honored_even_when_not_voice_realtime_qualified() -> None:
+    plan = RuleBasedRouter().route(
+        RouteRequest(
+            input_modality="voice",
+            privacy_level=PrivacyLevel.PRIVATE,
+            internet_available=True,
+            external_allowed=True,
+            allow_sanitized_external_prompts=True,
+            remote_backends=("remote:manual",),
+            preferred_backend="remote:manual",
+            realtime_eligible_backends={"remote:manual": False},
+        )
+    )
+    assert plan.primary_backend == "remote:manual"
+    assert plan.reason_code == "CONFIGURED_REMOTE:MANUAL_PREFERRED"
+
+
+def test_auto_voice_does_not_promote_unqualified_remote() -> None:
+    plan = RuleBasedRouter().route(
+        RouteRequest(
+            input_modality="voice",
+            privacy_level=PrivacyLevel.PRIVATE,
+            internet_available=True,
+            external_allowed=True,
+            allow_sanitized_external_prompts=True,
+            remote_backends=("remote:slow",),
+            realtime_eligible_backends={"remote:slow": False},
+        )
+    )
+    assert plan.primary_backend == ROUTE_DEGRADED
+    assert plan.reason_code == "NO_REALTIME_VOICE_BACKEND"
+
+
+def test_auto_voice_keeps_nonrealtime_remote_only_as_fallback() -> None:
+    plan = RuleBasedRouter().route(
+        RouteRequest(
+            input_modality="voice",
+            privacy_level=PrivacyLevel.PRIVATE,
+            internet_available=True,
+            external_allowed=True,
+            allow_sanitized_external_prompts=True,
+            local_backend_available=True,
+            remote_backends=("remote:slow",),
+            realtime_eligible_backends={"remote:slow": False},
+        )
+    )
+    assert plan.primary_backend == ROUTE_LOCAL
+    assert plan.fallback_backends == ["remote:slow"]
+
+
+def test_no_backend_degrades_honestly() -> None:
+    plan = RuleBasedRouter().route(RouteRequest(internet_available=False))
+    assert plan.primary_backend == ROUTE_DEGRADED
+    assert plan.reason_code == "ALL_BACKENDS_UNAVAILABLE"

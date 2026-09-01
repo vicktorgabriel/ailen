@@ -60,14 +60,14 @@ def test_context_builder_with_sqlite_memories_and_sessions() -> None:
         assert len(local_req.messages) == 3  # 2 previous + 1 current
         assert any("Horario" in m for m in local_req.retrieved_memory)
 
-        # 2. A PRIVATE request cannot be downgraded and sent to CLOUD.
+        # 2. A PRIVATE request cannot be downgraded and sent remotely.
         with pytest.raises(PermissionError, match="PRIVATE_REMOTE_BLOCKED"):
             builder.build_request(
                 user_message="¿Qué horario tienen?",
                 session_id=session.session_id,
                 mode=SocialMode.WORKSHOP,
                 privacy_level=PrivacyLevel.PRIVATE,
-                destination="cloud",
+                destination="remote:test",
             )
 
 
@@ -93,11 +93,11 @@ def test_context_builder_includes_bounded_local_vision_state() -> None:
     assert "no repitas ni parafrasees" in req.system_context.lower()
 
 
-def test_context_builder_does_not_send_runtime_vision_state_to_cloud() -> None:
+def test_context_builder_does_not_send_runtime_vision_state_remotely() -> None:
     builder = AiContextBuilder(default_identity_name="AILEN")
     req = builder.build_request(
         user_message="Hola",
-        destination="cloud",
+        destination="remote:test",
         privacy_level=PrivacyLevel.PUBLIC,
         metadata={
             "runtime_context": {
@@ -200,6 +200,20 @@ def test_voice_context_declares_bounded_conversational_expression_contract() -> 
     assert "neutral, happy, curious" in req.system_context
 
 
+def test_voice_context_does_not_truncate_pack_filtered_catalog_at_sixteen() -> None:
+    expressions = [f"affect_{index}" for index in range(22)]
+    req = AiContextBuilder().build_request(
+        "hola",
+        metadata={
+            "voice_output": True,
+            "conversational_expressions": expressions,
+        },
+    )
+
+    assert expressions[0] in req.system_context
+    assert expressions[-1] in req.system_context
+
+
 def test_context_builder_sets_configured_temperature() -> None:
     req = AiContextBuilder(temperature=0.73).build_request("hola")
     assert req.temperature == 0.73
@@ -232,6 +246,27 @@ def test_ai_context_keeps_assistant_identity_distinct_from_user() -> None:
     assert "no llames Ailén al usuario" in request.system_context
 
 
+def test_voice_context_preserves_real_acoustic_uncertainty_without_fabricating_score() -> None:
+    builder = AiContextBuilder(default_identity_name="Ailén")
+
+    request = builder.build_request(
+        "subí el volumen",
+        identity_name="Ailén",
+        metadata={
+            "input_modality": "voice",
+            "stt_confidence": 0.41,
+            "stt_engine": "vosk",
+            "utterance_interrupted": True,
+            "utterance_truncated": True,
+        },
+    )
+
+    assert "confianza acústica 0.41" in request.system_context
+    assert "turno comenzó como barge-in" in request.system_context
+    assert "frase quedó truncada" in request.system_context
+    assert "vosk" in request.system_context
+
+
 def test_voice_context_discourages_recent_assistant_openers() -> None:
     with TemporaryDirectory() as tmpdir:
         db_mgr = SQLiteManager(f"{tmpdir}/ctx.db")
@@ -257,3 +292,66 @@ def test_personality_style_is_not_cut_at_legacy_field_limit() -> None:
         "hola", metadata={"personality_style": style}
     )
     assert "FINAL_ESTILO" in req.system_context
+
+
+def test_private_external_sanitized_request_keeps_history_and_memory_local() -> None:
+    with TemporaryDirectory() as tmpdir:
+        db_mgr = SQLiteManager(f"{tmpdir}/ctx.db")
+        MigrationRunner(db_mgr).run_migrations()
+        repo = MemoryRepository(db_mgr)
+        session = repo.create_session(mode=SocialMode.WORKSHOP)
+        repo.add_message(session.session_id, "user", "dato de conversación anterior")
+        repo.add_message(session.session_id, "assistant", "respuesta privada anterior")
+        repo.add_memory("memoria privada que no debe salir", scope=PrivacyLevel.PRIVATE)
+
+        req = AiContextBuilder(repository=repo).build_request(
+            "turno actual",
+            session_id=session.session_id,
+            mode=SocialMode.WORKSHOP,
+            privacy_level=PrivacyLevel.PRIVATE,
+            destination="remote:test",
+            allow_sanitized_private=True,
+        )
+
+        assert [m.content for m in req.messages] == ["turno actual"]
+        assert req.retrieved_memory == []
+        assert req.privacy_level is PrivacyLevel.PRIVATE
+        assert req.metadata.get("outbound_sanitized_private") is True
+        assert "dato de conversación anterior" not in req.system_context
+        assert "respuesta privada anterior" not in req.system_context
+
+
+def test_private_external_request_strips_persona_style_capabilities_and_metadata() -> None:
+    private_marker = "PRIVATE_PERSONA_MARKER_9f04"
+    req = AiContextBuilder().build_request(
+        "turno sintético actual",
+        privacy_level=PrivacyLevel.PRIVATE,
+        destination="remote:test",
+        allow_sanitized_private=True,
+        metadata={
+            "voice_output": True,
+            "input_modality": "voice",
+            "personality_style": f"Estilo {private_marker}",
+            "persona_description": f"Persona {private_marker}",
+            "capabilities": [
+                {"key": "private.tool", "description": private_marker},
+            ],
+            "runtime_context": {"private_path": f"/home/{private_marker}"},
+            "reasoning_effort": "none",
+        },
+    )
+
+    serialized = " ".join(
+        [req.system_context]
+        + [message.content for message in req.messages]
+        + req.retrieved_memory
+        + [str(req.metadata)]
+    )
+    assert private_marker not in serialized
+    assert [message.content for message in req.messages] == ["turno sintético actual"]
+    assert req.metadata == {
+        "input_modality": "voice",
+        "outbound_sanitized_private": True,
+        "reasoning_effort": "none",
+        "voice_output": True,
+    }

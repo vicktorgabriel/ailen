@@ -49,3 +49,13 @@ def test_allowed_model_switch_reasons() -> None:
 
     policy.set_primary_model("llama3.2:3b", reason="BACKEND_FAILOVER")
     assert policy.primary_model == "llama3.2:3b"
+
+
+def test_memory_pressure_thresholds_are_profile_bounded() -> None:
+    fast = ModelResidencyPolicy(inference_profile=InferenceProfile.FAST)
+    balanced = ModelResidencyPolicy(inference_profile=InferenceProfile.BALANCED)
+
+    assert fast.minimum_free_memory_mb == 700
+    assert fast.should_release(available_memory_mb=699) is True
+    assert fast.should_release(available_memory_mb=700) is False
+    assert balanced.minimum_free_memory_mb == 1200

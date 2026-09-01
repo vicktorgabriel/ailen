@@ -1,6 +1,10 @@
 import pytest
 
-from ailen.models.catalog import ModelCatalog, ModelDescriptor
+from ailen.models.catalog import (
+    ModelCatalog,
+    ModelDescriptor,
+    ModelQualificationStatus,
+)
 
 
 def test_catalog_listing_and_lookup() -> None:
@@ -117,3 +121,52 @@ def test_catalog_suitable_models_default_to_verified_downloadable() -> None:
         require_downloadable=False,
     )
     assert any(not model.downloadable for model in historical)
+
+
+def test_catalog_ranks_qualified_quality_and_excludes_rejected_candidates() -> None:
+    from ailen.domain.enums import DeviceProfile
+    from ailen.models.catalog import ModelPurpose
+
+    def descriptor(
+        model_id: str,
+        quality_rank: int,
+        status: ModelQualificationStatus,
+    ) -> ModelDescriptor:
+        return ModelDescriptor(
+            model_id=model_id,
+            display_name=model_id,
+            family="test",
+            runtime="llama.cpp",
+            artifact_format="gguf",
+            quantization="q4_k_m",
+            parameter_class="small",
+            ram_requirement_mb=1000,
+            vram_requirement_mb=1000,
+            disk_size_bytes=100_000_000,
+            suitability_profiles=[DeviceProfile.HYBRID],
+            purposes=[ModelPurpose.BALANCED],
+            quality_rank=quality_rank,
+            qualification_status=status,
+        )
+
+    catalog = ModelCatalog(
+        [
+            descriptor("candidate-high", 99, ModelQualificationStatus.CANDIDATE),
+            descriptor("qualified-low", 20, ModelQualificationStatus.QUALIFIED),
+            descriptor("qualified-high", 70, ModelQualificationStatus.QUALIFIED),
+            descriptor("rejected", 100, ModelQualificationStatus.REJECTED),
+        ]
+    )
+
+    models = catalog.find_suitable_models(
+        profile=DeviceProfile.HYBRID,
+        max_ram_mb=2000,
+        purpose=ModelPurpose.BALANCED,
+        require_downloadable=False,
+    )
+
+    assert [model.model_id for model in models] == [
+        "qualified-high",
+        "qualified-low",
+        "candidate-high",
+    ]

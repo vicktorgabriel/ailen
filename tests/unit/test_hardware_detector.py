@@ -42,11 +42,12 @@ def test_detector_with_sf20ba_preset_no_avx2() -> None:
     report = detector.detect()
 
     rec = detector.recommend_profile(report)
-    # 4GB without AVX2 falls back to Cloud profile with no local inference
-    assert rec.profile == DeviceProfile.CLOUD
-    assert rec.local_inference_capable is False
+    # Portable llama.cpp remains a candidate; target hardware still needs an
+    # explicit realtime benchmark because lack of AVX2 is a performance risk.
+    assert rec.profile == DeviceProfile.HYBRID
+    assert rec.local_inference_capable is True
     assert "CPU_NO_AVX2" in rec.reason_codes
-    assert "NO_LOCAL_INFERENCE" in rec.reason_codes
+    assert "TARGET_HARDWARE_BENCHMARK_REQUIRED" in rec.reason_codes
 
 
 def test_detector_with_satellite_preset() -> None:
