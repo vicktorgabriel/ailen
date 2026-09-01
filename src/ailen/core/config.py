@@ -1,13 +1,29 @@
 """Configuration management for AILEN."""
 
 import os
+import re
 import tomllib
+import warnings
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from ailen.domain.enums import DeviceProfile, SocialMode
+
+CURRENT_CONFIG_SCHEMA_VERSION = 3
+REMOTE_PROVIDER_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+REMOTE_PROTOCOLS = frozenset(
+    {"openai_responses", "openai_chat", "anthropic_messages"}
+)
+REMOTE_QUALIFICATION_STATES = frozenset(
+    {"configured", "tested", "qualified", "rejected"}
+)
+
+
+class ConfigMigrationWarning(UserWarning):
+    """A legacy configuration was loaded through a safe one-way migration."""
 
 
 @dataclass
@@ -34,7 +50,10 @@ class DisplayConfig:
     """Face and display output configuration."""
     enabled: bool = True
     backend: str = "auto"  # "auto", "sdl2", "drm", "x11", "headless"
-    face_style: str = "vector"  # "vector" or "pixel"
+    face_style: str = "facepack"  # "facepack", "portrait", "vector" or "pixel"
+    face_engine_library: str = ""
+    facepack_path: str = "runtime/facepacks/ailen_default.facepack"
+    facepack_root: str = "runtime/facepacks"
     width: int = 1280
     height: int = 720
     fullscreen: bool = True
@@ -46,7 +65,16 @@ class AudioConfig:
     """Audio input/output configuration."""
     input_device: str = "default"
     output_device: str = "default"
-    input_volume: int = 80
+    input_processing_mode: str = "auto"  # auto, raw, easyeffects
+    capture_gain_db: float = 0.0
+    auto_gain_enabled: bool = False
+    auto_gain_target_rms: float = 0.12
+    max_auto_gain_db: float = 18.0
+    auto_gain_attack_ms: float = 120.0
+    auto_gain_release_ms: float = 600.0
+    auto_gain_noise_gate_rms: float = 0.008
+    auto_gain_gate_hold_ms: float = 300.0
+    capture_limiter_peak: float = 0.98
     output_volume: int = 80
     music_volume: int = 60
     sample_rate: int = 16000
@@ -98,6 +126,9 @@ class SpeechConfig:
     stt_fallback_engine: str = "none"  # "none", "whisper_cpp"
     stt_fallback_model_path: str = ""
     stt_fallback_confidence_threshold: float = 0.72
+    stt_noise_confidence_max: float = 0.20
+    stt_conversation_min_confidence: float = 0.45
+    voice_action_min_confidence: float = 0.72
     tts_engine: str = "mock"  # "mock", "piper", "coqui", "cloud"
     tts_voice: str = "es_ES-standard"
     tts_model_path: str = ""
@@ -130,8 +161,14 @@ class SpeechConfig:
 class AiLocalConfig:
     """Local LLM server configuration (e.g. llama.cpp server, Ollama)."""
     enabled: bool = False
+    # Provisioning persists an exact runtime after target-hardware
+    # qualification. ``auto`` is retained for an explicit laboratory model
+    # override, never as permission to cross runtime evidence.
+    runtime: str = "auto"  # auto, ollama, llama_cpp
     endpoint: str = "http://127.0.0.1:8080/v1"
-    model: str = "local-model"
+    # Empty means "use the exact selection activated by provisioning".  A
+    # non-empty value remains an explicit laboratory/operator override.
+    model: str = ""
     timeout_seconds: float = 20.0
     context_tokens: int = 2048
     # Empty uses hardware/profile policy. Dedicated always-on nodes may keep the
@@ -141,6 +178,7 @@ class AiLocalConfig:
     # Empty means reuse the main local conversational backend.
     intent_model: str = ""
     intent_timeout_seconds: float = 5.0
+    priority: int = 50
 
 
 @dataclass
@@ -152,43 +190,140 @@ class AiLanConfig:
     model: str = "lan-model"
     trusted: bool = False
     timeout_seconds: float = 15.0
+    priority: int = 40
 
 
 @dataclass
-class AiCloudConfig:
-    """Cloud LLM provider configuration.
+class RemoteProviderConfig:
+    """One named remote provider; models remain operator/live-catalog data."""
 
-    Provider, model and pricing are intentionally unset by default because they
-    change over time and must come from deployment configuration.
-    """
     enabled: bool = False
-    provider: str = "openai_compatible"
+    preset: str = "openai_compatible"
+    protocol: str = "openai_chat"
     endpoint: str = ""
     model: str = ""
-    api_key_env: str = "AILEN_AI_CLOUD_API_KEY"
-    api_key_file: str = "ai_cloud_key"
+    api_key_env: str = ""
+    api_key_file: str = ""
+    auth_mode: str = "api_key"  # "api_key" or explicit "none"
+    priority: int = 30
+    timeout_seconds: float = 10.0
     daily_budget_usd: float = 1.0
     monthly_budget_usd: float = 20.0
-    timeout_seconds: float = 10.0
     input_cost_per_million: float | None = None
     output_cost_per_million: float | None = None
+    streaming_enabled: bool = True
+    voice_realtime_eligible: bool = False
+    qualification_status: str = "configured"
+    catalog_mode: str = "manual"  # "manual" or "live"
+    anthropic_version: str = "2023-06-01"
+
+
+@dataclass
+class AiRemoteConfig:
+    """Collection of independently configured remote providers."""
+
+    enabled: bool = True
+    providers: dict[str, RemoteProviderConfig] = field(
+        default_factory=lambda: remote_provider_presets()
+    )
+
+
+_REMOTE_PRESET_VALUES: dict[str, dict[str, str]] = {
+    "openai": {
+        "protocol": "openai_responses",
+        "endpoint": "https://api.openai.com/v1",
+        "api_key_env": "AILEN_OPENAI_API_KEY",
+        "api_key_file": "remote_openai_key",
+        "auth_mode": "api_key",
+        "catalog_mode": "live",
+    },
+    "anthropic": {
+        "protocol": "anthropic_messages",
+        "endpoint": "https://api.anthropic.com/v1",
+        "api_key_env": "AILEN_ANTHROPIC_API_KEY",
+        "api_key_file": "remote_anthropic_key",
+        "auth_mode": "api_key",
+        "catalog_mode": "manual",
+    },
+    "deepseek": {
+        "protocol": "openai_chat",
+        "endpoint": "https://api.deepseek.com",
+        "api_key_env": "AILEN_DEEPSEEK_API_KEY",
+        "api_key_file": "remote_deepseek_key",
+        "auth_mode": "api_key",
+        "catalog_mode": "manual",
+    },
+    "kimi": {
+        "protocol": "openai_chat",
+        "endpoint": "https://api.moonshot.ai/v1",
+        "api_key_env": "AILEN_KIMI_API_KEY",
+        "api_key_file": "remote_kimi_key",
+        "auth_mode": "api_key",
+        "catalog_mode": "manual",
+    },
+    "minimax": {
+        "protocol": "openai_chat",
+        "endpoint": "https://api.minimax.io/v1",
+        "api_key_env": "AILEN_MINIMAX_API_KEY",
+        "api_key_file": "remote_minimax_key",
+        "auth_mode": "api_key",
+        "catalog_mode": "manual",
+    },
+    "openai_compatible": {
+        "protocol": "openai_chat",
+        "endpoint": "",
+        "api_key_env": "",
+        "api_key_file": "",
+        "auth_mode": "api_key",
+        "catalog_mode": "manual",
+    },
+    "anthropic_compatible": {
+        "protocol": "anthropic_messages",
+        "endpoint": "",
+        "api_key_env": "",
+        "api_key_file": "",
+        "auth_mode": "api_key",
+        "catalog_mode": "manual",
+    },
+}
+
+
+def remote_provider_presets() -> dict[str, RemoteProviderConfig]:
+    """Return fresh editable presets without asserting any current model ID."""
+
+    return {
+        name: RemoteProviderConfig(
+            preset=name,
+            protocol=values["protocol"],
+            endpoint=values["endpoint"],
+            api_key_env=values["api_key_env"],
+            api_key_file=values["api_key_file"],
+            auth_mode=values["auth_mode"],
+            catalog_mode=values["catalog_mode"],
+        )
+        for name, values in _REMOTE_PRESET_VALUES.items()
+    }
 
 
 @dataclass
 class AiConfig:
     """AI Router and LLM provider configuration."""
-    provider: str = "mock"  # "mock", "local", "lan_brain", "cloud"
-    model: str = "default"
+    provider: str = "mock"  # "auto", "mock", "local", "lan_brain", "remote:<id>"
     max_tokens: int = 512
     temperature: float = 0.6
     context_recent_messages: int = 4
     context_char_budget: int = 2400
     timeout_seconds: float = 10.0
     daily_budget_usd: float = 1.0
-    allow_cloud: bool = True
+    allow_remote: bool = True
+    # Allows the current user turn to use an external conversational provider
+    # while keeping session history/retrieved memory on-device. PRIVATE memory
+    # is never silently downgraded or attached to the outbound request.
+    allow_sanitized_external_prompts: bool = False
     local: AiLocalConfig = field(default_factory=AiLocalConfig)
     lan: AiLanConfig = field(default_factory=AiLanConfig)
-    cloud: AiCloudConfig = field(default_factory=AiCloudConfig)
+    remote: AiRemoteConfig = field(default_factory=AiRemoteConfig)
+
 
 
 @dataclass
@@ -249,6 +384,11 @@ class UpdatesConfig:
     channel: str = "beta"  # "nightly", "beta", "stable"
     auto_check: bool = False
     check_interval_hours: int = 24
+    manifest_url: str = ""
+    manifest_signature_url: str = ""
+    trust_public_key_path: str = ""
+    auto_install: bool = False
+    maintenance_window: str = "03:00"
 
 
 @dataclass
@@ -263,7 +403,7 @@ class LoggingConfig:
 @dataclass
 class AILENConfig:
     """Root configuration for AILEN."""
-    schema_version: int = 1
+    schema_version: int = CURRENT_CONFIG_SCHEMA_VERSION
     node: NodeConfig = field(default_factory=NodeConfig)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
@@ -331,10 +471,114 @@ def dump_config_toml(config: AILENConfig) -> str:
     return "\n".join(lines)
 
 
+def _migration_warning(message: str) -> None:
+    warnings.warn(message, ConfigMigrationWarning, stacklevel=3)
+
+
+def _migrate_legacy_ai(raw: dict[str, Any]) -> dict[str, Any]:
+    """Return a detached current-schema document with fail-closed migrations."""
+
+    migrated = deepcopy(raw)
+    audio_raw = migrated.get("audio")
+    if isinstance(audio_raw, dict) and "input_volume" in audio_raw:
+        audio_raw.pop("input_volume", None)
+        _migration_warning(
+            "audio.input_volume was decorative and has been removed; "
+            "capture_gain_db remains 0 dB until measured calibration is confirmed"
+        )
+    ai_raw = migrated.get("ai")
+    if not isinstance(ai_raw, dict):
+        migrated["schema_version"] = CURRENT_CONFIG_SCHEMA_VERSION
+        return migrated
+
+    preferred = str(ai_raw.get("provider", "mock")).strip().lower()
+    retired_present = False
+    for retired in ("antigravity", "opencode"):
+        if retired in ai_raw:
+            ai_raw.pop(retired, None)
+            retired_present = True
+            _migration_warning(
+                f"ai.{retired} was retired from AILEN and was ignored; configure a supported "
+                "remote provider instead"
+            )
+    if preferred in {"antigravity", "opencode"}:
+        preferred = "auto"
+        retired_present = True
+
+    if "allow_cloud" in ai_raw and "allow_remote" not in ai_raw:
+        ai_raw["allow_remote"] = bool(ai_raw.pop("allow_cloud"))
+        _migration_warning("ai.allow_cloud migrated to ai.allow_remote")
+    else:
+        ai_raw.pop("allow_cloud", None)
+
+    remote_raw = ai_raw.get("remote")
+    if not isinstance(remote_raw, dict):
+        remote_raw = {"enabled": True, "providers": {}}
+        ai_raw["remote"] = remote_raw
+    providers_raw = remote_raw.get("providers")
+    if not isinstance(providers_raw, dict):
+        providers_raw = {}
+        remote_raw["providers"] = providers_raw
+
+    legacy_cloud = ai_raw.pop("cloud", None)
+    if isinstance(legacy_cloud, dict):
+        migrated_provider = {
+            "enabled": bool(legacy_cloud.get("enabled", False)),
+            "preset": "openai_compatible",
+            "protocol": "openai_chat",
+            "endpoint": str(legacy_cloud.get("endpoint", "")),
+            "model": str(legacy_cloud.get("model", "")),
+            "api_key_env": str(legacy_cloud.get("api_key_env", "AILEN_AI_CLOUD_API_KEY")),
+            "api_key_file": str(legacy_cloud.get("api_key_file", "ai_cloud_key")),
+            "auth_mode": "api_key",
+            "priority": int(legacy_cloud.get("priority", 30)),
+            "timeout_seconds": float(legacy_cloud.get("timeout_seconds", 10.0)),
+            "daily_budget_usd": float(legacy_cloud.get("daily_budget_usd", 1.0)),
+            "monthly_budget_usd": float(legacy_cloud.get("monthly_budget_usd", 20.0)),
+            "input_cost_per_million": legacy_cloud.get("input_cost_per_million"),
+            "output_cost_per_million": legacy_cloud.get("output_cost_per_million"),
+            "streaming_enabled": True,
+            "voice_realtime_eligible": False,
+            "qualification_status": "configured",
+            "catalog_mode": "manual",
+        }
+        providers_raw.setdefault("legacy_cloud", migrated_provider)
+        _migration_warning(
+            "ai.cloud migrated to ai.remote.providers.legacy_cloud; review and save the new schema"
+        )
+        if preferred == "cloud":
+            preferred = (
+                "remote:legacy_cloud" if migrated_provider["enabled"] else "auto"
+            )
+    elif preferred == "cloud":
+        preferred = "auto"
+        _migration_warning("legacy ai.provider=cloud had no provider configuration and became auto")
+
+    if "model" in ai_raw:
+        ai_raw.pop("model", None)
+        _migration_warning(
+            "legacy ai.model was ignored; select the model in ai.local, ai.lan, or a named remote provider"
+        )
+    if retired_present:
+        _migration_warning(
+            "retired preferred providers migrate to ai.provider=auto and are never invoked"
+        )
+    ai_raw["provider"] = preferred
+    migrated["schema_version"] = CURRENT_CONFIG_SCHEMA_VERSION
+    return migrated
+
+
+def _load_dataclass_fields(target: object, values: dict[str, Any]) -> None:
+    for key, value in values.items():
+        if hasattr(target, key):
+            setattr(target, key, value)
+
+
 def load_config_from_dict(raw: dict[str, Any]) -> AILENConfig:
     """Construct AILENConfig from parsed dictionary."""
+    raw = _migrate_legacy_ai(raw)
     cfg = AILENConfig()
-    cfg.schema_version = raw.get("schema_version", 1)
+    cfg.schema_version = CURRENT_CONFIG_SCHEMA_VERSION
 
     if "node" in raw and isinstance(raw["node"], dict):
         node_raw = raw["node"]
@@ -377,19 +621,24 @@ def load_config_from_dict(raw: dict[str, Any]) -> AILENConfig:
         ai_raw = raw["ai"]
         for k, v in ai_raw.items():
             if k == "local" and isinstance(v, dict):
-                for lk, lv in v.items():
-                    if hasattr(cfg.ai.local, lk):
-                        setattr(cfg.ai.local, lk, lv)
+                _load_dataclass_fields(cfg.ai.local, v)
             elif k == "lan" and isinstance(v, dict):
-                for lk, lv in v.items():
-                    if hasattr(cfg.ai.lan, lk):
-                        setattr(cfg.ai.lan, lk, lv)
-            elif k == "cloud" and isinstance(v, dict):
-                for ck, cv in v.items():
-                    if hasattr(cfg.ai.cloud, ck):
-                        setattr(cfg.ai.cloud, ck, cv)
+                _load_dataclass_fields(cfg.ai.lan, v)
+            elif k == "remote" and isinstance(v, dict):
+                if "enabled" in v:
+                    cfg.ai.remote.enabled = bool(v["enabled"])
+                providers = v.get("providers")
+                if isinstance(providers, dict):
+                    cfg.ai.remote.providers = remote_provider_presets()
+                    for provider_id, provider_raw in providers.items():
+                        if not isinstance(provider_raw, dict):
+                            continue
+                        provider = RemoteProviderConfig()
+                        _load_dataclass_fields(provider, provider_raw)
+                        cfg.ai.remote.providers[str(provider_id)] = provider
             elif hasattr(cfg.ai, k):
                 setattr(cfg.ai, k, v)
+
 
     if "memory" in raw and isinstance(raw["memory"], dict):
         for k, v in raw["memory"].items():
@@ -503,12 +752,30 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("display width and height must be positive integers")
     if config.display.fps_limit < 1 or config.display.fps_limit > 120:
         errors.append("display.fps_limit must be between 1 and 120")
-    if config.display.face_style not in {"vector", "pixel"}:
-        errors.append("display.face_style must be one of: vector, pixel")
+    if config.display.face_style not in {"facepack", "portrait", "vector", "pixel"}:
+        errors.append("display.face_style must be one of: facepack, portrait, vector, pixel")
     if not (0 <= config.audio.output_volume <= 100):
         errors.append("audio.output_volume must be between 0 and 100")
-    if not (0 <= config.audio.input_volume <= 100):
-        errors.append("audio.input_volume must be between 0 and 100")
+    if config.audio.input_processing_mode not in {"auto", "raw", "easyeffects"}:
+        errors.append(
+            "audio.input_processing_mode must be one of: auto, raw, easyeffects"
+        )
+    if not (-24.0 <= config.audio.capture_gain_db <= 30.0):
+        errors.append("audio.capture_gain_db must be between -24 and 30")
+    if not (0.01 <= config.audio.auto_gain_target_rms <= 0.5):
+        errors.append("audio.auto_gain_target_rms must be between 0.01 and 0.5")
+    if not (0.0 <= config.audio.max_auto_gain_db <= 30.0):
+        errors.append("audio.max_auto_gain_db must be between 0 and 30")
+    if config.audio.auto_gain_attack_ms <= 0.0:
+        errors.append("audio.auto_gain_attack_ms must be positive")
+    if config.audio.auto_gain_release_ms <= 0.0:
+        errors.append("audio.auto_gain_release_ms must be positive")
+    if not (0.0 <= config.audio.auto_gain_noise_gate_rms <= 0.5):
+        errors.append("audio.auto_gain_noise_gate_rms must be between 0 and 0.5")
+    if not (0.0 <= config.audio.auto_gain_gate_hold_ms <= 5000.0):
+        errors.append("audio.auto_gain_gate_hold_ms must be between 0 and 5000")
+    if not (0.5 <= config.audio.capture_limiter_peak <= 1.0):
+        errors.append("audio.capture_limiter_peak must be between 0.5 and 1.0")
     if config.audio.sample_rate not in {8000, 16000, 22050, 44100, 48000}:
         errors.append("audio.sample_rate must be a standard rate (8000, 16000, 22050, 44100, 48000)")
     if config.audio.channels not in {1, 2}:
@@ -519,6 +786,20 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("speech.stt_fallback_engine must be one of: none, whisper_cpp")
     if not (0.0 <= config.speech.stt_fallback_confidence_threshold <= 1.0):
         errors.append("speech.stt_fallback_confidence_threshold must be between 0.0 and 1.0")
+    if not (0.0 <= config.speech.voice_action_min_confidence <= 1.0):
+        errors.append("speech.voice_action_min_confidence must be between 0.0 and 1.0")
+    if not (
+        0.0 <= config.speech.stt_noise_confidence_max
+        < config.speech.stt_conversation_min_confidence
+        <= config.speech.voice_action_min_confidence
+        <= 1.0
+    ):
+        errors.append(
+            "STT confidence thresholds must satisfy 0 <= "
+            "speech.stt_noise_confidence_max < "
+            "speech.stt_conversation_min_confidence <= "
+            "speech.voice_action_min_confidence <= 1"
+        )
     if config.speech.noise_suppression_engine not in {"none", "webrtc"}:
         errors.append("speech.noise_suppression_engine must be one of: none, webrtc")
     if config.speech.noise_suppression_level not in {0, 1, 2, 3}:
@@ -638,44 +919,181 @@ def validate_config(config: AILENConfig) -> list[str]:
         errors.append("ai.daily_budget_usd must be >= 0")
     if config.ai.local.timeout_seconds <= 0:
         errors.append("ai.local.timeout_seconds must be positive")
+    if config.ai.local.runtime not in {"auto", "ollama", "llama_cpp"}:
+        errors.append("ai.local.runtime must be one of: auto, ollama, llama_cpp")
     if not (512 <= config.ai.local.context_tokens <= 32768):
         errors.append("ai.local.context_tokens must be between 512 and 32768")
-    if config.ai.provider not in {"mock", "local", "lan_brain", "cloud"}:
-        errors.append("ai.provider must be one of: mock, local, lan_brain, cloud")
+    allowed_providers = {"auto", "mock", "local", "lan_brain"}
+    preferred_remote_id = ""
+    if config.ai.provider.startswith("remote:"):
+        preferred_remote_id = config.ai.provider.removeprefix("remote:")
+        if REMOTE_PROVIDER_ID_RE.fullmatch(preferred_remote_id) is None:
+            errors.append("ai.provider remote ID is invalid")
+    elif config.ai.provider not in allowed_providers:
+        errors.append(
+            "ai.provider must be one of: auto, mock, local, lan_brain, remote:<id>"
+        )
     if config.ai.lan.provider not in {"openai_compatible", "ollama_native"}:
         errors.append("ai.lan.provider must be one of: openai_compatible, ollama_native")
     if config.ai.lan.timeout_seconds <= 0:
         errors.append("ai.lan.timeout_seconds must be positive")
-    if config.ai.cloud.timeout_seconds <= 0:
-        errors.append("ai.cloud.timeout_seconds must be positive")
-    if config.ai.cloud.daily_budget_usd < 0:
-        errors.append("ai.cloud.daily_budget_usd must be >= 0")
-    if config.ai.cloud.monthly_budget_usd < 0:
-        errors.append("ai.cloud.monthly_budget_usd must be >= 0")
-    if config.ai.cloud.input_cost_per_million is not None and config.ai.cloud.input_cost_per_million < 0:
-        errors.append("ai.cloud.input_cost_per_million must be >= 0")
-    if config.ai.cloud.output_cost_per_million is not None and config.ai.cloud.output_cost_per_million < 0:
-        errors.append("ai.cloud.output_cost_per_million must be >= 0")
-    if config.ai.cloud.enabled and (
-        config.ai.cloud.input_cost_per_million is None
-        or config.ai.cloud.output_cost_per_million is None
-    ):
-        errors.append("ai.cloud token pricing must be configured when cloud is enabled")
-
     for section_name, enabled, endpoint, model in (
         ("ai.local", config.ai.local.enabled, config.ai.local.endpoint, config.ai.local.model),
         ("ai.lan", config.ai.lan.enabled, config.ai.lan.endpoint, config.ai.lan.model),
-        ("ai.cloud", config.ai.cloud.enabled, config.ai.cloud.endpoint, config.ai.cloud.model),
     ):
         if not enabled:
             continue
-        if not model.strip():
+        # Local may intentionally be empty: provisioning then supplies the
+        # immutable, target-qualified model selection.  LAN still requires an
+        # explicit remote model contract.
+        if section_name == "ai.lan" and not model.strip():
             errors.append(f"{section_name}.model cannot be empty when enabled")
         parsed = urlparse(endpoint)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             errors.append(f"{section_name}.endpoint must be a valid http(s) URL when enabled")
-    if config.ai.cloud.enabled and not config.ai.cloud.provider.strip():
-        errors.append("ai.cloud.provider cannot be empty when enabled")
+    for provider_id, provider in config.ai.remote.providers.items():
+        section_name = f"ai.remote.providers.{provider_id}"
+        if REMOTE_PROVIDER_ID_RE.fullmatch(provider_id) is None:
+            errors.append(f"{section_name} has an invalid provider ID")
+        if not provider.preset.strip():
+            errors.append(f"{section_name}.preset cannot be empty")
+        if provider.protocol not in REMOTE_PROTOCOLS:
+            errors.append(
+                f"{section_name}.protocol must be one of: "
+                f"{', '.join(sorted(REMOTE_PROTOCOLS))}"
+            )
+        if provider.timeout_seconds <= 0:
+            errors.append(f"{section_name}.timeout_seconds must be positive")
+        if not 0 <= provider.priority <= 1000:
+            errors.append(f"{section_name}.priority must be between 0 and 1000")
+        if provider.daily_budget_usd < 0 or provider.monthly_budget_usd < 0:
+            errors.append(f"{section_name} budgets must be >= 0")
+        if (
+            provider.input_cost_per_million is not None
+            and provider.input_cost_per_million < 0
+        ):
+            errors.append(f"{section_name}.input_cost_per_million must be >= 0")
+        if (
+            provider.output_cost_per_million is not None
+            and provider.output_cost_per_million < 0
+        ):
+            errors.append(f"{section_name}.output_cost_per_million must be >= 0")
+        if provider.qualification_status not in REMOTE_QUALIFICATION_STATES:
+            errors.append(f"{section_name}.qualification_status is invalid")
+        if provider.catalog_mode not in {"manual", "live"}:
+            errors.append(f"{section_name}.catalog_mode must be manual or live")
+        if provider.api_key_env and re.fullmatch(
+            r"[A-Z][A-Z0-9_]{1,127}", provider.api_key_env
+        ) is None:
+            errors.append(f"{section_name}.api_key_env is invalid")
+        if provider.api_key_file and (
+            Path(provider.api_key_file).name != provider.api_key_file
+            or provider.api_key_file in {".", ".."}
+        ):
+            errors.append(f"{section_name}.api_key_file must be a safe filename")
+        if provider.auth_mode not in {"api_key", "none"}:
+            errors.append(f"{section_name}.auth_mode must be api_key or none")
+        if provider.enabled and provider.auth_mode == "api_key" and not (
+            provider.api_key_env or provider.api_key_file
+        ):
+            errors.append(f"{section_name} requires a provider-specific key location")
+        if provider.voice_realtime_eligible and (
+            provider.qualification_status != "qualified"
+            or not provider.streaming_enabled
+        ):
+            errors.append(
+                f"{section_name}.voice_realtime_eligible requires qualified real streaming"
+            )
+        if not provider.enabled:
+            continue
+        if not provider.model.strip():
+            errors.append(f"{section_name}.model cannot be empty when enabled")
+        parsed_remote = urlparse(provider.endpoint)
+        if (
+            parsed_remote.scheme != "https"
+            or not parsed_remote.netloc
+            or parsed_remote.username is not None
+            or parsed_remote.password is not None
+            or parsed_remote.fragment
+        ):
+            errors.append(f"{section_name}.endpoint must be a valid HTTPS URL when enabled")
+        if provider.qualification_status == "rejected":
+            errors.append(f"{section_name} cannot be enabled while rejected")
+
+    if preferred_remote_id:
+        selected = config.ai.remote.providers.get(preferred_remote_id)
+        if selected is None:
+            errors.append(f"ai.provider references unknown remote provider {preferred_remote_id!r}")
+        elif not selected.enabled:
+            errors.append(f"ai.provider references disabled remote provider {preferred_remote_id!r}")
+
+    if not isinstance(config.updates.channel, str) or config.updates.channel not in {
+        "nightly",
+        "beta",
+        "stable",
+    }:
+        errors.append("updates.channel must be one of: nightly, beta, stable")
+    if (
+        type(config.updates.check_interval_hours) is not int
+        or not 1 <= config.updates.check_interval_hours <= 168
+    ):
+        errors.append("updates.check_interval_hours must be between 1 and 168")
+    if type(config.updates.auto_check) is not bool:
+        errors.append("updates.auto_check must be a boolean")
+    if type(config.updates.auto_install) is not bool:
+        errors.append("updates.auto_install must be a boolean")
+    if not isinstance(config.updates.maintenance_window, str) or re.fullmatch(
+        r"(?:[01][0-9]|2[0-3]):[0-5][0-9]",
+        config.updates.maintenance_window,
+    ) is None:
+        errors.append("updates.maintenance_window must use HH:MM (00:00..23:59)")
+
+    update_source_values = (
+        config.updates.manifest_url,
+        config.updates.manifest_signature_url,
+        config.updates.trust_public_key_path,
+    )
+    source_strings_valid = all(isinstance(value, str) for value in update_source_values)
+    manifest_url = (
+        config.updates.manifest_url.strip()
+        if isinstance(config.updates.manifest_url, str)
+        else ""
+    )
+    signature_url = (
+        config.updates.manifest_signature_url.strip()
+        if isinstance(config.updates.manifest_signature_url, str)
+        else ""
+    )
+    trust_path = (
+        config.updates.trust_public_key_path.strip()
+        if isinstance(config.updates.trust_public_key_path, str)
+        else ""
+    )
+    if not source_strings_valid:
+        errors.append("updates source and trust fields must be strings")
+    if bool(manifest_url) != bool(signature_url):
+        errors.append("updates manifest and signature URLs must be configured together")
+    if any((manifest_url, signature_url, trust_path)) and not all(
+        (manifest_url, signature_url, trust_path)
+    ):
+        errors.append("updates source and trust must be configured together")
+    for field_name, update_url in (
+        ("manifest_url", manifest_url),
+        ("manifest_signature_url", signature_url),
+    ):
+        if not update_url:
+            continue
+        parsed_update_url = urlparse(update_url)
+        if (
+            parsed_update_url.scheme != "https"
+            or not parsed_update_url.netloc
+            or parsed_update_url.username is not None
+            or parsed_update_url.password is not None
+            or bool(parsed_update_url.fragment)
+        ):
+            errors.append(f"updates.{field_name} must be a valid HTTPS URL")
+    if config.updates.auto_install and not all((manifest_url, signature_url, trust_path)):
+        errors.append("updates.auto_install requires a complete signed update source")
 
     if config.web.port < 1 or config.web.port > 65535:
         errors.append("web.port must be between 1 and 65535")

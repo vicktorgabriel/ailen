@@ -6,25 +6,30 @@ Transcript -> IntentResolver -> (ToolExecutor / ContextBuilder) -> Router -> AiO
 
 import json
 import logging
+import queue
 import re
+import threading
 import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 from ailen.ai.budget import BudgetPolicy
 from ailen.ai.context import AiContextBuilder
 from ailen.ai.contracts import AiResponse
 from ailen.ai.orchestrator import AiOrchestrator
 from ailen.ai.router import RoutePlan, RouteRequest, RuleBasedRouter
-from ailen.audio.contracts import Transcript
+from ailen.audio.contracts import SpeechRequest, Transcript
 from ailen.audio.coordinator import AudioInteractionCoordinator
-from ailen.audio.speech_text import normalize_text_for_speech
+from ailen.audio.speech_text import IncrementalSpeechSegmenter, normalize_text_for_speech
 from ailen.core.capabilities import CapabilityRegistry
 from ailen.core.personality import PersonalityService
 from ailen.domain.enums import DeviceProfile, PrivacyLevel, SocialMode
-from ailen.face.contracts import CONVERSATIONAL_EXPRESSIONS, FaceController
+from ailen.face.contracts import (
+    FaceController,
+    bounded_expression_ids,
+)
 from ailen.memory.repository import MemoryRepository
 from ailen.tools.contracts import ToolContext
 from ailen.tools.executor import ToolExecutor
@@ -32,6 +37,12 @@ from ailen.tools.intent_resolver import IntentResolution, IntentResolver
 from ailen.tools.semantic_intent import SemanticToolIntentResolver
 
 logger = logging.getLogger("ailen.core.conversation")
+
+
+class TurnTelemetrySink(Protocol):
+    """Redacted per-turn telemetry callback; payload values are scalar only."""
+
+    def __call__(self, turn_id: str, stage: str, **metadata: Any) -> None: ...
 
 
 class ConversationCoordinator:
@@ -54,15 +65,22 @@ class ConversationCoordinator:
         tts_voice_id: str = "es_ES-standard",
         internet_available: bool = False,
         tool_network_allowed: bool = False,
-        cloud_allowed: bool = False,
+        external_allowed: bool = False,
+        allow_sanitized_external_prompts: bool = False,
         lan_brain_trusted: bool = False,
         preferred_backend: str = "",
-        budget_policy: BudgetPolicy | None = None,
+        backend_priorities: dict[str, int] | None = None,
+        backend_timeouts: dict[str, float] | None = None,
+        backend_realtime_eligibility: dict[str, bool] | None = None,
+        backend_budget_policies: dict[str, BudgetPolicy] | None = None,
         runtime_context_provider: Callable[[], dict[str, Any]] | None = None,
         repository: MemoryRepository | None = None,
         personality_service: PersonalityService | None = None,
         persona_description: str = "",
         capability_registry: CapabilityRegistry | None = None,
+        voice_action_min_confidence: float = 0.72,
+        speech_join_timeout_seconds: float = 30.0,
+        telemetry_sink: TurnTelemetrySink | None = None,
     ) -> None:
         self.context_builder = context_builder
         self.router = router
@@ -79,15 +97,22 @@ class ConversationCoordinator:
         self.tts_voice_id = tts_voice_id
         self.internet_available = internet_available
         self.tool_network_allowed = tool_network_allowed
-        self.cloud_allowed = cloud_allowed
+        self.external_allowed = external_allowed
+        self.allow_sanitized_external_prompts = allow_sanitized_external_prompts
         self.lan_brain_trusted = lan_brain_trusted
         self.preferred_backend = preferred_backend
-        self.budget_policy = budget_policy
+        self.backend_priorities = dict(backend_priorities or {})
+        self.backend_timeouts = dict(backend_timeouts or {})
+        self.backend_realtime_eligibility = dict(backend_realtime_eligibility or {})
+        self.backend_budget_policies = dict(backend_budget_policies or {})
         self.runtime_context_provider = runtime_context_provider
         self.repository = repository
         self.personality_service = personality_service
         self.persona_description = persona_description.strip()[:1000]
         self.capability_registry = capability_registry
+        self.voice_action_min_confidence = max(0.0, min(1.0, voice_action_min_confidence))
+        self.speech_join_timeout_seconds = max(0.1, min(120.0, speech_join_timeout_seconds))
+        self.telemetry_sink = telemetry_sink
 
     def handle_user_input(
         self,
@@ -96,6 +121,7 @@ class ConversationCoordinator:
         intent: str = "chat",
         trace_id: str | None = None,
         input_modality: str = "text",
+        voice_turn: Transcript | None = None,
     ) -> tuple[AiResponse, RoutePlan]:
         """Process user text through intent resolver, tools or AI router, and speech output."""
         turn_id = trace_id or f"turn-{uuid.uuid4().hex[:10]}"
@@ -267,6 +293,43 @@ class ConversationCoordinator:
 
         # 2. Direct Tool Execution Path
         if resolution.tool_name and self.tool_executor is not None:
+            guard_reason = self._voice_action_guard_reason(resolution, voice_turn)
+            if guard_reason is not None:
+                response = AiResponse(
+                    text=(
+                        "La frase llegó cortada. ¿Podés repetir la orden completa?"
+                        if guard_reason == "VOICE_ACTION_TRUNCATED"
+                        else "No escuché esa orden con suficiente claridad. ¿Podés repetirla?"
+                    ),
+                    provider="rule",
+                    model="stt_guard",
+                    finish_reason="stt_reprompt",
+                )
+                plan = RoutePlan(
+                    primary_backend="rule",
+                    reason_code=guard_reason,
+                    context_budget=0,
+                    request_timeout=0.0,
+                    privacy_decision="LOCAL_RULE_ONLY",
+                )
+                logger.info(
+                    "voice_action_guard turn_id=%s utterance_id=%s tool=%s "
+                    "acoustic_confidence=%s intent_confidence=%.3f "
+                    "barge_in=%s truncated=%s reason=%s",
+                    turn_id,
+                    voice_turn.utterance_id if voice_turn is not None else None,
+                    resolution.tool_name,
+                    voice_turn.confidence if voice_turn is not None else None,
+                    resolution.confidence,
+                    voice_turn.interrupted if voice_turn is not None else False,
+                    voice_turn.truncated if voice_turn is not None else False,
+                    guard_reason,
+                )
+                self._speak_if_enabled(response.text, turn_id=turn_id)
+                self._persist_turn(session_id, user_text, response)
+                self._log_timing(turn_id, "turn_total", turn_started)
+                return response, plan
+
             tool_ctx = ToolContext(
                 session_id=session_id,
                 mode=self.mode,
@@ -347,14 +410,27 @@ class ConversationCoordinator:
             )
 
         # 3. Determine destination and routing for AI reasoning path
-        budget_exceeded = self.cloud_allowed and self.budget_policy is None
-        if self.budget_policy is not None:
+        budget_blocked: set[str] = set()
+        for backend_name, budget_policy in self.backend_budget_policies.items():
             try:
-                budget_available, _budget_reason, _summary = self.budget_policy.is_budget_available()
-                budget_exceeded = not budget_available
+                budget_available, _budget_reason, _summary = budget_policy.is_budget_available()
+                if not budget_available:
+                    budget_blocked.add(backend_name)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Budget policy unavailable; blocking cloud for this turn: %s", exc)
-                budget_exceeded = True
+                logger.warning(
+                    "Budget policy unavailable; blocking %s for this turn: %s",
+                    backend_name,
+                    exc,
+                )
+                budget_blocked.add(backend_name)
+
+        remote_backends = tuple(
+            sorted(
+                backend
+                for backend in self.orchestrator.backends
+                if backend.startswith("remote:")
+            )
+        )
 
         route_req = RouteRequest(
             intent=effective_intent,
@@ -364,10 +440,21 @@ class ConversationCoordinator:
             lan_brain_available="lan_brain" in self.orchestrator.backends,
             lan_brain_trusted=self.lan_brain_trusted,
             local_backend_available="local" in self.orchestrator.backends or "fake" in self.orchestrator.backends,
-            cloud_allowed=self.cloud_allowed,
-            budget_exceeded=budget_exceeded,
+            external_allowed=self.external_allowed,
+            allow_sanitized_external_prompts=self.allow_sanitized_external_prompts,
+            remote_backends=remote_backends,
+            budget_blocked_backends=frozenset(budget_blocked),
             preferred_backend=self.preferred_backend,
+            backend_priorities=self.backend_priorities,
+            backend_timeouts=self.backend_timeouts,
+            realtime_eligible_backends=self.backend_realtime_eligibility,
+            input_modality=input_modality,
+            latency_preference="low" if input_modality == "voice" else "normal",
+            acoustic_confidence=(voice_turn.confidence if voice_turn is not None else None),
+            utterance_interrupted=(voice_turn.interrupted if voice_turn is not None else False),
+            utterance_truncated=(voice_turn.truncated if voice_turn is not None else False),
         )
+
 
         plan = self.router.route(route_req)
 
@@ -395,6 +482,7 @@ class ConversationCoordinator:
             identity_name=self.identity_name,
             destination=plan.primary_backend,
             lan_trusted=self.lan_brain_trusted,
+            allow_sanitized_private=self.allow_sanitized_external_prompts,
             metadata={
                 "voice_output": self.audio_coordinator is not None,
                 "input_modality": input_modality,
@@ -406,11 +494,15 @@ class ConversationCoordinator:
                     else ""
                 ),
                 "persona_description": self.persona_description,
-                "conversational_expressions": (
-                    list(CONVERSATIONAL_EXPRESSIONS)
-                    if self.face_controller is not None
-                    else []
+                "stt_confidence": voice_turn.confidence if voice_turn is not None else None,
+                "stt_engine": voice_turn.engine if voice_turn is not None else None,
+                "utterance_interrupted": (
+                    voice_turn.interrupted if voice_turn is not None else False
                 ),
+                "utterance_truncated": (
+                    voice_turn.truncated if voice_turn is not None else False
+                ),
+                "conversational_expressions": list(self.conversational_expressions),
                 "capabilities": capabilities,
             },
         )
@@ -427,30 +519,133 @@ class ConversationCoordinator:
         # and destroyed conversational continuity. Phrase-level TTS concurrency
         # can consume this stream without cancelling the producer.
         stage_started = time.monotonic()
-        streaming_voice = self.audio_coordinator is not None and input_modality == "voice"
+        streaming_voice = (
+            isinstance(self.audio_coordinator, AudioInteractionCoordinator)
+            and input_modality == "voice"
+        )
+        streamed_expression: str | None = None
+        speech_thread: threading.Thread | None = None
+        first_phrase_monotonic: float | None = None
         if streaming_voice:
+            assert isinstance(self.audio_coordinator, AudioInteractionCoordinator)
             streamed_text = ""
             first_phrase_logged = False
+            phrase_requests: queue.Queue[SpeechRequest] = queue.Queue(maxsize=1)
+            generation_done = threading.Event()
+            speech_consumer_ready = threading.Event()
+            segmenter = IncrementalSpeechSegmenter()
+            audio_coordinator: AudioInteractionCoordinator = self.audio_coordinator
+            allowed_expressions = self.conversational_expressions
+            expressiveness = (
+                self.personality_service.current().expressiveness
+                if self.personality_service is not None
+                else 0.6
+            )
+
+            def iter_speech_requests() -> Any:
+                speech_consumer_ready.set()
+                while not generation_done.is_set() or not phrase_requests.empty():
+                    try:
+                        yield phrase_requests.get(timeout=0.05)
+                    except queue.Empty:
+                        continue
+
+            def run_incremental_speech() -> None:
+                audio_coordinator.speak_requests(
+                    iter_speech_requests(),
+                    turn_id=turn_id,
+                )
+
+            speech_thread = threading.Thread(
+                target=run_incremental_speech,
+                name="ailen-incremental-speech",
+                daemon=True,
+            )
+            speech_thread.start()
+            # The iterator is first entered only after speak_requests has reset
+            # cancellation from a previous turn.
+            while not speech_consumer_ready.wait(timeout=0.05):
+                if not speech_thread.is_alive():
+                    raise RuntimeError("incremental speech worker stopped before consuming requests")
+
+            def enqueue_phrase(phrase: str) -> bool:
+                nonlocal first_phrase_logged, first_phrase_monotonic
+                while not audio_coordinator.speech_cancelled:
+                    try:
+                        phrase_requests.put(
+                            SpeechRequest(
+                                text=phrase,
+                                voice_id=self.tts_voice_id,
+                                emotion=streamed_expression or "neutral",
+                                expressiveness=expressiveness,
+                            ),
+                            timeout=0.05,
+                        )
+                        if not first_phrase_logged:
+                            first_phrase_logged = True
+                            first_phrase_monotonic = time.monotonic()
+                            self._log_timing(
+                                turn_id,
+                                "first_phrase_ready",
+                                stage_started,
+                                chars=len(phrase),
+                            )
+                        return True
+                    except queue.Full:
+                        if not speech_thread.is_alive():
+                            return False
+                return False
 
             def accept_voice_delta(delta: str) -> bool:
-                nonlocal streamed_text, first_phrase_logged
+                nonlocal streamed_text, streamed_expression
+                if audio_coordinator.speech_cancelled:
+                    return False
                 streamed_text += delta
-                visible = re.sub(r"\[\[(?:face:)?[a-z_]+\]\]", "", streamed_text, flags=re.IGNORECASE).strip()
-                if (
-                    not first_phrase_logged
-                    and len(visible) >= 12
-                    and visible.endswith((".", "!", "?"))
-                ):
-                    first_phrase_logged = True
-                    self._log_timing(turn_id, "first_phrase_ready", stage_started, chars=len(visible))
-                return True
+                _visible, candidate_expression = self._extract_conversational_expression(
+                    streamed_text,
+                    allowed_expressions,
+                )
+                if candidate_expression is not None and streamed_expression is None:
+                    streamed_expression = candidate_expression
+                    if self.face_controller is not None:
+                        try:
+                            self.face_controller.set_expression(
+                                candidate_expression,
+                                duration_seconds=0.0,
+                            )
+                        except ValueError:
+                            logger.debug(
+                                "Ignoring invalid streamed expression: %s",
+                                candidate_expression,
+                            )
+                for phrase in segmenter.feed(delta):
+                    if not enqueue_phrase(phrase):
+                        return False
+                return not audio_coordinator.speech_cancelled
 
-            response, plan = self.orchestrator.execute_stream_until(
-                ai_req,
-                plan=plan,
-                on_text_delta=accept_voice_delta,
-                session_id=session_id,
-            )
+            try:
+                response, plan = self.orchestrator.execute_stream_until(
+                    ai_req,
+                    plan=plan,
+                    on_text_delta=accept_voice_delta,
+                    session_id=session_id,
+                )
+                if not streamed_text and response.text:
+                    for phrase in segmenter.feed(response.text):
+                        if not enqueue_phrase(phrase):
+                            break
+                if (
+                    audio_coordinator.speech_cancelled
+                    or response.error_kind is not None
+                    or response.finish_reason in {"length", "partial_stream_error"}
+                ):
+                    segmenter.discard()
+                else:
+                    for phrase in segmenter.finish():
+                        if not enqueue_phrase(phrase):
+                            break
+            finally:
+                generation_done.set()
         else:
             response, plan = self.orchestrator.execute(ai_req, plan=plan, session_id=session_id)
         self._log_timing(
@@ -466,12 +661,35 @@ class ConversationCoordinator:
             prompt_eval_ms=response.usage.prompt_eval_ms,
             generation_ms=response.usage.generation_ms,
             load_ms=response.usage.load_ms,
+            provider_setup_ms=response.provider_setup_ms,
+            provider_ready_ms=response.provider_ready_ms,
+            first_text_ms=response.first_text_ms,
+            request_chars=response.request_chars,
+            provider_tool_count=response.provider_tool_count,
+            attempts=[
+                {
+                    "backend": attempt.backend,
+                    "outcome": attempt.outcome,
+                    "provider": attempt.provider,
+                    "model": attempt.model,
+                    "latency_ms": attempt.latency_ms,
+                    "error_kind": (
+                        attempt.error_kind.value if attempt.error_kind else None
+                    ),
+                    "detail": attempt.detail,
+                }
+                for attempt in response.attempts
+            ],
         )
-        response.text, expression = self._extract_conversational_expression(response.text)
+        response.text, expression = self._extract_conversational_expression(
+            response.text,
+            self.conversational_expressions,
+        )
+        expression = expression or streamed_expression
         response.text = self._strip_generic_followup(response.text)
         if expression is not None and self.face_controller is not None:
             try:
-                self.face_controller.set_expression(expression, duration_seconds=7.5)
+                self.face_controller.set_expression(expression, duration_seconds=0.0)
                 logger.info(
                     "conversation_affect expression=%s provider=%s model=%s",
                     expression,
@@ -484,11 +702,85 @@ class ConversationCoordinator:
             response.text = self._close_truncated_voice_response(response.text)
 
         # 6. Speak using the same validated affect that drives the face.
-        self._speak_if_enabled(response.text, turn_id=turn_id, emotion=expression)
-        self._persist_turn(session_id, user_text, response)
+        speech_was_interrupted = False
+        speech_output_timed_out = False
+        if streaming_voice:
+            if speech_thread is not None:
+                speech_thread.join(timeout=self.speech_join_timeout_seconds)
+                if speech_thread.is_alive():
+                    speech_output_timed_out = True
+                    assert isinstance(self.audio_coordinator, AudioInteractionCoordinator)
+                    self.audio_coordinator.cancel_active_speech(
+                        reason="speech_worker_timeout"
+                    )
+                    speech_thread.join(timeout=0.25)
+                    logger.error(
+                        "turn_timing turn_id=%s stage=speech_worker_timeout "
+                        "timeout_seconds=%.3f worker_alive=%s tts_drains=%d",
+                        turn_id,
+                        self.speech_join_timeout_seconds,
+                        speech_thread.is_alive(),
+                        self.audio_coordinator.active_tts_drains,
+                    )
+            if first_phrase_monotonic is not None:
+                self._log_timing(
+                    turn_id,
+                    "tts_and_playback",
+                    first_phrase_monotonic,
+                    overlapped_with_generation=True,
+                )
+            if (
+                self.audio_coordinator is not None
+                and self.audio_coordinator.last_speech_interrupted
+                and self.personality_service is not None
+            ):
+                self.personality_service.observe_interruption()
+            assert isinstance(self.audio_coordinator, AudioInteractionCoordinator)
+            speech_was_interrupted = bool(
+                self.audio_coordinator.last_speech_interrupted
+                or response.finish_reason == "client_stop"
+            )
+        else:
+            self._speak_if_enabled(response.text, turn_id=turn_id, emotion=expression)
+        if speech_was_interrupted:
+            response.finish_reason = "interrupted"
+        elif speech_output_timed_out:
+            response.finish_reason = "speech_output_timeout"
+        assistant_completed = not (speech_was_interrupted or speech_output_timed_out)
+        self._persist_turn(
+            session_id,
+            user_text,
+            response,
+            assistant_completed=assistant_completed,
+        )
         self._log_timing(turn_id, "turn_total", turn_started)
 
         return response, plan
+
+    def _voice_action_guard_reason(
+        self,
+        resolution: IntentResolution,
+        voice_turn: Transcript | None,
+    ) -> str | None:
+        """Fail closed for uncertain voice commands that mutate state.
+
+        Acoustic and intent confidence remain separate signals. Read-only
+        tools are deliberately exempt so uncertainty cannot make basic queries
+        unusable, while text input keeps its existing deterministic behavior.
+        """
+        if voice_turn is None or self.tool_executor is None or resolution.tool_name is None:
+            return None
+        if not self.tool_executor.is_side_effecting(resolution.tool_name, resolution.tool_args):
+            return None
+        if voice_turn.truncated:
+            return "VOICE_ACTION_TRUNCATED"
+        if (
+            voice_turn.confidence is None
+            or voice_turn.confidence < self.voice_action_min_confidence
+            or resolution.confidence < 0.90
+        ):
+            return "VOICE_ACTION_UNCERTAIN"
+        return None
 
     @staticmethod
     def _build_web_summary_prompt(query: str, data: dict[str, Any]) -> str:
@@ -669,8 +961,19 @@ class ConversationCoordinator:
             return "¿Querés saber la hora o la fecha actual?"
         return None
 
+    @property
+    def conversational_expressions(self) -> tuple[str, ...]:
+        """Return visible spontaneous affect declared by the active renderer."""
+
+        if self.face_controller is None or not self.face_controller.is_display_active():
+            return ()
+        return bounded_expression_ids(self.face_controller.conversational_expressions)
+
     @staticmethod
-    def _extract_conversational_expression(text: str) -> tuple[str, str | None]:
+    def _extract_conversational_expression(
+        text: str,
+        allowed_expressions: tuple[str, ...] = (),
+    ) -> tuple[str, str | None]:
         """Strip one optional model affect marker and validate it against Face vocabulary."""
         cleaned = text.strip()
         prefix = re.match(r"^\s*\[\[(?:face:)?([a-z_]+)\]\]\s*", cleaned, flags=re.IGNORECASE)
@@ -679,7 +982,7 @@ class ConversationCoordinator:
             visible = cleaned[prefix.end():].strip()
             return (
                 visible,
-                expression if expression in CONVERSATIONAL_EXPRESSIONS else None,
+                expression if expression in allowed_expressions else None,
             )
 
         trailer = re.search(r"\s*\[\[(?:face:)?([a-z_]+)\]\]\s*$", cleaned, flags=re.IGNORECASE)
@@ -689,7 +992,7 @@ class ConversationCoordinator:
         visible = cleaned[: trailer.start()].rstrip()
         return (
             visible,
-            expression if expression in CONVERSATIONAL_EXPRESSIONS else None,
+            expression if expression in allowed_expressions else None,
         )
 
     @staticmethod
@@ -742,7 +1045,14 @@ class ConversationCoordinator:
         complete = cleaned[: boundaries[-1].end()].strip()
         return complete if len(complete) >= 12 else cleaned
 
-    def _persist_turn(self, session_id: str | None, user_text: str, response: AiResponse) -> None:
+    def _persist_turn(
+        self,
+        session_id: str | None,
+        user_text: str,
+        response: AiResponse,
+        *,
+        assistant_completed: bool = True,
+    ) -> None:
         """Persist one completed conversational turn after request construction.
 
         Persisting after inference avoids duplicating the current user message in
@@ -757,24 +1067,32 @@ class ConversationCoordinator:
                 content=user_text.strip(),
                 mode=self.mode,
             )
-            if response.text.strip():
+            if assistant_completed and response.text.strip():
                 self.repository.add_message(
                     session_id=session_id,
                     role="assistant",
                     content=response.text.strip(),
                     mode=self.mode,
                 )
+            elif response.text.strip():
+                logger.info(
+                    "conversation_persistence assistant_excluded=true "
+                    "finish_reason=%s response_chars=%d",
+                    response.finish_reason,
+                    len(response.text),
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not persist conversation turn: %s", exc)
 
-    @staticmethod
     def _log_timing(
+        self,
         turn_id: str,
         stage: str,
         started: float,
         **metadata: Any,
     ) -> None:
         ended = time.monotonic()
+        duration_ms = (ended - started) * 1000.0
         logger.info(
             "turn_timing turn_id=%s stage=%s started_monotonic=%.6f "
             "ended_monotonic=%.6f duration_ms=%.1f metadata=%s",
@@ -782,9 +1100,26 @@ class ConversationCoordinator:
             stage,
             started,
             ended,
-            (ended - started) * 1000.0,
+            duration_ms,
             json.dumps(metadata, ensure_ascii=False, sort_keys=True),
         )
+        if self.telemetry_sink is not None:
+            scalar_metadata = {
+                key: value
+                for key, value in metadata.items()
+                if value is None or isinstance(value, (bool, int, float, str))
+            }
+            scalar_metadata.update(
+                {
+                    "started_monotonic": started,
+                    "ended_monotonic": ended,
+                    "duration_ms": duration_ms,
+                }
+            )
+            try:
+                self.telemetry_sink(turn_id, stage, **scalar_metadata)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Turn telemetry sink failed: %s", exc)
 
     def _speak_if_enabled(
         self,
@@ -804,12 +1139,14 @@ class ConversationCoordinator:
                         if self.personality_service is not None
                         else 0.6
                     )
-                    self.audio_coordinator.speak(
-                        spoken_text,
-                        voice_id=self.tts_voice_id,
-                        emotion=emotion or "neutral",
-                        expressiveness=expressiveness,
-                    )
+                    speech_kwargs: dict[str, Any] = {
+                        "voice_id": self.tts_voice_id,
+                        "emotion": emotion or "neutral",
+                        "expressiveness": expressiveness,
+                    }
+                    if turn_id is not None:
+                        speech_kwargs["turn_id"] = turn_id
+                    self.audio_coordinator.speak(spoken_text, **speech_kwargs)
                     if (
                         self.audio_coordinator.last_speech_interrupted
                         and self.personality_service is not None
@@ -827,4 +1164,10 @@ class ConversationCoordinator:
         session_id: str | None = None,
     ) -> tuple[AiResponse, RoutePlan]:
         """Convenience handler accepting a Transcript object from STT."""
-        return self.handle_user_input(transcript.text, session_id=session_id)
+        return self.handle_user_input(
+            transcript.text,
+            session_id=session_id,
+            trace_id=transcript.utterance_id,
+            input_modality="voice",
+            voice_turn=transcript,
+        )

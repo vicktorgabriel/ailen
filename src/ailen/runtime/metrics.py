@@ -1,5 +1,6 @@
 """Structured operational telemetry and metrics for Lab Mode sessions."""
 
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,6 +24,13 @@ class LabSessionMetrics:
     ai_prompt_eval_ms: list[float] = field(default_factory=list)
     ai_generation_ms: list[float] = field(default_factory=list)
     ai_load_ms: list[float] = field(default_factory=list)
+    ai_first_text_ms: list[float] = field(default_factory=list)
+    ai_provider_setup_ms: list[float] = field(default_factory=list)
+    ai_provider_ready_ms: list[float] = field(default_factory=list)
+    ai_request_chars_total: int = 0
+    ai_provider_model_counts: dict[str, int] = field(default_factory=dict)
+    ai_fallback_count: int = 0
+    ai_fallback_causes: dict[str, int] = field(default_factory=dict)
     input_tokens_total: int = 0
     output_tokens_total: int = 0
     token_usage_complete: bool = True
@@ -35,6 +43,68 @@ class LabSessionMetrics:
     vision_valid_frames_count: int = 0
     presence_transitions_count: int = 0
     face_frames_count: int = 0
+    turn_stages: list[dict[str, Any]] = field(default_factory=list)
+    _turn_stage_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        repr=False,
+    )
+
+    _TURN_STAGE_FIELDS = frozenset(
+        {
+            "accepted",
+            "action_allowed",
+            "audio_duration_ms",
+            "backend",
+            "confidence",
+            "confidence_band",
+            "cancelled",
+            "duration_ms",
+            "ended_monotonic",
+            "engine",
+            "error_kind",
+            "expression_accepted",
+            "expression_requested",
+            "fallback_cause",
+            "fallback_used",
+            "finish_reason",
+            "first_phrase_ms",
+            "first_text_ms",
+            "frame_count",
+            "generation_id",
+            "generation_cancelled",
+            "intent",
+            "input_tokens",
+            "interrupted",
+            "invoked",
+            "model",
+            "matched",
+            "message_count",
+            "output_chars",
+            "output_tokens",
+            "playback_stop_ms",
+            "provider",
+            "provider_ready_ms",
+            "provider_tool_count",
+            "provider_setup_ms",
+            "reason_code",
+            "request_to_pcm_ms",
+            "request_chars",
+            "result",
+            "route_reason",
+            "semantic_attempted",
+            "sequence",
+            "started_monotonic",
+            "status",
+            "stale",
+            "success",
+            "system_chars",
+            "synthesizer_draining",
+            "tool",
+            "truncated",
+            "tts_latency_ms",
+            "utterance_id",
+        }
+    )
 
     def finalize(self) -> None:
         """Mark session end timestamp."""
@@ -45,6 +115,25 @@ class LabSessionMetrics:
         """Record TTFAR proxy: end of speech to first PCM buffer submitted for playback."""
         if latency_ms > 0:
             self.ttfar_latencies_ms.append(latency_ms)
+
+    def record_turn_stage(self, turn_id: str, stage: str, **metadata: Any) -> None:
+        """Store bounded scalar telemetry; text, prompts and memory are rejected."""
+        safe: dict[str, Any] = {
+            "turn_id": str(turn_id).strip()[:80] or "unknown",
+            "stage": str(stage).strip()[:80] or "unknown",
+            "observed_at": time.time(),
+        }
+        for key, value in metadata.items():
+            if key not in self._TURN_STAGE_FIELDS:
+                continue
+            if value is None or isinstance(value, (bool, int, float)):
+                safe[key] = value
+            elif isinstance(value, str):
+                safe[key] = value.strip()[:160]
+        with self._turn_stage_lock:
+            self.turn_stages.append(safe)
+            if len(self.turn_stages) > 512:
+                del self.turn_stages[: len(self.turn_stages) - 512]
 
     def record_utterance(self, success: bool, latency_ms: float = 0.0) -> None:
         """Record an STT utterance attempt and its latency."""
@@ -64,6 +153,14 @@ class LabSessionMetrics:
         prompt_eval_ms: float | None = None,
         generation_ms: float | None = None,
         load_ms: float | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        first_text_ms: float | None = None,
+        provider_setup_ms: float | None = None,
+        provider_ready_ms: float | None = None,
+        request_chars: int | None = None,
+        fallback_used: bool = False,
+        fallback_cause: str | None = None,
     ) -> None:
         """Record an AI inference request without fabricating missing token usage."""
         self.ai_calls_count += 1
@@ -75,6 +172,21 @@ class LabSessionMetrics:
             self.ai_generation_ms.append(generation_ms)
         if load_ms is not None and load_ms >= 0:
             self.ai_load_ms.append(load_ms)
+        if first_text_ms is not None and first_text_ms >= 0:
+            self.ai_first_text_ms.append(first_text_ms)
+        if provider_setup_ms is not None and provider_setup_ms >= 0:
+            self.ai_provider_setup_ms.append(provider_setup_ms)
+        if provider_ready_ms is not None and provider_ready_ms >= 0:
+            self.ai_provider_ready_ms.append(provider_ready_ms)
+        if request_chars is not None and request_chars >= 0:
+            self.ai_request_chars_total += request_chars
+        if provider and model:
+            key = f"{provider}:{model}"
+            self.ai_provider_model_counts[key] = self.ai_provider_model_counts.get(key, 0) + 1
+        if fallback_used:
+            self.ai_fallback_count += 1
+            cause = fallback_cause or "unknown"
+            self.ai_fallback_causes[cause] = self.ai_fallback_causes.get(cause, 0) + 1
         if in_tokens is None or out_tokens is None:
             self.token_usage_complete = False
             return
@@ -127,6 +239,9 @@ class LabSessionMetrics:
         dur = self.duration_seconds
         fps = round(self.face_frames_count / dur, 1) if dur > 0 and self.face_frames_count > 0 else None
 
+        with self._turn_stage_lock:
+            turn_stages = [dict(stage) for stage in self.turn_stages]
+
         return {
             "session_id": self.session_id,
             "started_at": self.started_at,
@@ -153,6 +268,14 @@ class LabSessionMetrics:
                 "generation_avg_ms": self._avg(self.ai_generation_ms),
                 "generation_p95_ms": self._p95(self.ai_generation_ms),
                 "load_avg_ms": self._avg(self.ai_load_ms),
+                "first_text_avg_ms": self._avg(self.ai_first_text_ms),
+                "first_text_p95_ms": self._p95(self.ai_first_text_ms),
+                "provider_setup_avg_ms": self._avg(self.ai_provider_setup_ms),
+                "provider_ready_avg_ms": self._avg(self.ai_provider_ready_ms),
+                "request_chars_total": self.ai_request_chars_total,
+                "provider_model_counts": dict(self.ai_provider_model_counts),
+                "fallback_count": self.ai_fallback_count,
+                "fallback_causes": dict(self.ai_fallback_causes),
                 "tokens_in": self.input_tokens_total if self.token_usage_complete else None,
                 "tokens_out": self.output_tokens_total if self.token_usage_complete else None,
                 "token_usage_complete": self.token_usage_complete,
@@ -165,5 +288,9 @@ class LabSessionMetrics:
             "face": {
                 "frames": self.face_frames_count,
                 "fps_estimate": fps,
+            },
+            "turns": {
+                "stages": turn_stages,
+                "content_persisted": False,
             },
         }

@@ -5,6 +5,7 @@ from typing import Any
 
 from ailen.domain.enums import DeviceProfile, InferenceProfile
 from ailen.hardware.contracts import HardwareCapabilityReport
+from ailen.hardware.tiers import classify_hardware_tier
 from ailen.models.catalog import ModelCatalog, ModelDescriptor, ModelPurpose
 
 
@@ -14,6 +15,7 @@ class ModelPlan:
 
     selected_model_id: str | None
     runtime: str = "none"  # "llama.cpp", "ollama", "none"
+    fallback_model_ids: list[str] = field(default_factory=list)
     device: str = "none"  # "cuda", "cpu", "none"
     gpu_layers: int | str = 0  # "all" or 0
     estimated_ram_mb: int = 0
@@ -112,7 +114,11 @@ class ModelPlanner:
             )
 
         # 4. Compute safety margin memory budgets
-        usable_ram_mb = max(0, int(avail_ram_mb * max_ram_fraction))
+        tier = classify_hardware_tier(total_ram_mb, avail_ram_mb)
+        usable_ram_mb = min(
+            tier.model_ram_budget_mb,
+            max(0, int(avail_ram_mb * max_ram_fraction)),
+        )
 
         best_gpu_vram_mb = 0
         best_gpu_backend: str | None = None
@@ -167,11 +173,20 @@ class ModelPlanner:
                 reasons.append(f"GPU_VRAM_FIT_{candidate.vram_requirement_mb}MB")
                 reasons.append("OFFLOAD_ALL_LAYERS")
                 reasons.append(f"SELECTED_{candidate.parameter_class.upper()}_MODEL")
+                reasons.append(
+                    f"MODEL_QUALIFICATION_{candidate.qualification_status.value.upper()}"
+                )
                 # Host RAM buffer for context / runtime working set
                 host_ram_estimate = max(100, candidate.ram_requirement_mb // 5)
                 return ModelPlan(
                     selected_model_id=candidate.model_id,
                     runtime="llama.cpp",
+                    fallback_model_ids=self._fallback_model_ids(
+                        candidates,
+                        selected=candidate,
+                        max_ram_mb=usable_ram_mb,
+                        max_vram_mb=usable_vram_mb,
+                    ),
                     device="cuda",
                     gpu_layers="all",
                     estimated_ram_mb=host_ram_estimate,
@@ -187,9 +202,18 @@ class ModelPlanner:
                 reasons.append(f"CPU_RAM_FIT_{candidate.ram_requirement_mb}MB")
                 reasons.append("CPU_INFERENCE_ZERO_GPU_LAYERS")
                 reasons.append(f"SELECTED_{candidate.parameter_class.upper()}_MODEL")
+                reasons.append(
+                    f"MODEL_QUALIFICATION_{candidate.qualification_status.value.upper()}"
+                )
                 return ModelPlan(
                     selected_model_id=candidate.model_id,
                     runtime="llama.cpp",
+                    fallback_model_ids=self._fallback_model_ids(
+                        candidates,
+                        selected=candidate,
+                        max_ram_mb=usable_ram_mb,
+                        max_vram_mb=0,
+                    ),
                     device="cpu",
                     gpu_layers=0,
                     estimated_ram_mb=candidate.ram_requirement_mb,
@@ -214,3 +238,34 @@ class ModelPlanner:
             reason_codes=reasons,
             is_viable=False,
         )
+
+    @staticmethod
+    def _fallback_model_ids(
+        candidates: list[ModelDescriptor],
+        *,
+        selected: ModelDescriptor,
+        max_ram_mb: int,
+        max_vram_mb: int,
+    ) -> list[str]:
+        """Keep one smaller compatible fallback without hopping per turn."""
+        smaller = [
+            candidate
+            for candidate in candidates
+            if candidate.model_id != selected.model_id
+            and candidate.ram_requirement_mb < selected.ram_requirement_mb
+            and (
+                candidate.ram_requirement_mb <= max_ram_mb
+                or (
+                    max_vram_mb > 0
+                    and candidate.vram_requirement_mb <= max_vram_mb
+                )
+            )
+        ]
+        smaller.sort(
+            key=lambda candidate: (
+                candidate.ram_requirement_mb,
+                candidate.disk_size_bytes,
+                candidate.model_id,
+            )
+        )
+        return [candidate.model_id for candidate in smaller[:1]]

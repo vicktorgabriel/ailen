@@ -193,23 +193,44 @@ class LabDoctor:
         else:
             checks.append(DiagnosticCheck(name="Recommended Model", result="SKIP", detail="Remote/Rule-only routing planned"))
 
-        # 8. Cloud AI Configuration
-        if self.config and self.config.ai.cloud.enabled:
-            has_key = SecretResolver().resolve(
-                env_var=self.config.ai.cloud.api_key_env,
-                file_name=self.config.ai.cloud.api_key_file,
-            ) is not None
-            if has_key:
-                checks.append(DiagnosticCheck(name="Cloud AI Config", result="PASS", detail="Cloud enabled with API key present"))
-            else:
-                checks.append(DiagnosticCheck(
-                    name="Cloud AI Config",
-                    result="WARN",
-                    detail="Cloud enabled but API key missing",
-                    remediation=f"Set {self.config.ai.cloud.api_key_env} in environment",
-                ))
-        else:
-            checks.append(DiagnosticCheck(name="Cloud AI Config", result="SKIP", detail="Cloud AI disabled in config"))
+        # 8. Named remote providers. Configuration/credential presence is not
+        # health; an explicit inference test is required for READY.
+        enabled_remotes = []
+        if self.config and self.config.ai.allow_remote and self.config.ai.remote.enabled:
+            resolver = SecretResolver()
+            for provider_id, provider in self.config.ai.remote.providers.items():
+                if not provider.enabled:
+                    continue
+                configured = bool(provider.endpoint and provider.model)
+                has_key = provider.auth_mode == "none" or resolver.has_secret(
+                    env_var=provider.api_key_env or None,
+                    file_name=provider.api_key_file or None,
+                )
+                enabled_remotes.append(provider_id)
+                checks.append(
+                    DiagnosticCheck(
+                        name=f"Remote AI Config ({provider_id})",
+                        result="WARN" if configured and has_key else "FAIL",
+                        detail=(
+                            "Configured and credential present; health remains unverified"
+                            if configured and has_key
+                            else "Missing endpoint/model or provider-specific credential"
+                        ),
+                        remediation=(
+                            "Run an explicit provider test from /ia"
+                            if configured and has_key
+                            else "Configure this provider in /ia and restart AILEN"
+                        ),
+                    )
+                )
+        if not enabled_remotes:
+            checks.append(
+                DiagnosticCheck(
+                    name="Remote AI Providers",
+                    result="SKIP",
+                    detail="No named remote provider is enabled",
+                )
+            )
 
         return checks
 

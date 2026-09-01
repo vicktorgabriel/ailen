@@ -8,6 +8,7 @@ import signal
 import threading
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from types import FrameType
 from typing import Any
@@ -15,20 +16,21 @@ from typing import Any
 from ailen.ai.budget import BudgetPolicy
 from ailen.ai.context import AiContextBuilder
 from ailen.ai.contracts import AiBackend
+from ailen.ai.managed_local_backend import ManagedLocalAiBackend
 from ailen.ai.ollama_backend import OllamaNativeBackend
 from ailen.ai.orchestrator import AiOrchestrator
+from ailen.ai.residency import ModelResidencyPolicy
 from ailen.ai.router import RuleBasedRouter
 from ailen.audio.contracts import (
     AudioInputBackend,
     AudioOutputBackend,
     SttBackend,
+    Transcript,
+    TranscriptAlternative,
     TtsBackend,
-    VoiceActivityDetector,
 )
 from ailen.audio.coordinator import AudioInteractionCoordinator
-from ailen.audio.noise import WebRtcNoiseProcessor
 from ailen.audio.stt_quality import SttQualityEvaluator
-from ailen.audio.vad import EnergyVad, UtteranceCollector, WebRtcVad
 from ailen.core.capabilities import CapabilityDescriptor, CapabilityProvider, CapabilityRegistry
 from ailen.core.config import AILENConfig
 from ailen.core.conversation import ConversationCoordinator
@@ -37,7 +39,13 @@ from ailen.core.events import EventBus
 from ailen.core.personality import PersonalityService, PersonalityTraits
 from ailen.core.social import SocialEngine
 from ailen.core.state import StateManager
-from ailen.domain.enums import AssistantState, EventType, PrivacyLevel, ServiceStatus
+from ailen.domain.enums import (
+    AssistantState,
+    EventType,
+    InferenceProfile,
+    PrivacyLevel,
+    ServiceStatus,
+)
 from ailen.face.contracts import FaceController
 from ailen.face.null import NullFaceController
 from ailen.hardware.contracts import HardwareCapabilityReport
@@ -49,6 +57,10 @@ from ailen.models.catalog import ModelCatalog, ModelPurpose
 from ailen.models.inference_profile import InferenceRecommendation, recommend_inference_profile
 from ailen.models.planner import ModelPlan, ModelPlanner
 from ailen.models.store import ModelStore
+from ailen.provisioning.activation import (
+    LocalAiSelectionError,
+    LocalAiSelectionStore,
+)
 from ailen.runtime.contracts import ExternalRuntimeDescriptor, RuntimeStatus, RuntimeType
 from ailen.runtime.factory import ComponentStatus, LabComponentFactory
 from ailen.runtime.inventory import RuntimeModelInventory
@@ -58,8 +70,8 @@ from ailen.runtime.metrics import LabSessionMetrics
 from ailen.tools.builtin import (
     CameraTool,
     ClockTool,
+    DesktopMusicService,
     FaceExpressionTool,
-    MprisMusicService,
     MusicTool,
     NotesTool,
     ReminderService,
@@ -97,6 +109,7 @@ class LabRunner:
         duration: float | None = None,
         log_dir: Path | str | None = None,
         managed_runtime: ManagedLlamaRuntime | None = None,
+        local_selection_store: LocalAiSelectionStore | None = None,
     ) -> None:
         self.config = config
         self.dry_run = dry_run
@@ -118,7 +131,11 @@ class LabRunner:
         self._is_processing_interaction = False
         self._processed_transcript_event_ids: set[str] = set()
         self._last_voice_ended_monotonic: float | None = None
-        self.stt_quality_evaluator = SttQualityEvaluator()
+        self.stt_quality_evaluator = SttQualityEvaluator(
+            noise_confidence_max=config.speech.stt_noise_confidence_max,
+            conversation_min_confidence=config.speech.stt_conversation_min_confidence,
+            action_min_confidence=config.speech.voice_action_min_confidence,
+        )
 
         # Core infrastructure
         self.event_bus = EventBus()
@@ -162,9 +179,14 @@ class LabRunner:
         self.reminder_service: ReminderService | None = None
         self._pending_reminder_announcements: queue.Queue[dict[str, str]] = queue.Queue()
         self.managed_runtime = managed_runtime
+        self.local_selection_store = local_selection_store or LocalAiSelectionStore(
+            Path(config.node.data_dir) / "provisioning" / "local-ai-selection.json"
+        )
 
         self._vision_thread: threading.Thread | None = None
         self._vision_observations_delivered = 0
+        self._memory_pressure_thread: threading.Thread | None = None
+        self._memory_pressure_stop = threading.Event()
 
     def inspect_and_plan(self) -> tuple[HardwareCapabilityReport, ModelPlan]:
         """Detect hardware capabilities, discover runtimes, and compute optimal model plan."""
@@ -174,8 +196,14 @@ class LabRunner:
         rec = detector.recommend_profile(self.hardware_report)
         self.detected_profile = rec.profile
 
-        runtime_mgr = LocalRuntimeManager()
-        self.runtime_descriptors = runtime_mgr.detect_available_runtimes()
+        # A disabled local provider is a hard boundary: do not even probe local
+        # inference endpoints. Detection can wake socket-activated runtimes and
+        # used to make ``ai.local.enabled=false`` observably false.
+        if self.config.ai.local.enabled:
+            runtime_mgr = LocalRuntimeManager()
+            self.runtime_descriptors = runtime_mgr.detect_available_runtimes()
+        else:
+            self.runtime_descriptors = []
 
         self.inference_recommendation = recommend_inference_profile(
             self.hardware_report,
@@ -183,13 +211,27 @@ class LabRunner:
         )
         catalog = ModelCatalog()
         planner = ModelPlanner(catalog=catalog)
-        self.model_plan = planner.plan(
+        diagnostic_plan = planner.plan(
             self.hardware_report,
             profile=rec.profile,
             purpose=ModelPurpose.BALANCED,
             desired_context=self.inference_recommendation.recommended_context,
             inference_profile=self.inference_recommendation.profile,
         )
+        self.model_plan = diagnostic_plan
+        if self.config.ai.local.enabled and not self.config.ai.local.model.strip():
+            try:
+                selection = self.local_selection_store.load(
+                    self.hardware_report,
+                    catalog=catalog,
+                    model_store=store,
+                )
+                if selection is not None:
+                    self.model_plan = selection.to_model_plan(catalog)
+            except LocalAiSelectionError as exc:
+                # Fail closed.  The diagnostic candidate remains visible, but
+                # Factory will not activate it because it is not qualified.
+                logger.warning("Ignoring invalid local AI activation: %s", exc)
         return self.hardware_report, self.model_plan
 
     def init_components(self) -> list[ComponentStatus]:
@@ -257,9 +299,8 @@ class LabRunner:
         )
         self.component_statuses.append(tts_st)
 
-        # 6. AI Backends. If the verified planned GGUF is already installed and
-        # no matching local runtime is active, LabRunner may start an AILEN-owned
-        # llama.cpp server for this session. It never downloads here.
+        # 6. AI Backends. A verified planned GGUF may be exposed through an
+        # AILEN-owned llama.cpp adapter that loads only on first inference.
         self.ai_backends, ai_st = factory.build_ai_backends(
             no_ai=self.no_ai,
             simulate=self.simulate,
@@ -274,37 +315,40 @@ class LabRunner:
             not self.no_ai
             and not self.dry_run
             and not self.simulate
+            and self.config.ai.local.enabled
             and "local" not in self.ai_backends
             and self.model_plan
             and self.model_plan.is_viable
             and self.model_plan.selected_model_id
             and self.model_plan.model_descriptor
+            and self.model_plan.model_descriptor.qualification_status.value
+            == "qualified"
+            and self.model_plan.runtime == "llama.cpp"
         ):
             store = ModelStore()
             model_id = self.model_plan.selected_model_id
             descriptor = self.model_plan.model_descriptor
             if store.exists(model_id) and store.verify(model_id, descriptor.sha256):
                 runtime = self.managed_runtime or ManagedLlamaRuntime()
-                started = runtime.start(
+                self.managed_runtime = runtime
+                self.ai_backends["local"] = ManagedLocalAiBackend(
+                    runtime=runtime,
                     model_path=store.get_model_path(model_id),
-                    host="127.0.0.1",
-                    port=8080,
+                    model_alias=model_id,
                     context_size=self.model_plan.context_size,
                     gpu_layers=self.model_plan.gpu_layers,
-                    model_alias=model_id,
+                    timeout_seconds=self.config.ai.local.timeout_seconds,
                 )
-                if started:
-                    self.managed_runtime = runtime
-                    self.runtime_descriptors = LocalRuntimeManager().detect_available_runtimes()
-                    self.ai_backends, ai_st = factory.build_ai_backends(
-                        no_ai=False,
-                        simulate=False,
-                        model_plan=self.model_plan,
-                        runtime_descriptors=self.runtime_descriptors,
-                        inference_profile=(
-                            self.inference_recommendation.profile if self.inference_recommendation else None
-                        ),
-                    )
+                backend_names = ", ".join(sorted(self.ai_backends))
+                ai_st = ComponentStatus(
+                    name="AI Inference",
+                    backend=backend_names,
+                    state="READY",
+                    detail=(
+                        f"Available backends: {backend_names}. Verified llama.cpp model "
+                        f"'{model_id}' loads on first local route."
+                    ),
+                )
 
         self.component_statuses.append(ai_st)
 
@@ -366,73 +410,16 @@ class LabRunner:
         # 9. Wire live Audio Interaction Coordinator only when the complete real
         # speech chain is available. Passing None here would trigger the generic
         # coordinator's Fake defaults, which is forbidden outside --simulate.
-        if self.audio_in and self.audio_out and self.stt_backend and self.tts_backend:
-            frame_ms = self.config.audio.frame_ms
-            hangover_frames = max(0, round(self.config.speech.vad_hangover_ms / frame_ms))
-            listening_vad: VoiceActivityDetector
-            if self.config.speech.vad_engine == "webrtc":
-                listening_vad = WebRtcVad(
-                    sample_rate=self.config.audio.sample_rate,
-                    frame_ms=frame_ms,
-                    mode=self.config.speech.vad_webrtc_mode,
-                    hangover_frames=hangover_frames,
-                    min_rms=self.config.speech.vad_threshold,
-                )
-                interruption_vad = WebRtcVad(
-                    sample_rate=self.config.audio.sample_rate,
-                    frame_ms=frame_ms,
-                    mode=min(3, self.config.speech.vad_webrtc_mode + 1),
-                    hangover_frames=0,
-                )
-            elif self.config.speech.vad_engine == "energy":
-                listening_vad = EnergyVad(
-                    threshold_rms=self.config.speech.vad_threshold,
-                    hangover_frames=hangover_frames,
-                )
-                interruption_vad = None
-            else:
-                raise RuntimeError(
-                    f"Live Lab requires speech.vad_engine=energy/webrtc, got {self.config.speech.vad_engine!r}"
-                )
-            frame_processor = None
-            if self.config.speech.noise_suppression_engine == "webrtc":
-                frame_processor = WebRtcNoiseProcessor(
-                    sample_rate=self.config.audio.sample_rate,
-                    channels=self.config.audio.channels,
-                    noise_suppression=self.config.speech.noise_suppression_level,
-                    auto_gain=0,
-                )
-
-            collector = UtteranceCollector(
-                vad=listening_vad,
-                sample_rate=self.config.audio.sample_rate,
-                channels=self.config.audio.channels,
-                frame_ms=frame_ms,
-                min_speech_ms=self.config.speech.min_speech_ms,
-                silence_timeout_ms=self.config.speech.silence_timeout_ms,
-                max_utterance_seconds=self.config.speech.max_utterance_seconds,
-                pre_roll_ms=self.config.speech.pre_roll_ms,
-            )
-            self.audio_coordinator = AudioInteractionCoordinator(
-                audio_input=self.audio_in,
-                audio_output=self.audio_out,
-                frame_processor=frame_processor,
-                stt=self.stt_backend,
-                tts=self.tts_backend,
-                utterance_collector=collector,
-                state_manager=self.state_manager,
-                face_controller=self.face_controller,
-                event_bus=self.event_bus,
-                auto_reset_after_stt=not bool(self.ai_backends),
-                interruption_enabled=self.config.speech.interruption_enabled,
-                interruption_threshold_rms=self.config.speech.interruption_threshold_rms,
-                interruption_min_ms=self.config.speech.interruption_min_ms,
-                interruption_calibration_ms=self.config.speech.interruption_calibration_ms,
-                interruption_leak_multiplier=self.config.speech.interruption_leak_multiplier,
-                interruption_vad=interruption_vad,
-                default_speech_rate=self.config.speech.tts_rate,
-                frame_ms=frame_ms,
-            )
+        self.audio_coordinator = factory.build_audio_coordinator(
+            audio_input=self.audio_in,
+            audio_output=self.audio_out,
+            stt=self.stt_backend,
+            tts=self.tts_backend,
+            state_manager=self.state_manager,
+            face_controller=self.face_controller,
+            event_bus=self.event_bus,
+            auto_reset_after_stt=not bool(self.ai_backends),
+        )
 
         # 10. Wire Tool Registry & Controlled Executor. Reminders persist in
         # SQLite; when memory is unavailable the tool fails closed rather than
@@ -449,7 +436,7 @@ class LabRunner:
             TimerTool(),
             RemindersTool(repository=self.memory_repo),
             VolumeTool(),
-            MusicTool(service=MprisMusicService()),
+            MusicTool(service=DesktopMusicService()),
             NotesTool(repository=self.memory_repo),
             SystemStatusTool(),
             WebSearchTool(
@@ -486,12 +473,12 @@ class LabRunner:
             if isinstance(provider, CapabilityProvider):
                 self.capability_registry.register_provider(provider)
 
-        # 11. Wire Conversation Coordinator. Cloud/LAN policies are the same
+        # 11. Wire Conversation Coordinator. Named-remote/LAN policies are the same
         # audited policies used by normal Core, including budget enforcement.
         if self.ai_backends:
             context_builder = AiContextBuilder(
                 repository=self.memory_repo,
-                request_timeout_seconds=self.config.ai.local.timeout_seconds,
+                request_timeout_seconds=self.config.ai.timeout_seconds,
                 max_recent_messages=self.config.ai.context_recent_messages,
                 max_char_budget=self.config.ai.context_char_budget,
                 max_output_tokens=min(self.config.ai.max_tokens, 128),
@@ -504,19 +491,50 @@ class LabRunner:
                 repository=self.memory_repo,
                 event_bus=self.event_bus,
             )
-            budget_policy = BudgetPolicy(
-                repository=self.memory_repo,
-                daily_budget_usd=self.config.ai.cloud.daily_budget_usd,
-                monthly_budget_usd=self.config.ai.cloud.monthly_budget_usd,
-            )
+            remote_budget_policies = {
+                f"remote:{provider_id}": BudgetPolicy(
+                    repository=self.memory_repo,
+                    daily_budget_usd=provider.daily_budget_usd,
+                    monthly_budget_usd=provider.monthly_budget_usd,
+                    provider=f"remote:{provider_id}",
+                )
+                for provider_id, provider in self.config.ai.remote.providers.items()
+                if provider.enabled
+            }
+            backend_priorities = {
+                "lan_brain": self.config.ai.lan.priority,
+                "local": self.config.ai.local.priority,
+                **{
+                    f"remote:{provider_id}": provider.priority
+                    for provider_id, provider in self.config.ai.remote.providers.items()
+                    if provider.enabled
+                },
+            }
+            backend_timeouts = {
+                f"remote:{provider_id}": provider.timeout_seconds
+                for provider_id, provider in self.config.ai.remote.providers.items()
+                if provider.enabled
+            }
+            backend_realtime = {
+                f"remote:{provider_id}": provider.voice_realtime_eligible
+                for provider_id, provider in self.config.ai.remote.providers.items()
+                if provider.enabled
+            }
             semantic_intent_backend = self._build_semantic_intent_backend()
-            semantic_intent_resolver = SemanticToolIntentResolver(
-                backend=semantic_intent_backend,
-                registry=self.tool_registry,
-                repository=self.memory_repo,
-                request_timeout_seconds=self.config.ai.local.intent_timeout_seconds,
-                allow_network_tools=self.config.network.outbound_web_enabled,
+            semantic_intent_resolver = (
+                SemanticToolIntentResolver(
+                    backend=semantic_intent_backend,
+                    registry=self.tool_registry,
+                    repository=self.memory_repo,
+                    request_timeout_seconds=self.config.ai.local.intent_timeout_seconds,
+                    allow_network_tools=self.config.network.outbound_web_enabled,
+                )
+                if semantic_intent_backend is not None
+                else None
             )
+            # Core keeps conversation/memory PRIVATE. Remote AI receives only
+            # the current turn when explicit sanitized-external mode is enabled.
+            conversation_privacy = PrivacyLevel.PRIVATE
             self.conversation_coordinator = ConversationCoordinator(
                 context_builder=context_builder,
                 router=router,
@@ -527,20 +545,31 @@ class LabRunner:
                 tool_executor=self.tool_executor,
                 profile=self.detected_profile,
                 mode=self.config.social.default_mode,
-                privacy_level=PrivacyLevel.PRIVATE,
+                privacy_level=conversation_privacy,
                 identity_name=self.config.identity.display_name,
                 tts_voice_id=self.config.speech.tts_voice,
-                internet_available=self.config.network.outbound_web_enabled,
+                internet_available=(
+                    self.config.network.outbound_web_enabled
+                    or any(name.startswith("remote:") for name in self.ai_backends)
+                ),
                 tool_network_allowed=self.config.network.outbound_web_enabled,
-                cloud_allowed=self.config.ai.cloud.enabled and self.config.ai.allow_cloud,
+                external_allowed=(
+                    self.config.ai.allow_remote and self.config.ai.remote.enabled
+                ),
+                allow_sanitized_external_prompts=self.config.ai.allow_sanitized_external_prompts,
                 lan_brain_trusted=self.config.ai.lan.trusted,
                 preferred_backend=self.config.ai.provider,
-                budget_policy=budget_policy,
+                backend_priorities=backend_priorities,
+                backend_timeouts=backend_timeouts,
+                backend_realtime_eligibility=backend_realtime,
+                backend_budget_policies=remote_budget_policies,
                 runtime_context_provider=self._runtime_context_snapshot,
                 repository=self.memory_repo,
                 personality_service=self.personality_service,
                 persona_description=self.config.personality.description,
+                voice_action_min_confidence=self.config.speech.voice_action_min_confidence,
                 capability_registry=self.capability_registry,
+                telemetry_sink=self.metrics.record_turn_stage,
             )
 
         # 12. Subscribe to lightweight events for single-flight conversation and
@@ -548,7 +577,12 @@ class LabRunner:
         self.event_bus.subscribe(EventType.TRANSCRIPT_READY, self._on_transcript_event)
         self.event_bus.subscribe(EventType.VOICE_ENDED, self._on_voice_ended_event)
         self.event_bus.subscribe(EventType.SPEECH_STARTED, self._on_speech_started_event)
+        self.event_bus.subscribe(EventType.SPEECH_INTERRUPTED, self._on_speech_interrupted_event)
         self.event_bus.subscribe(EventType.SPEECH_FINISHED, self._on_speech_finished_event)
+        self.event_bus.subscribe(
+            EventType.SPEECH_SYNTHESIS_DRAINED,
+            self._on_speech_synthesis_drained_event,
+        )
         self.event_bus.subscribe(EventType.PRESENCE_DETECTED, self._on_presence_transition_event)
         self.event_bus.subscribe(EventType.PRESENCE_LOST, self._on_presence_transition_event)
         self.event_bus.subscribe(EventType.REMINDER_DUE, self._on_reminder_due_event)
@@ -563,6 +597,9 @@ class LabRunner:
         already exist in the healthy local Ollama inventory; otherwise the main
         local conversational backend is reused.
         """
+        if not self.config.ai.local.enabled:
+            return None
+
         fallback = self.ai_backends.get("local")
         intent_model = self.config.ai.local.intent_model.strip()
         if not intent_model:
@@ -601,10 +638,21 @@ class LabRunner:
         """Load local conversational/intent models before live microphone capture."""
         if self.simulate or self.no_ai:
             return
-        candidates: list[Any] = list(self.ai_backends.values())
+        on_demand_local = bool(
+            self.inference_recommendation
+            and self.inference_recommendation.profile == InferenceProfile.FAST
+        )
+        candidates: list[Any] = []
+        for name, backend in self.ai_backends.items():
+            if name == "local" and not self.config.ai.local.enabled:
+                continue
+            if name == "local" and on_demand_local:
+                logger.info("FAST memory tier keeps local AI on demand; skipping prewarm")
+                continue
+            candidates.append(backend)
         if self.conversation_coordinator and self.conversation_coordinator.semantic_intent_resolver:
             semantic_backend = self.conversation_coordinator.semantic_intent_resolver.backend
-            if semantic_backend is not None:
+            if semantic_backend is not None and not on_demand_local:
                 candidates.append(semantic_backend)
 
         seen: set[int] = set()
@@ -618,6 +666,82 @@ class LabRunner:
                 logger.info("AI prewarm %s for %s", "completed" if warmed else "not available", model)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("AI prewarm failed for %s: %s", model, exc)
+
+        # Warm the real conversational prefix as well. Loading the model alone
+        # still leaves the first live turn paying prompt-evaluation/cache costs.
+        local_backend = (
+            self.ai_backends.get("local") if self.config.ai.local.enabled else None
+        )
+        coordinator = self.conversation_coordinator
+        if local_backend is not None and coordinator is not None and not on_demand_local:
+            try:
+                runtime_context = self._runtime_context_snapshot()
+                request = coordinator.context_builder.build_request(
+                    user_message="Hola.",
+                    mode=coordinator.mode,
+                    privacy_level=coordinator.privacy_level,
+                    identity_name=coordinator.identity_name,
+                    destination="local",
+                    lan_trusted=coordinator.lan_brain_trusted,
+                    metadata={
+                        "voice_output": coordinator.audio_coordinator is not None,
+                        "input_modality": "voice",
+                        "runtime_context": runtime_context,
+                        "personality_style": (
+                            coordinator.personality_service.prompt_style()
+                            if coordinator.personality_service is not None
+                            else ""
+                        ),
+                        "persona_description": coordinator.persona_description,
+                        "conversational_expressions": list(
+                            coordinator.conversational_expressions
+                        ),
+                        "capabilities": [],
+                    },
+                )
+                request.max_output_tokens = 1
+                started = time.monotonic()
+                response = local_backend.generate(request)
+                logger.info(
+                    "AI conversational-prefix prewarm completed model=%s latency_ms=%.1f finish=%s",
+                    getattr(local_backend, "model", local_backend.__class__.__name__),
+                    (time.monotonic() - started) * 1000.0,
+                    response.finish_reason,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AI conversational-prefix prewarm failed: %s", exc)
+
+    def _release_local_model_under_pressure(self, available_memory_mb: int) -> bool:
+        """Release only the configured local model when the tier floor is crossed."""
+        if not self.config.ai.local.enabled or self.inference_recommendation is None:
+            return False
+        policy = ModelResidencyPolicy(
+            inference_profile=self.inference_recommendation.profile,
+        )
+        if not policy.should_release(available_memory_mb):
+            return False
+        backend = self.ai_backends.get("local")
+        release = getattr(backend, "release_if_idle", None)
+        if not callable(release):
+            return False
+        released = bool(release())
+        logger.warning(
+            "Local model memory-pressure release requested available_mb=%d floor_mb=%d released=%s",
+            available_memory_mb,
+            policy.minimum_free_memory_mb,
+            released,
+        )
+        return released
+
+    def _memory_pressure_loop(self) -> None:
+        """Observe RAM at low frequency without touching unrelated processes."""
+        detector = HardwareDetector()
+        while not self._memory_pressure_stop.wait(5.0):
+            try:
+                available_mb = detector.adapter.detect_ram().available_mb
+                self._release_local_model_under_pressure(available_mb)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Memory-pressure observation unavailable: %s", exc)
 
     def _runtime_context_snapshot(self) -> dict[str, Any]:
         """Return bounded physical state for trusted/local AI context."""
@@ -634,7 +758,7 @@ class LabRunner:
             and self.vision_backend is not None
             and getattr(self.vision_backend, "provides_face_confidence", False)
         )
-        face_display_active = self.face_controller.__class__.__name__ == "TkinterFaceController"
+        face_display_active = self.face_controller.is_display_active()
         microphone_active = False
         speech_output_active = False
         if self.audio_in is not None:
@@ -670,12 +794,29 @@ class LabRunner:
 
     def _on_voice_ended_event(self, event: Any) -> None:
         """Mark end-of-user-speech for measured TTFAR on the next audible response."""
-        del event
         self._last_voice_ended_monotonic = time.monotonic()
+        payload = getattr(event, "payload", {}) if hasattr(event, "payload") else {}
+        utterance_id = str(payload.get("utterance_id", "") or "").strip()
+        if utterance_id:
+            self.metrics.record_turn_stage(
+                utterance_id,
+                "voice_end",
+                utterance_id=utterance_id,
+                audio_duration_ms=payload.get("duration_ms"),
+            )
 
     def _on_speech_started_event(self, event: Any) -> None:
         """Record TTFAR when the first playable PCM buffer is submitted."""
-        del event
+        payload = getattr(event, "payload", {}) if hasattr(event, "payload") else {}
+        turn_id = str(payload.get("turn_id", "") or "").strip()
+        if turn_id:
+            self.metrics.record_turn_stage(
+                turn_id,
+                "first_pcm_submit",
+                generation_id=payload.get("speech_generation"),
+                request_to_pcm_ms=payload.get("request_to_pcm_ms"),
+                expression_requested=payload.get("expression_requested"),
+            )
         if self._last_voice_ended_monotonic is None:
             return
         latency_ms = (time.monotonic() - self._last_voice_ended_monotonic) * 1000.0
@@ -722,8 +863,83 @@ class LabRunner:
             if isinstance(confidence_raw, (int, float))
             else None
         )
+        alternatives: list[TranscriptAlternative] = []
+        raw_alternatives = payload.get("alternatives")
+        if isinstance(raw_alternatives, list):
+            for raw_alternative in raw_alternatives:
+                if not isinstance(raw_alternative, dict):
+                    continue
+                alternative_text = str(raw_alternative.get("text", "")).strip()
+                if not alternative_text:
+                    continue
+                alternative_confidence_raw = raw_alternative.get("confidence")
+                alternative_confidence = (
+                    float(alternative_confidence_raw)
+                    if isinstance(alternative_confidence_raw, (int, float))
+                    else None
+                )
+                alternatives.append(
+                    TranscriptAlternative(
+                        text=alternative_text,
+                        confidence=alternative_confidence,
+                    )
+                )
+        audio_duration_raw = payload.get("audio_duration_ms")
+        audio_duration_ms = (
+            float(audio_duration_raw)
+            if isinstance(audio_duration_raw, (int, float))
+            else 0.0
+        )
+        transcript = Transcript(
+            text=text,
+            language=str(payload.get("language", "es") or "es"),
+            confidence=confidence,
+            latency_ms=latency_ms,
+            engine=str(payload.get("engine", "unknown") or "unknown"),
+            audio_duration_ms=audio_duration_ms,
+            utterance_id=trace_id,
+            interrupted=bool(payload.get("interrupted", False)),
+            truncated=bool(payload.get("truncated", False)),
+            alternatives=tuple(alternatives),
+        )
 
-        assessment = self.stt_quality_evaluator.evaluate(text, confidence=confidence)
+        assessment = self.stt_quality_evaluator.evaluate(
+            text,
+            confidence=confidence,
+            alternatives=transcript.alternatives,
+        )
+        self.metrics.record_turn_stage(
+            trace_id or "unknown",
+            "stt_result",
+            utterance_id=trace_id,
+            engine=transcript.engine,
+            confidence=assessment.acoustic_confidence,
+            confidence_band=assessment.confidence_band.value,
+            audio_duration_ms=transcript.audio_duration_ms,
+            interrupted=transcript.interrupted,
+            truncated=transcript.truncated,
+            duration_ms=latency_ms,
+            accepted=not (
+                assessment.should_drop_silently or assessment.should_reprompt
+            ),
+            reason_code=assessment.reprompt_reason,
+        )
+        if assessment.selected_alternative:
+            transcript = replace(
+                transcript,
+                text=assessment.cleaned_text,
+                confidence=assessment.acoustic_confidence,
+            )
+            text = transcript.text
+            confidence = transcript.confidence
+            logger.info(
+                "stt_quality selected_real_alternative utterance_id=%s "
+                "confidence=%s band=%s chars=%d",
+                trace_id or "unknown",
+                "unknown" if confidence is None else f"{confidence:.3f}",
+                assessment.confidence_band.value,
+                len(text),
+            )
         if assessment.should_drop_silently:
             self.metrics.record_utterance(success=False, latency_ms=latency_ms)
             logger.info(
@@ -735,7 +951,10 @@ class LabRunner:
             return
         if assessment.should_reprompt:
             self.metrics.record_utterance(success=False, latency_ms=latency_ms)
-            print(f"\n[stt] Reprompt required ({assessment.reprompt_reason})")
+            print(
+                f"\n[stt] Reprompt required ({assessment.reprompt_reason}, "
+                f"band={assessment.confidence_band.value})"
+            )
             if self.audio_coordinator:
                 with self._interaction_lock:
                     if self._is_processing_interaction:
@@ -765,7 +984,7 @@ class LabRunner:
 
         threading.Thread(
             target=self._process_conversation,
-            args=(text, trace_id),
+            args=(transcript,),
             daemon=True,
         ).start()
 
@@ -775,6 +994,49 @@ class LabRunner:
         latency = payload.get("latency_ms")
         if isinstance(latency, (int, float)) and latency >= 0:
             self.metrics.record_tts_call(latency_ms=float(latency))
+        turn_id = str(payload.get("turn_id", "") or "").strip()
+        if turn_id:
+            self.metrics.record_turn_stage(
+                turn_id,
+                "speech_end",
+                generation_id=payload.get("speech_generation"),
+                audio_duration_ms=payload.get("duration_ms"),
+                tts_latency_ms=latency,
+                interrupted=payload.get("interrupted"),
+                status=("success" if payload.get("success") else "incomplete"),
+                synthesizer_draining=payload.get("synthesizer_draining"),
+            )
+
+    def _on_speech_interrupted_event(self, event: Any) -> None:
+        """Record real barge-in stop timing without PCM or transcript content."""
+        payload = getattr(event, "payload", {}) if hasattr(event, "payload") else {}
+        turn_id = str(payload.get("turn_id", "") or "").strip()
+        if not turn_id:
+            return
+        self.metrics.record_turn_stage(
+            turn_id,
+            "barge_in",
+            generation_id=payload.get("speech_generation"),
+            frame_count=payload.get("buffered_frames"),
+            playback_stop_ms=payload.get("playback_stop_ms"),
+            generation_cancelled=payload.get("logical_generation_cancelled"),
+            synthesizer_draining=payload.get("synthesizer_draining"),
+            interrupted=True,
+        )
+
+    def _on_speech_synthesis_drained_event(self, event: Any) -> None:
+        """Record when an uncancellable TTS call has actually returned."""
+        payload = getattr(event, "payload", {}) if hasattr(event, "payload") else {}
+        turn_id = str(payload.get("turn_id", "") or "").strip()
+        if not turn_id:
+            return
+        self.metrics.record_turn_stage(
+            turn_id,
+            "stale_tts_drain_complete",
+            generation_id=payload.get("speech_generation"),
+            cancelled=payload.get("cancelled"),
+            stale=payload.get("stale"),
+        )
 
     def _on_presence_transition_event(self, event: Any) -> None:
         """Count stable presence transitions emitted by InteractionCoordinator."""
@@ -836,7 +1098,7 @@ class LabRunner:
             with self._interaction_lock:
                 self._is_processing_interaction = False
 
-    def _process_conversation(self, text: str, trace_id: str | None = None) -> None:
+    def _process_conversation(self, transcript: Transcript) -> None:
         """Process conversational turn from transcript to AI response and vocal speech."""
         try:
             if not self.conversation_coordinator:
@@ -850,14 +1112,42 @@ class LabRunner:
             self.face_controller.set_state(AssistantState.PROCESSING)
 
             print(f"[router] Routing prompt for '{self.config.identity.display_name}'...")
-            input_kwargs: dict[str, Any] = {"session_id": self._conversation_session_id}
-            if trace_id is not None:
-                input_kwargs["trace_id"] = trace_id
-            input_kwargs["input_modality"] = "voice"
-            resp, _plan = self.conversation_coordinator.handle_user_input(text, **input_kwargs)
+            resp, _plan = self.conversation_coordinator.handle_transcript(
+                transcript,
+                session_id=self._conversation_session_id,
+            )
 
             in_tok = resp.usage.input_tokens if resp.usage else None
             out_tok = resp.usage.output_tokens if resp.usage else None
+            response_attempts = (
+                resp.attempts if isinstance(getattr(resp, "attempts", None), list) else []
+            )
+            failed_attempts = [
+                attempt for attempt in response_attempts if attempt.outcome != "success"
+            ]
+            first_text_ms = (
+                resp.first_text_ms
+                if isinstance(getattr(resp, "first_text_ms", None), (int, float))
+                else None
+            )
+            provider_setup_ms = (
+                resp.provider_setup_ms
+                if isinstance(getattr(resp, "provider_setup_ms", None), (int, float))
+                else None
+            )
+            provider_ready_ms = (
+                resp.provider_ready_ms
+                if isinstance(getattr(resp, "provider_ready_ms", None), (int, float))
+                else None
+            )
+            fallback_cause = None
+            if failed_attempts:
+                first_failed = failed_attempts[0]
+                fallback_cause = (
+                    first_failed.error_kind.value
+                    if first_failed.error_kind is not None
+                    else first_failed.detail
+                )
             self.metrics.record_ai_call(
                 latency_ms=resp.latency_ms,
                 in_tokens=in_tok,
@@ -865,11 +1155,26 @@ class LabRunner:
                 prompt_eval_ms=resp.usage.prompt_eval_ms if resp.usage else None,
                 generation_ms=resp.usage.generation_ms if resp.usage else None,
                 load_ms=resp.usage.load_ms if resp.usage else None,
+                provider=resp.provider,
+                model=resp.model,
+                first_text_ms=first_text_ms,
+                provider_setup_ms=provider_setup_ms,
+                provider_ready_ms=provider_ready_ms,
+                request_chars=(
+                    resp.request_chars
+                    if isinstance(getattr(resp, "request_chars", None), int)
+                    else None
+                ),
+                fallback_used=bool(failed_attempts),
+                fallback_cause=fallback_cause,
             )
 
             print(
                 f"[ai] Response ready provider={resp.provider} model={resp.model} "
-                f"latency={resp.latency_ms:.1f}ms len={len(resp.text)}"
+                f"first_text={first_text_ms if first_text_ms is not None else 'unsupported'}ms "
+                f"setup={provider_setup_ms if provider_setup_ms is not None else 'unsupported'}ms "
+                f"latency={resp.latency_ms:.1f}ms fallback={'yes' if failed_attempts else 'no'} "
+                f"fallback_cause={fallback_cause or 'none'} len={len(resp.text)}"
             )
 
         except Exception as exc:  # noqa: BLE001
@@ -1031,6 +1336,14 @@ class LabRunner:
 
         self._setup_signal_handlers()
         self._is_running = True
+        self._memory_pressure_stop.clear()
+        if self.config.ai.local.enabled and self.inference_recommendation is not None:
+            self._memory_pressure_thread = threading.Thread(
+                target=self._memory_pressure_loop,
+                name="ailen-model-memory-pressure",
+                daemon=True,
+            )
+            self._memory_pressure_thread.start()
         start_time = time.time()
 
         # Open a real face window when the selected controller supports it.
@@ -1161,6 +1474,7 @@ class LabRunner:
         if not self._is_running:
             return
         self._is_running = False
+        self._memory_pressure_stop.set()
 
         # Let an in-flight conversation/reprompt/reminder finish before tearing
         # down native audio/TTS resources. This avoids process aborts when a
@@ -1225,6 +1539,9 @@ class LabRunner:
             self._conversation_session_id = None
 
         # Stop AILEN-owned Managed Runtime (never touch external runtimes)
+        if self._memory_pressure_thread and self._memory_pressure_thread.is_alive():
+            self._memory_pressure_thread.join(timeout=1.0)
+        self._memory_pressure_thread = None
         if self.managed_runtime and self.managed_runtime.owned_by_ailen:
             try:
                 self.managed_runtime.stop()

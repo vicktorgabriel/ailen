@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ailen.ai.secrets import SecretResolver
 from ailen.audio.alsa_backend import AlsaDeviceEnumerator
 from ailen.audio.piper_backend import piper_runtime_available
 from ailen.core.config import AILENConfig
@@ -99,6 +100,53 @@ class LabPreflightChecker:
                     detail="python3-tk missing; GUI face cannot render",
                     remediation="Run: sudo apt install python3-tk (or pass --headless)",
                 ))
+
+        # A configured native face is a distinct capability from Tk itself.
+        # Loading the library and pack here validates the ABI, bounds, and
+        # checksums without opening a window or decoding source video.
+        if self.config.display.enabled and self.config.display.face_style == "facepack":
+            if headless:
+                checks.append(PreflightCheckItem(
+                    name="Native FacePack",
+                    is_required=False,
+                    status="SKIP",
+                    detail="Headless mode active (native face not loaded)",
+                ))
+            else:
+                try:
+                    from ailen.face.native_engine import (
+                        NativeFaceEngine,
+                        native_library_filename,
+                    )
+
+                    library_path = self.config.display.face_engine_library or str(
+                        Path("runtime/native") / native_library_filename()
+                    )
+                    with NativeFaceEngine(library_path) as engine:
+                        engine.load_pack(
+                            self.config.display.facepack_path,
+                            allowed_root=self.config.display.facepack_root,
+                        )
+                        checks.append(PreflightCheckItem(
+                            name="Native FacePack",
+                            is_required=False,
+                            status="PASS",
+                            detail=(
+                                f"Native ABI and FacePack verified: {engine.pack_id} "
+                                f"v{engine.pack_version} ({engine.width}x{engine.height})"
+                            ),
+                        ))
+                except Exception as exc:  # noqa: BLE001
+                    checks.append(PreflightCheckItem(
+                        name="Native FacePack",
+                        is_required=False,
+                        status="WARN",
+                        detail=(
+                            f"Native FacePack unavailable ({type(exc).__name__}: {exc}); "
+                            "face display will stay disabled until the native FacePack is repaired"
+                        ),
+                        remediation="Build/install the native engine and a compatible FacePack",
+                    ))
 
         # 2. Vision & Camera
         if no_camera:
@@ -414,9 +462,43 @@ class LabPreflightChecker:
                         detail=f"Piper voice '{model_path_str}' loaded",
                     ))
 
-        # 6. Local AI Runtime & Model
+        # 6. AI Inferences (Local / External Providers)
         if no_ai:
             checks.append(PreflightCheckItem(name="Local AI", is_required=False, status="SKIP", detail="AI disabled via flag"))
+
+        elif not self.config.ai.local.enabled and (
+            any(provider.enabled for provider in self.config.ai.remote.providers.values())
+            or self.config.ai.lan.enabled
+        ):
+            checks.append(PreflightCheckItem(
+                name="Local AI Runtime",
+                is_required=False,
+                status="SKIP",
+                detail="Local LLM disabled in config (using external/LAN provider)",
+            ))
+            secret_resolver = SecretResolver()
+            for provider_id, provider in self.config.ai.remote.providers.items():
+                if not provider.enabled:
+                    continue
+                configured = bool(provider.endpoint.strip() and provider.model.strip())
+                has_auth = provider.auth_mode == "none" or secret_resolver.has_secret(
+                    env_var=provider.api_key_env or None,
+                    file_name=provider.api_key_file or None,
+                )
+                required = self.config.ai.provider == f"remote:{provider_id}"
+                status = "WARN" if configured and has_auth else "FAIL"
+                detail = (
+                    "Configured with credential; live health has not been tested by preflight"
+                    if configured and has_auth
+                    else "Endpoint/model or provider-specific credential is missing"
+                )
+                checks.append(PreflightCheckItem(
+                    name=f"Remote AI ({provider_id})",
+                    is_required=required,
+                    status=status,
+                    detail=detail,
+                    remediation="Use /ia to test this provider; configuration alone is not health",
+                ))
         else:
             endpoint = self.config.ai.local.endpoint
             health = self.runtime_manager.check_health(endpoint)
@@ -437,6 +519,7 @@ class LabPreflightChecker:
                     status="PASS",
                     detail=f"Runtime active at {endpoint} ({health.details})",
                 ))
+
 
         # Summarize
         missing_req = [c.name for c in checks if c.is_required and c.status == "FAIL"]

@@ -403,13 +403,23 @@ class MemoryRepository:
             created_at=now,
         )
 
-    def get_ai_usage_totals(self, since_iso: str | None = None) -> tuple[int, int, float]:
-        """Return total (input_tokens, output_tokens, estimated_cost) since given ISO timestamp."""
+    def get_ai_usage_totals(
+        self,
+        since_iso: str | None = None,
+        provider: str | None = None,
+    ) -> tuple[int, int, float]:
+        """Return usage totals, optionally scoped to one observable provider."""
         query = "SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(estimated_cost), 0.0) FROM ai_usage"
         params: list[str] = []
+        conditions: list[str] = []
         if since_iso:
-            query += " WHERE created_at >= ?"
+            conditions.append("created_at >= ?")
             params.append(since_iso)
+        if provider:
+            conditions.append("provider = ?")
+            params.append(provider)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
 
         with self.db_manager.connection() as conn:
             cursor = conn.cursor()

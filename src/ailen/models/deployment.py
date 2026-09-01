@@ -31,7 +31,7 @@ class RecommendedDeployment:
 def create_deployment_recommendation(
     report: HardwareCapabilityReport,
     lan_brain_detected: bool = False,
-    allow_cloud: bool = False,
+    allow_remote: bool = False,
     user_preferences: dict[str, Any] | None = None,
 ) -> RecommendedDeployment:
     """Analyze hardware and network context to recommend the optimal onboarding topology."""
@@ -46,7 +46,7 @@ def create_deployment_recommendation(
     reasons = list(inf_rec.reason_codes)
 
     cloud_rec = False
-    if inf_rec.profile == InferenceProfile.RULE_ONLY and allow_cloud:
+    if inf_rec.profile == InferenceProfile.RULE_ONLY and allow_remote:
         cloud_rec = True
         reasons.append("CLOUD_FALLBACK_RECOMMENDED_FOR_RULE_ONLY_NODE")
 

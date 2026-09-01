@@ -5,6 +5,7 @@ from typing import Any
 
 from ailen.domain.enums import DeviceProfile, InferenceProfile
 from ailen.hardware.contracts import HardwareCapabilityReport
+from ailen.hardware.tiers import classify_hardware_tier
 
 
 @dataclass(frozen=True)
@@ -105,19 +106,34 @@ def recommend_inference_profile(
             reason_codes=[f"DEVICE_PROFILE_{device_profile.value}_RESTRICTS_LOCAL_LLM"],
         )
 
-    vram_total_mb = 0
-    vram_avail_mb = 0
-    has_dedicated_gpu = False
-    for gpu in report.gpus or []:
-        if gpu.vram_total_mb and gpu.vram_total_mb > 0:
-            vram_total_mb += gpu.vram_total_mb
-            vram_avail_mb += gpu.vram_available_mb or gpu.vram_total_mb
-            if gpu.is_dedicated and gpu.vram_total_mb >= 2048:
-                has_dedicated_gpu = True
+    # The current execution contract can use one dedicated accelerator.  Never
+    # add iGPU/shared memory to its VRAM or sum unrelated adapters as if a model
+    # could span them automatically.
+    dedicated_gpus = [
+        gpu
+        for gpu in (report.gpus or [])
+        if gpu.is_dedicated and (gpu.vram_total_mb or 0) >= 2048
+    ]
+    best_gpu = max(
+        dedicated_gpus,
+        key=lambda gpu: int(gpu.vram_total_mb or 0),
+        default=None,
+    )
+    has_dedicated_gpu = best_gpu is not None
+    vram_total_mb = int(best_gpu.vram_total_mb or 0) if best_gpu else 0
+    vram_avail_mb = (
+        int(best_gpu.vram_available_mb or vram_total_mb) if best_gpu else 0
+    )
 
     if has_dedicated_gpu:
         reasons.append(f"DEDICATED_GPU_DETECTED_VRAM_{vram_total_mb}MB")
-        if vram_total_mb >= 10000 and ram_total_mb >= 14000:
+        if vram_total_mb >= 20000 and ram_total_mb >= 30000:
+            reasons.append("VERY_HIGH_VRAM_HIGH_RAM_ENABLES_QUALITY")
+            baseline = InferenceRecommendation(
+                InferenceProfile.QUALITY, True, "ollama", int(ram_avail_mb * 0.6),
+                min(vram_avail_mb, int(vram_total_mb * 0.85)), 16384, reasons,
+            )
+        elif vram_total_mb >= 10000 and ram_total_mb >= 14000:
             reasons.append("HIGH_VRAM_HIGH_RAM_ENABLES_QUALITY")
             baseline = InferenceRecommendation(
                 InferenceProfile.QUALITY, True, "ollama", int(ram_total_mb * 0.6),
@@ -138,25 +154,43 @@ def recommend_inference_profile(
         return _apply_user_profile_cap(baseline, requested_profile)
 
     reasons.append("CPU_ONLY_OR_SHARED_VRAM")
-    if ram_total_mb < 3500:
+    tier = classify_hardware_tier(ram_total_mb, ram_avail_mb)
+    if tier.tier_id == "under_4gb":
         reasons.append("RAM_UNDER_3500MB_FORCES_RULE_ONLY")
         baseline = InferenceRecommendation(InferenceProfile.RULE_ONLY, False, "none", 0, 0, 1024, reasons)
-    elif ram_total_mb < 6500:
-        if bool(prefs.get("allow_4gb_cpu_llm", False)):
-            reasons.append("EXPERIMENTAL_4GB_FAST_OPT_IN")
-            baseline = InferenceRecommendation(InferenceProfile.FAST, True, "llama.cpp", 1200, 0, 1024, reasons)
-        else:
-            reasons.append("RAM_4GB_CPU_TIER_DEFAULT_RULE_ONLY_CONSERVATIVE")
-            baseline = InferenceRecommendation(InferenceProfile.RULE_ONLY, False, "none", 0, 0, 1024, reasons)
-    elif ram_total_mb < 12500:
+    elif tier.tier_id == "recycled_4gb":
+        reasons.extend(["RAM_4GB_CPU_LOCAL_FAST_PATH", "TARGET_4GB_BENCHMARK_REQUIRED"])
+        local_allowed = tier.model_ram_budget_mb >= 900
+        baseline = InferenceRecommendation(
+            InferenceProfile.FAST if local_allowed else InferenceProfile.RULE_ONLY,
+            local_allowed,
+            tier.preferred_runtime if local_allowed else "none",
+            tier.model_ram_budget_mb if local_allowed else 0,
+            0,
+            tier.context_tokens,
+            reasons,
+        )
+    elif tier.tier_id == "recycled_8gb":
         reasons.append("RAM_8GB_CPU_ENABLES_FAST_TIER")
         baseline = InferenceRecommendation(
-            InferenceProfile.FAST, True, "llama.cpp", min(3500, int(ram_avail_mb * 0.75)), 0, 2048, reasons
+            InferenceProfile.FAST,
+            True,
+            tier.preferred_runtime,
+            tier.model_ram_budget_mb,
+            0,
+            tier.context_tokens,
+            reasons,
         )
     else:
-        reasons.append("RAM_16GB_PLUS_CPU_ENABLES_BALANCED_TIER")
+        reasons.append("HIGH_RAM_CPU_ENABLES_DYNAMIC_BALANCED_TIER")
         baseline = InferenceRecommendation(
-            InferenceProfile.BALANCED, True, "llama.cpp", min(int(ram_total_mb * 0.45), int(ram_avail_mb * 0.8)), 0, 4096, reasons
+            InferenceProfile.BALANCED,
+            True,
+            tier.preferred_runtime,
+            tier.model_ram_budget_mb,
+            0,
+            tier.context_tokens,
+            reasons,
         )
 
     return _apply_user_profile_cap(baseline, requested_profile)

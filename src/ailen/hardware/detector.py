@@ -10,6 +10,7 @@ from ailen.hardware.contracts import (
     ProfileRecommendation,
 )
 from ailen.hardware.linux import LinuxHardwareAdapter
+from ailen.hardware.tiers import classify_hardware_tier
 from ailen.hardware.windows import WindowsHardwareAdapter
 
 
@@ -61,6 +62,7 @@ class HardwareDetector:
         """Derive recommended DeviceProfile and local inference capability from report."""
         total_ram_mb = report.ram.total_mb
         avail_ram_mb = report.ram.available_mb
+        memory_tier = classify_hardware_tier(total_ram_mb, avail_ram_mb)
         reasons: list[str] = []
 
         # 0. Check for unmeasured / missing RAM probe
@@ -86,8 +88,8 @@ class HardwareDetector:
                     has_cuda_gpu = True
 
         # 2. Derive Profile
-        # Tier A: Satellite (< 3 GB RAM)
-        if total_ram_mb < 3000:
+        # Tier A: below the minimum 4 GB recycled-device envelope.
+        if total_ram_mb < 3500:
             reasons.append("RAM_LIMITED_SATELLITE")
             reasons.append("NO_LOCAL_INFERENCE")
             return ProfileRecommendation(
@@ -99,33 +101,26 @@ class HardwareDetector:
                 reason_codes=reasons,
             )
 
-        # Tier B: Constrained 4 GB Tier (3 GB - 6 GB RAM)
-        if total_ram_mb < 6000:
+        # Tier B: Constrained nominal 4 GB Tier.
+        if total_ram_mb < 6500:
             reasons.append("RAM_4GB_TIER")
             if not report.cpu.has_avx2 and not has_cuda_gpu:
                 reasons.append("CPU_NO_AVX2")
-                reasons.append("NO_LOCAL_INFERENCE")
-                return ProfileRecommendation(
-                    profile=DeviceProfile.CLOUD,
-                    local_inference_capable=False,
-                    recommended_local_budget_mb=0,
-                    gpu_inference_capable=False,
-                    preferred_runtime="none",
-                    reason_codes=reasons,
-                )
+                reasons.append("TARGET_HARDWARE_BENCHMARK_REQUIRED")
             reasons.append("LOCAL_TINY_MODEL_CAPABLE")
-            budget_mb = min(800, int(avail_ram_mb * 0.60))
+            budget_mb = memory_tier.model_ram_budget_mb
+            local_capable = budget_mb >= 900
             return ProfileRecommendation(
                 profile=DeviceProfile.HYBRID,
-                local_inference_capable=True,
+                local_inference_capable=local_capable,
                 recommended_local_budget_mb=budget_mb,
                 gpu_inference_capable=has_cuda_gpu,
-                preferred_runtime="llama.cpp",
+                preferred_runtime="llama.cpp" if local_capable else "none",
                 reason_codes=reasons,
             )
 
-        # Tier C: Standard 8 GB Tier (6 GB - 16 GB RAM)
-        if total_ram_mb < 16000:
+        # Tier C: Standard nominal 8 GB Tier.
+        if total_ram_mb < 12500:
             reasons.append("RAM_8GB_TIER")
             gpu_cap = has_cuda_gpu and best_gpu_vram >= 3000
             if gpu_cap:
@@ -135,7 +130,7 @@ class HardwareDetector:
             else:
                 reasons.append("CPU_AVX2_AVAILABLE" if report.cpu.has_avx2 else "CPU_FALLBACK")
                 reasons.append("LOCAL_SMALL_MODEL_CAPABLE")
-                budget_mb = min(2000, int(avail_ram_mb * 0.60))
+                budget_mb = memory_tier.model_ram_budget_mb
 
             return ProfileRecommendation(
                 profile=DeviceProfile.HYBRID,
@@ -164,7 +159,10 @@ class HardwareDetector:
 
         reasons.append("CPU_INFERENCE_CAPABLE")
         reasons.append("LOCAL_MEDIUM_MODEL_CAPABLE")
-        budget_mb = min(6000, int(avail_ram_mb * 0.60))
+        budget_mb = min(
+            memory_tier.model_ram_budget_mb,
+            int(avail_ram_mb * 0.60),
+        )
         return ProfileRecommendation(
             profile=DeviceProfile.LOCAL,
             local_inference_capable=True,

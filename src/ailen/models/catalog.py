@@ -20,6 +20,14 @@ class ModelPurpose(str, Enum):
     QUALITY = "QUALITY"
 
 
+class ModelQualificationStatus(str, Enum):
+    """Evidence state for product use; independent from artifact downloadability."""
+
+    CANDIDATE = "candidate"
+    QUALIFIED = "qualified"
+    REJECTED = "rejected"
+
+
 @dataclass
 class ModelDescriptor:
     """Immutable metadata and requirements for a local model artifact."""
@@ -31,6 +39,7 @@ class ModelDescriptor:
     artifact_format: str  # "gguf"
     quantization: str  # "q4_0", "q4_k_m", "q8_0"
     parameter_class: str  # "tiny", "small", "medium"
+    supported_runtimes: list[str] = field(default_factory=list)
     context_default: int = 2048
     ram_requirement_mb: int = 1000
     vram_requirement_mb: int = 1000
@@ -49,6 +58,11 @@ class ModelDescriptor:
         default_factory=lambda: [ModelPurpose.SANITY, ModelPurpose.BALANCED, ModelPurpose.QUALITY]
     )
     runtime_aliases: list[str] = field(default_factory=list)
+    quality_rank: int = 0
+    qualification_status: ModelQualificationStatus = ModelQualificationStatus.CANDIDATE
+    benchmark_status: str = "unmeasured"
+    chat_template: str = ""
+    benchmark_reference: str = ""
 
     def validate(self) -> None:
         """Validate descriptor integrity, path safety and security requirements."""
@@ -58,6 +72,11 @@ class ModelDescriptor:
             raise ValueError("display_name cannot be empty")
         if not self.runtime.strip():
             raise ValueError("runtime cannot be empty")
+        if self.supported_runtimes and any(
+            runtime not in {"llama.cpp", "ollama"}
+            for runtime in self.supported_runtimes
+        ):
+            raise ValueError("supported_runtimes contains an unsupported runtime")
         if not self.artifact_format.strip():
             raise ValueError("artifact_format cannot be empty")
         if self.context_default <= 0:
@@ -66,6 +85,15 @@ class ModelDescriptor:
             raise ValueError("Memory requirements cannot be negative")
         if self.disk_size_bytes <= 0:
             raise ValueError(f"disk_size_bytes must be positive: {self.disk_size_bytes}")
+        if self.quality_rank < 0:
+            raise ValueError("quality_rank cannot be negative")
+        if self.benchmark_status not in {
+            "unmeasured",
+            "artifact_only",
+            "measured_lab",
+            "measured_target",
+        }:
+            raise ValueError(f"Invalid benchmark_status: {self.benchmark_status!r}")
         if self.downloadable:
             if not self.source_url.startswith("https://"):
                 raise ValueError(f"Downloadable models must use HTTPS URL: {self.source_url!r}")
@@ -78,6 +106,7 @@ class ModelDescriptor:
         d = asdict(self)
         d["suitability_profiles"] = [p.value for p in self.suitability_profiles]
         d["purposes"] = [p.value for p in self.purposes]
+        d["qualification_status"] = self.qualification_status.value
         return d
 
 
@@ -113,8 +142,10 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
             DeviceProfile.HYBRID,
             DeviceProfile.LOCAL,
         ],
-        purposes=[ModelPurpose.SANITY, ModelPurpose.BALANCED],
+        purposes=[ModelPurpose.SANITY, ModelPurpose.FAST, ModelPurpose.BALANCED],
         runtime_aliases=[],
+        quality_rank=20,
+        benchmark_status="artifact_only",
     ),
     ModelDescriptor(
         model_id="qwen3.5-0.8b-q8_0",
@@ -143,6 +174,8 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         ],
         purposes=[ModelPurpose.BALANCED, ModelPurpose.QUALITY],
         runtime_aliases=["qwen3.5:0.8b-q8_0", "qwen3.5:0.8b"],
+        quality_rank=25,
+        benchmark_status="artifact_only",
     ),
     # -------------------------------------------------------------------------
     # Candidates / Historical Metadata (downloadable=False pending hash verify)
@@ -174,6 +207,7 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         ],
         purposes=[ModelPurpose.SANITY],
         runtime_aliases=["qwen2.5:0.5b"],
+        quality_rank=10,
     ),
     ModelDescriptor(
         model_id="qwen2.5-1.5b-instruct-q4_k_m",
@@ -200,6 +234,7 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         ],
         purposes=[ModelPurpose.BALANCED],
         runtime_aliases=["qwen2.5:1.5b"],
+        quality_rank=40,
     ),
     ModelDescriptor(
         model_id="smollm2-1.7b-instruct-q4_k_m",
@@ -226,6 +261,7 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         ],
         purposes=[ModelPurpose.BALANCED],
         runtime_aliases=["smollm2:1.7b"],
+        quality_rank=38,
     ),
     ModelDescriptor(
         model_id="llama-3.2-1b-instruct-q4_k_m",
@@ -252,6 +288,7 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         ],
         purposes=[ModelPurpose.BALANCED],
         runtime_aliases=["llama3.2:1b"],
+        quality_rank=32,
     ),
     ModelDescriptor(
         model_id="qwen2.5-7b-instruct-q4_k_m",
@@ -278,6 +315,7 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         ],
         purposes=[ModelPurpose.QUALITY],
         runtime_aliases=["qwen2.5:7b"],
+        quality_rank=85,
     ),
     ModelDescriptor(
         model_id="llama-3.2-3b-instruct-q4_k_m",
@@ -304,6 +342,7 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         ],
         purposes=[ModelPurpose.FAST, ModelPurpose.BALANCED],
         runtime_aliases=["llama3.2:3b", "llama3.2"],
+        quality_rank=55,
     ),
     ModelDescriptor(
         model_id="qwen3.5-4b-instruct-q4_k_m",
@@ -330,6 +369,7 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         ],
         purposes=[ModelPurpose.FAST, ModelPurpose.BALANCED],
         runtime_aliases=["qwen3.5:4b"],
+        quality_rank=70,
     ),
     ModelDescriptor(
         model_id="gemma-3-4b-instruct-q4_k_m",
@@ -356,6 +396,7 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         ],
         purposes=[ModelPurpose.BALANCED],
         runtime_aliases=["gemma3:4b", "gemma3"],
+        quality_rank=65,
     ),
     ModelDescriptor(
         model_id="qwen2.5-3b-instruct-q4_k_m",
@@ -382,6 +423,7 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         ],
         purposes=[ModelPurpose.FAST, ModelPurpose.BALANCED],
         runtime_aliases=["qwen2.5:3b"],
+        quality_rank=60,
     ),
     ModelDescriptor(
         model_id="qwen3.5-9b-instruct-q4_k_m",
@@ -408,6 +450,7 @@ DEFAULT_MODELS: list[ModelDescriptor] = [
         ],
         purposes=[ModelPurpose.QUALITY],
         runtime_aliases=["qwen3.5:9b"],
+        quality_rank=90,
     ),
 ]
 
@@ -450,6 +493,8 @@ class ModelCatalog:
         for m in self._models.values():
             if require_downloadable and not m.downloadable:
                 continue
+            if m.qualification_status is ModelQualificationStatus.REJECTED:
+                continue
 
             # Match purpose if requested
             if purpose and purpose not in m.purposes:
@@ -476,9 +521,30 @@ class ModelCatalog:
             if fits_in_ram or fits_in_vram:
                 suitable.append(m)
 
-        # Candidates are already filtered by purpose/profile/capability. Prefer
-        # the smallest footprint that satisfies those constraints instead of
-        # consuming extra RAM/VRAM merely because a larger model also fits.
-        suitable.sort(key=lambda m: (m.ram_requirement_mb, m.disk_size_bytes, m.model_id))
+        # Capability filtering happens first. Within that safe envelope,
+        # measured/qualified descriptors outrank candidates and explicit
+        # quality_rank outranks raw parameter count. Footprint is only a tie
+        # breaker; it no longer forces every machine onto the smallest model.
+        qualification_rank = {
+            ModelQualificationStatus.QUALIFIED: 2,
+            ModelQualificationStatus.CANDIDATE: 1,
+            ModelQualificationStatus.REJECTED: 0,
+        }
+        benchmark_rank = {
+            "measured_target": 3,
+            "measured_lab": 2,
+            "artifact_only": 1,
+            "unmeasured": 0,
+        }
+        suitable.sort(
+            key=lambda m: (
+                -qualification_rank[m.qualification_status],
+                -benchmark_rank[m.benchmark_status],
+                -m.quality_rank,
+                m.ram_requirement_mb,
+                m.disk_size_bytes,
+                m.model_id,
+            )
+        )
 
         return suitable

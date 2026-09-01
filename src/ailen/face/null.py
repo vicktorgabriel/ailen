@@ -25,6 +25,16 @@ class NullFaceController:
         self.expression: str = "neutral"
         self.sleeping: bool = False
 
+    @property
+    def available_expressions(self) -> tuple[str, ...]:
+        """Headless animation state is not a visible renderer capability."""
+
+        return ()
+
+    @property
+    def conversational_expressions(self) -> tuple[str, ...]:
+        return ()
+
     def capabilities(self) -> list[CapabilityDescriptor]:
         return [
             CapabilityDescriptor("face.display", "mostrar una cara animada", False, "face"),
@@ -44,7 +54,7 @@ class NullFaceController:
         self.speech_level = max(0.0, min(1.0, level))
         self.animator.set_speech_level(level)
 
-    def set_expression(self, expression: str, duration_seconds: float = 5.0) -> None:
+    def set_expression(self, expression: str, duration_seconds: float = 0.0) -> None:
         self.expression = expression
         self.animator.set_expression(expression, duration_seconds)
 
@@ -58,6 +68,10 @@ class NullFaceController:
         self.state = AssistantState.IDLE
         self.animator.wake()
         logger.debug("face wake -> IDLE/waking")
+
+    def is_display_active(self) -> bool:
+        """A null controller never exposes a visible display."""
+        return False
 
     def get_current_pose(self, current_time: float | None = None) -> FacePose:
         """Return the calculated normalized FacePose."""

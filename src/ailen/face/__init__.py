@@ -4,12 +4,15 @@ from ailen.face.animator import FaceAnimator
 from ailen.face.contracts import FaceController
 from ailen.face.gui import TkinterFaceController
 from ailen.face.models import FacePose
+from ailen.face.native_engine import NativeFaceEngine, NativeFaceEngineError
 from ailen.face.null import NullFaceController
 
 __all__ = [
     "FaceAnimator",
     "FaceController",
     "FacePose",
+    "NativeFaceEngine",
+    "NativeFaceEngineError",
     "NullFaceController",
     "TkinterFaceController",
 ]

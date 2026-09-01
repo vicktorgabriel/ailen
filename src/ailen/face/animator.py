@@ -120,15 +120,16 @@ class FaceAnimator:
             self._speech_started_at = None
         self._speech_level = bounded
 
-    def set_expression(self, expression: str, duration_seconds: float = 5.0) -> None:
+    def set_expression(self, expression: str, duration_seconds: float = 0.0) -> None:
         """Apply one bounded transient gesture without replacing interaction state."""
         clean = expression.strip().lower()
         if clean not in self.SUPPORTED_EXPRESSIONS:
             raise ValueError(f"unsupported face expression: {clean}")
-        if not 0.5 <= duration_seconds <= 10.0:
-            raise ValueError("expression duration must be between 0.5 and 10 seconds")
+        effective_duration = 5.0 if duration_seconds <= 0.0 else duration_seconds
+        if not 0.5 <= effective_duration <= 10.0:
+            raise ValueError("expression duration must be 0 (renderer default) or 0.5..10 seconds")
         self._expression_override = clean
-        self._expression_expires_at = self._now() + duration_seconds
+        self._expression_expires_at = self._now() + effective_duration
 
     def sleep(self) -> None:
         """Put the face into sleep state."""

@@ -8,12 +8,12 @@ import sys
 from pathlib import Path
 from urllib.parse import quote
 
-from ailen.ai.cloud_backend import CloudAiBackend
 from ailen.ai.contracts import AiBackend
 from ailen.ai.fake import FakeAiBackend
 from ailen.ai.http_backend import GenericOpenAiBackend
 from ailen.ai.lan_backend import LanBrainAiBackend
 from ailen.ai.ollama_backend import OllamaNativeBackend
+from ailen.ai.remote_backend import build_remote_backend
 from ailen.ai.residency import ModelResidencyPolicy
 from ailen.ai.secrets import SecretResolver
 from ailen.audio.alsa_backend import (
@@ -29,18 +29,24 @@ from ailen.audio.contracts import (
     AudioOutputBackend,
     SttBackend,
     TtsBackend,
+    VoiceActivityDetector,
 )
+from ailen.audio.coordinator import AudioInteractionCoordinator
 from ailen.audio.fake import (
     FakeAudioInputBackend,
     FakeAudioOutputBackend,
     FakeSttBackend,
     FakeTtsBackend,
 )
+from ailen.audio.level import build_capture_processor
 from ailen.audio.piper_backend import PiperTtsBackend, piper_runtime_available
 from ailen.audio.stt_cascade import CascadingSttBackend
+from ailen.audio.vad import EnergyVad, UtteranceCollector, WebRtcVad
 from ailen.audio.vosk_backend import VoskSttBackend
 from ailen.audio.whisper_backend import WhisperCppSttBackend
 from ailen.core.config import AILENConfig
+from ailen.core.events import EventBus
+from ailen.core.state import StateManager
 from ailen.domain.enums import InferenceProfile, ServiceStatus
 from ailen.face.animator import FaceAnimator
 from ailen.face.contracts import FaceController
@@ -124,6 +130,52 @@ class LabComponentFactory:
             )
 
         if importlib.util.find_spec("tkinter") is not None:
+            native_failure: str | None = None
+            if self.config.display.face_style == "facepack":
+                try:
+                    from ailen.face.failover import FailoverFaceController
+                    from ailen.face.native_controller import NativeFaceController
+                    from ailen.face.native_engine import native_library_filename
+
+                    library_path = self.config.display.face_engine_library or str(
+                        Path("runtime/native") / native_library_filename()
+                    )
+                    native_controller = NativeFaceController(
+                        library_path=library_path,
+                        facepack_path=self.config.display.facepack_path,
+                        allowed_facepack_root=self.config.display.facepack_root,
+                        width=self.config.display.width,
+                        height=self.config.display.height,
+                        fullscreen=fullscreen or self.config.display.fullscreen,
+                        fps_limit=self.config.display.fps_limit,
+                    )
+                    detail = (
+                        f"FacePack loaded ({native_controller.engine.pack_id} "
+                        f"v{native_controller.engine.pack_version}, "
+                        f"{native_controller.engine.width}x{native_controller.engine.height})"
+                    )
+                    headless_fallback = NullFaceController(animator=FaceAnimator())
+                    failover_controller = FailoverFaceController(native_controller, headless_fallback)
+                    return failover_controller, ComponentStatus(
+                        name="Face",
+                        backend="NativeFaceEngine",
+                        state="READY",
+                        detail=detail,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    native_failure = f"{type(exc).__name__}: {exc}"
+                    logger.warning(
+                        "Native FacePack unavailable; face display disabled: %s",
+                        native_failure,
+                    )
+                    animator = FaceAnimator()
+                    return NullFaceController(animator=animator), ComponentStatus(
+                        name="Face",
+                        backend="NullFaceController",
+                        state="DEGRADED",
+                        detail=f"Native FacePack unavailable ({native_failure}); face display disabled",
+                        remediation="Build/install the native engine and a compatible FacePack",
+                    )
             try:
                 animator = FaceAnimator()
                 controller = TkinterFaceController(
@@ -139,8 +191,8 @@ class LabComponentFactory:
                     backend="Tkinter",
                     state="READY",
                     detail=(
-                        f"GUI window enabled ({self.config.display.width}x{self.config.display.height}, "
-                        f"style={self.config.display.face_style})"
+                        f"GUI window enabled ({self.config.display.width}x"
+                        f"{self.config.display.height}, style={self.config.display.face_style})"
                     ),
                 )
             except Exception as exc:  # noqa: BLE001
@@ -535,6 +587,121 @@ class LabComponentFactory:
                 detail=f"ALSA initialization failed: {exc}",
             )
 
+    def build_audio_coordinator(
+        self,
+        *,
+        audio_input: AudioInputBackend | None,
+        audio_output: AudioOutputBackend | None,
+        stt: SttBackend | None,
+        tts: TtsBackend | None,
+        state_manager: StateManager | None = None,
+        face_controller: FaceController | None = None,
+        event_bus: EventBus | None = None,
+        auto_reset_after_stt: bool = True,
+    ) -> AudioInteractionCoordinator | None:
+        """Build the one canonical live VAD/STT/TTS interaction pipeline."""
+        if audio_input is None or audio_output is None or stt is None or tts is None:
+            return None
+
+        frame_ms = self.config.audio.frame_ms
+        hangover_frames = max(
+            0,
+            round(self.config.speech.vad_hangover_ms / frame_ms),
+        )
+        listening_vad: VoiceActivityDetector
+        if self.config.speech.vad_engine == "webrtc":
+            listening_vad = WebRtcVad(
+                sample_rate=self.config.audio.sample_rate,
+                frame_ms=frame_ms,
+                mode=self.config.speech.vad_webrtc_mode,
+                hangover_frames=hangover_frames,
+                min_rms=self.config.speech.vad_threshold,
+            )
+            interruption_vad: VoiceActivityDetector | None = WebRtcVad(
+                sample_rate=self.config.audio.sample_rate,
+                frame_ms=frame_ms,
+                mode=min(3, self.config.speech.vad_webrtc_mode + 1),
+                hangover_frames=0,
+            )
+        elif self.config.speech.vad_engine == "energy":
+            listening_vad = EnergyVad(
+                threshold_rms=self.config.speech.vad_threshold,
+                hangover_frames=hangover_frames,
+            )
+            interruption_vad = None
+        else:
+            raise RuntimeError(
+                "Live audio requires speech.vad_engine=energy/webrtc, "
+                f"got {self.config.speech.vad_engine!r}"
+            )
+
+        source_hint = str(
+            getattr(audio_input, "effective_device", self.config.audio.input_device)
+            or self.config.audio.input_device
+        )
+        if source_hint in {"auto", "default", "pipewire"} and self.hardware_report:
+            observed_default = next(
+                (
+                    item.id
+                    for item in self.hardware_report.audio_inputs
+                    if item.is_default
+                ),
+                "",
+            )
+            if observed_default:
+                source_hint = observed_default
+
+        frame_processor = build_capture_processor(
+            sample_rate=self.config.audio.sample_rate,
+            channels=self.config.audio.channels,
+            frame_ms=frame_ms,
+            capture_gain_db=self.config.audio.capture_gain_db,
+            auto_gain_enabled=self.config.audio.auto_gain_enabled,
+            auto_gain_target_rms=self.config.audio.auto_gain_target_rms,
+            max_auto_gain_db=self.config.audio.max_auto_gain_db,
+            auto_gain_attack_ms=self.config.audio.auto_gain_attack_ms,
+            auto_gain_release_ms=self.config.audio.auto_gain_release_ms,
+            auto_gain_noise_gate_rms=self.config.audio.auto_gain_noise_gate_rms,
+            auto_gain_gate_hold_ms=self.config.audio.auto_gain_gate_hold_ms,
+            capture_limiter_peak=self.config.audio.capture_limiter_peak,
+            noise_suppression_engine=self.config.speech.noise_suppression_engine,
+            noise_suppression_level=self.config.speech.noise_suppression_level,
+            input_processing_mode=self.config.audio.input_processing_mode,
+            input_device=self.config.audio.input_device,
+            effective_source=source_hint,
+        )
+
+        collector = UtteranceCollector(
+            vad=listening_vad,
+            sample_rate=self.config.audio.sample_rate,
+            channels=self.config.audio.channels,
+            frame_ms=frame_ms,
+            min_speech_ms=self.config.speech.min_speech_ms,
+            silence_timeout_ms=self.config.speech.silence_timeout_ms,
+            max_utterance_seconds=self.config.speech.max_utterance_seconds,
+            pre_roll_ms=self.config.speech.pre_roll_ms,
+        )
+        return AudioInteractionCoordinator(
+            audio_input=audio_input,
+            audio_output=audio_output,
+            frame_processor=frame_processor,
+            stt=stt,
+            tts=tts,
+            utterance_collector=collector,
+            state_manager=state_manager,
+            face_controller=face_controller,
+            event_bus=event_bus,
+            auto_reset_after_stt=auto_reset_after_stt,
+            interruption_enabled=self.config.speech.interruption_enabled,
+            interruption_threshold_rms=self.config.speech.interruption_threshold_rms,
+            interruption_min_ms=self.config.speech.interruption_min_ms,
+            interruption_calibration_ms=self.config.speech.interruption_calibration_ms,
+            interruption_leak_multiplier=self.config.speech.interruption_leak_multiplier,
+            interruption_vad=interruption_vad,
+            default_speech_rate=self.config.speech.tts_rate,
+            frame_ms=frame_ms,
+        )
+
     # -------------------------------------------------------------------------
     # STT Component
     # -------------------------------------------------------------------------
@@ -735,12 +902,71 @@ class LabComponentFactory:
 
         backends: dict[str, AiBackend] = {}
         runtimes = runtime_descriptors or []
-        healthy_runtimes = [r for r in runtimes if r.health and r.health.status == RuntimeStatus.HEALTHY]
+        all_healthy_runtimes = [
+            runtime
+            for runtime in runtimes
+            if runtime.health and runtime.health.status == RuntimeStatus.HEALTHY
+        ]
         inventory = RuntimeModelInventory()
         local_problem = "No healthy local runtime detected"
 
-        target_id = model_plan.selected_model_id if model_plan else None
-        target_aliases = model_plan.model_descriptor.runtime_aliases if model_plan and model_plan.model_descriptor else []
+        plan_is_target_qualified = bool(
+            self.config.ai.local.enabled
+            and model_plan
+            and model_plan.is_viable
+            and model_plan.model_descriptor
+            and model_plan.model_descriptor.qualification_status.value == "qualified"
+        )
+        target_id = (
+            model_plan.selected_model_id
+            if plan_is_target_qualified and model_plan
+            else None
+        )
+        target_aliases = (
+            model_plan.model_descriptor.runtime_aliases
+            if target_id and model_plan and model_plan.model_descriptor
+            else []
+        )
+        requested_runtime = self.config.ai.local.runtime
+        if (
+            requested_runtime == "auto"
+            and not self.config.ai.local.model.strip()
+            and target_id
+            and model_plan
+        ):
+            requested_runtime = (
+                "llama_cpp" if model_plan.runtime == "llama.cpp" else model_plan.runtime
+            )
+
+        runtime_type_by_config = {
+            "ollama": RuntimeType.OLLAMA,
+            "llama_cpp": RuntimeType.LLAMA_SERVER,
+        }
+        required_runtime_type = runtime_type_by_config.get(requested_runtime)
+        healthy_runtimes = [
+            runtime
+            for runtime in all_healthy_runtimes
+            if required_runtime_type is None
+            or runtime.runtime_type is required_runtime_type
+        ]
+        if not self.config.ai.local.enabled:
+            local_problem = "Local AI disabled by configuration"
+        elif required_runtime_type is not None and not healthy_runtimes:
+            local_problem = (
+                f"Selected local runtime {requested_runtime.replace('_', '.')} "
+                "has no healthy endpoint; a different healthy runtime is not an "
+                "evidence-compatible substitute"
+            )
+        elif (
+            not self.config.ai.local.model.strip()
+            and model_plan
+            and model_plan.selected_model_id
+            and not plan_is_target_qualified
+        ):
+            local_problem = (
+                "Automatic local model plan is not target-hardware qualified; "
+                "use provisioning evidence or an explicit laboratory override"
+            )
 
         # Local runtime: require an explicit model mapping. Never take the first
         # arbitrary model from an existing Ollama installation.
@@ -750,6 +976,13 @@ class LabComponentFactory:
                 candidates.append((self.config.ai.local.model.strip(), []))
             if target_id:
                 candidates.append((target_id, target_aliases))
+
+            if not candidates:
+                # Preserve the fail-closed reason computed above (for example,
+                # an installed but target-unqualified candidate). Merely
+                # observing a healthy runtime must not turn it into a generic
+                # missing-model diagnosis.
+                continue
 
             resolved_model: str | None = None
             for candidate_id, aliases in candidates:
@@ -771,7 +1004,11 @@ class LabComponentFactory:
                         timeout_seconds=self.config.ai.local.timeout_seconds,
                         think=False,
                         keep_alive=keep_alive,
-                        context_tokens=self.config.ai.local.context_tokens,
+                        context_tokens=(
+                            model_plan.context_size
+                            if target_id and model_plan is not None
+                            else self.config.ai.local.context_tokens
+                        ),
                     )
                     local_problem = (
                         f"Ollama native API at {rt.endpoint} using '{resolved_model}' "
@@ -819,22 +1056,39 @@ class LabComponentFactory:
             if lan_backend is not None and lan_backend.health().status == ServiceStatus.HEALTHY:
                 backends["lan_brain"] = lan_backend
 
-        # Cloud uses the same SecretResolver/config contract audited in R3A; no
-        # hard-coded environment variable names are allowed here.
-        if self.config.ai.cloud.enabled:
-            cloud_backend = CloudAiBackend(
-                endpoint=self.config.ai.cloud.endpoint,
-                model=self.config.ai.cloud.model,
-                api_key_env=self.config.ai.cloud.api_key_env,
-                api_key_file=self.config.ai.cloud.api_key_file,
-                secrets_resolver=SecretResolver(),
-                timeout_seconds=self.config.ai.cloud.timeout_seconds,
-                provider_name=self.config.ai.cloud.provider,
-                input_cost_per_million=self.config.ai.cloud.input_cost_per_million,
-                output_cost_per_million=self.config.ai.cloud.output_cost_per_million,
-            )
-            if cloud_backend.health().status == ServiceStatus.HEALTHY:
-                backends["cloud"] = cloud_backend
+        # Named remote providers are independent. Their credentials, protocol,
+        # model and health never collapse into a shared "cloud" backend.
+        if self.config.ai.allow_remote and self.config.ai.remote.enabled:
+            resolver = SecretResolver()
+            for provider_id, provider_config in self.config.ai.remote.providers.items():
+                if not provider_config.enabled:
+                    continue
+                route_id = f"remote:{provider_id}"
+                explicitly_selected = self.config.ai.provider == route_id
+                if (
+                    provider_config.qualification_status != "qualified"
+                    and not explicitly_selected
+                ):
+                    # Configured/tested providers remain available to /ia and
+                    # explicit operator selection, but never enter adaptive auto.
+                    continue
+                api_key = resolver.resolve(
+                    env_var=provider_config.api_key_env or None,
+                    file_name=provider_config.api_key_file or None,
+                )
+                remote_backend = build_remote_backend(
+                    provider_id,
+                    provider_config,
+                    api_key=api_key,
+                )
+                health = remote_backend.health()
+                if health.status in {
+                    ServiceStatus.HEALTHY,
+                    ServiceStatus.DEGRADED,
+                    ServiceStatus.UNKNOWN,
+                }:
+                    backends[route_id] = remote_backend
+
 
         if backends:
             backend_names = ", ".join(sorted(backends))
@@ -846,6 +1100,27 @@ class LabComponentFactory:
                 detail=detail,
             )
 
+        if not self.config.ai.local.enabled:
+            enabled_external = [
+                f"remote:{provider_id}"
+                for provider_id, provider in self.config.ai.remote.providers.items()
+                if self.config.ai.allow_remote
+                and self.config.ai.remote.enabled
+                and provider.enabled
+            ]
+            if self.config.ai.lan.enabled:
+                enabled_external.append("lan_brain")
+            configured = ", ".join(enabled_external) or "none"
+            return {}, ComponentStatus(
+                name="AI Inference",
+                backend="None",
+                state="UNAVAILABLE",
+                detail=(
+                    "No eligible AI provider is available. "
+                    f"Configured external providers: {configured}; local AI is disabled."
+                ),
+            )
+
         state = "MISSING_MODEL" if healthy_runtimes else "NOT_RUNNING"
         return {}, ComponentStatus(
             name="AI Inference",
@@ -855,7 +1130,6 @@ class LabComponentFactory:
             remediation=(
                 "Configure an explicit runtime model mapping or prepare/start the verified AILEN model"
                 if healthy_runtimes
-                else "Start a configured local/LAN/cloud backend or run with --no-ai"
+                else "Start a configured local/LAN/named-remote backend or run with --no-ai"
             ),
         )
-
