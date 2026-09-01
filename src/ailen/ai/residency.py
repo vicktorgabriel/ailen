@@ -36,6 +36,22 @@ class ModelResidencyPolicy:
             return self._custom_keep_alive
         return self.get_default_keep_alive(self._inference_profile)
 
+    @property
+    def minimum_free_memory_mb(self) -> int:
+        """Free-RAM floor below which an idle local model should be released."""
+        if self._inference_profile == InferenceProfile.FAST:
+            return 700
+        if self._inference_profile == InferenceProfile.BALANCED:
+            return 1200
+        if self._inference_profile == InferenceProfile.QUALITY:
+            return 1800
+        return 0
+
+    def should_release(self, available_memory_mb: int) -> bool:
+        """Return whether measured free RAM crossed this profile's floor."""
+        floor = self.minimum_free_memory_mb
+        return floor > 0 and max(0, available_memory_mb) < floor
+
     @staticmethod
     def get_default_keep_alive(profile: InferenceProfile) -> str:
         """Derive standard Ollama keep_alive duration based on inference profile."""
@@ -78,4 +94,5 @@ class ModelResidencyPolicy:
             "primary_model": self._primary_model,
             "keep_alive": self.keep_alive,
             "inference_profile": self._inference_profile.value,
+            "minimum_free_memory_mb": self.minimum_free_memory_mb,
         }

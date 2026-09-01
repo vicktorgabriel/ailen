@@ -5,10 +5,20 @@ telemetry logging, and budget/health verification.
 """
 
 import logging
+import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
-from ailen.ai.contracts import AiBackend, AiRequest, AiResponse, StreamingAiBackend
+from ailen.ai.contracts import (
+    AiAttempt,
+    AiBackend,
+    AiErrorKind,
+    AiRequest,
+    AiResponse,
+    StreamingAiBackend,
+)
+from ailen.ai.privacy import OutboundPrivacyPolicy
 from ailen.ai.router import ROUTE_DEGRADED, ROUTE_RULE_ONLY, RoutePlan, RuleBasedRouter
 from ailen.core.events import EventBus
 from ailen.domain.enums import EventType, ServiceStatus
@@ -26,11 +36,16 @@ class AiOrchestrator:
         router: RuleBasedRouter | None = None,
         repository: MemoryRepository | None = None,
         event_bus: EventBus | None = None,
+        monotonic_clock: Callable[[], float] | None = None,
+        rate_limit_cooldown_seconds: float = 60.0,
     ) -> None:
         self.backends: dict[str, AiBackend] = backends or {}
         self.router = router or RuleBasedRouter()
         self.repository = repository
         self.event_bus = event_bus
+        self._monotonic = monotonic_clock or time.monotonic
+        self._rate_limit_cooldown_seconds = max(1.0, rate_limit_cooldown_seconds)
+        self._cooldown_until: dict[str, float] = {}
 
     def register_backend(self, name: str, backend: AiBackend) -> None:
         """Register an inference backend by route name."""
@@ -63,35 +78,106 @@ class AiOrchestrator:
 
         # 3. Build candidate backend sequence: primary -> fallbacks
         candidates = [plan.primary_backend] + list(plan.fallback_backends)
-        attempt_errors: list[dict[str, Any]] = []
+        attempts: list[AiAttempt] = []
 
         for candidate_name in candidates:
+            cooldown_until = self._cooldown_until.get(candidate_name, 0.0)
+            if cooldown_until > self._monotonic():
+                attempts.append(
+                    AiAttempt(
+                        backend=candidate_name,
+                        outcome="cooldown",
+                        error_kind=AiErrorKind.RATE_LIMIT,
+                        detail=f"retry_in_seconds={cooldown_until - self._monotonic():.1f}",
+                    )
+                )
+                continue
             backend = self.backends.get(candidate_name)
             if not backend:
-                attempt_errors.append({"backend": candidate_name, "error": "not_registered"})
+                attempts.append(
+                    AiAttempt(
+                        backend=candidate_name,
+                        outcome="failed",
+                        error_kind=AiErrorKind.UNAVAILABLE,
+                        detail="not_registered",
+                    )
+                )
+                continue
+
+            try:
+                candidate_request = OutboundPrivacyPolicy.sanitize_request_for_destination(
+                    request,
+                    destination=candidate_name,
+                    lan_trusted=plan.lan_trusted,
+                    allow_sanitized_private=plan.allow_sanitized_external,
+                )
+                candidate_request = self._with_backend_timeout(candidate_request, backend)
+            except PermissionError:
+                attempts.append(
+                    AiAttempt(
+                        backend=candidate_name,
+                        outcome="blocked",
+                        error_kind=AiErrorKind.UNAVAILABLE,
+                        detail="privacy_blocked",
+                    )
+                )
                 continue
 
             # Check health. Only HEALTHY/DEGRADED backends are eligible for inference.
-            health = backend.health()
+            try:
+                health = backend.health()
+            except Exception as exc:
+                logger.exception("Backend %s health check raised", candidate_name)
+                attempts.append(
+                    AiAttempt(
+                        backend=candidate_name,
+                        outcome="failed",
+                        error_kind=AiErrorKind.INTERNAL_ERROR,
+                        detail=type(exc).__name__,
+                    )
+                )
+                continue
             if health.status not in {ServiceStatus.HEALTHY, ServiceStatus.DEGRADED}:
-                attempt_errors.append(
-                    {
-                        "backend": candidate_name,
-                        "error": f"health_{health.status.value.lower()}",
-                    }
+                attempts.append(
+                    AiAttempt(
+                        backend=candidate_name,
+                        outcome="failed",
+                        error_kind=AiErrorKind.UNAVAILABLE,
+                        detail=f"health_{health.status.value.lower()}",
+                    )
                 )
                 continue
 
             # Attempt inference
             try:
-                response = backend.generate(request)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Backend %s raised unexpected error: %s", candidate_name, e)
-                attempt_errors.append({"backend": candidate_name, "error": str(e)})
+                response = backend.generate(candidate_request)
+            except Exception as e:
+                logger.exception("Backend %s raised unexpected error", candidate_name)
+                attempts.append(
+                    AiAttempt(
+                        backend=candidate_name,
+                        outcome="failed",
+                        error_kind=AiErrorKind.INTERNAL_ERROR,
+                        detail=type(e).__name__,
+                    )
+                )
                 continue
 
             # Check response success
-            if response.finish_reason not in ("error", "unreachable", "timeout", "malformed_response") and response.text:
+            success = self._is_success(response)
+            attempts.append(
+                AiAttempt(
+                    backend=candidate_name,
+                    outcome="success" if success else "failed",
+                    provider=response.provider,
+                    model=response.model,
+                    latency_ms=response.latency_ms,
+                    error_kind=response.error_kind,
+                    detail=response.finish_reason,
+                )
+            )
+            if success:
+                response.attempts = list(attempts)
                 # Persist usage only when the provider actually reported enough data.
                 # Unknown token/cost fields must remain unknown rather than being fabricated as zero.
                 usage = response.usage
@@ -126,15 +212,26 @@ class AiOrchestrator:
                 )
                 return response, plan
 
-            attempt_errors.append({"backend": candidate_name, "error": response.finish_reason})
+            if (
+                response.error_kind is AiErrorKind.RATE_LIMIT
+                or response.finish_reason == "rate_limited"
+            ):
+                requested = response.retry_after_seconds
+                cooldown = self._rate_limit_cooldown_seconds if requested is None else requested
+                # A hostile or malformed Retry-After must not disable a provider forever.
+                cooldown = min(300.0, max(1.0, cooldown))
+                self._cooldown_until[candidate_name] = self._monotonic() + cooldown
 
         # 4. All backends failed -> return clean degraded response
-        logger.info("All AI backends failed in RoutePlan: %s", attempt_errors)
+        attempt_payload = [self._attempt_payload(item) for item in attempts]
+        logger.info("All AI backends failed in RoutePlan: %s", attempt_payload)
         self._publish_event(
             EventType.ERROR,
-            {"attempts": attempt_errors, "reason": plan.reason_code},
+            {"attempts": attempt_payload, "reason": plan.reason_code},
         )
-        return self._build_degraded_response(f"ALL_FAILED: {attempt_errors}"), plan
+        return self._build_degraded_response(
+            f"ALL_FAILED: {attempt_payload}", attempts=attempts
+        ), plan
 
     def execute_stream_until(
         self,
@@ -144,27 +241,125 @@ class AiOrchestrator:
         session_id: str | None = None,
     ) -> tuple[AiResponse, RoutePlan]:
         """Execute a route incrementally when the selected backend supports streaming."""
+        def tracking_callback(parts: list[str]) -> Callable[[str], bool | None]:
+            def track(delta: str) -> bool | None:
+                parts.append(delta)
+                return on_text_delta(delta)
+
+            return track
+
         candidates = [plan.primary_backend] + list(plan.fallback_backends)
+        attempts: list[AiAttempt] = []
         for candidate_name in candidates:
+            cooldown_until = self._cooldown_until.get(candidate_name, 0.0)
+            if cooldown_until > self._monotonic():
+                attempts.append(
+                    AiAttempt(
+                        backend=candidate_name,
+                        outcome="cooldown",
+                        error_kind=AiErrorKind.RATE_LIMIT,
+                    )
+                )
+                continue
             backend = self.backends.get(candidate_name)
             if backend is None:
-                continue
-            health = backend.health()
-            if health.status not in {ServiceStatus.HEALTHY, ServiceStatus.DEGRADED}:
+                attempts.append(
+                    AiAttempt(
+                        backend=candidate_name,
+                        outcome="failed",
+                        error_kind=AiErrorKind.UNAVAILABLE,
+                        detail="not_registered",
+                    )
+                )
                 continue
             try:
-                if isinstance(backend, StreamingAiBackend):
-                    response = backend.generate_stream(request, on_text_delta)
-                else:
-                    response = backend.generate(request)
-                    if response.text:
-                        on_text_delta(response.text)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Streaming backend %s failed: %s", candidate_name, exc)
+                candidate_request = OutboundPrivacyPolicy.sanitize_request_for_destination(
+                    request,
+                    destination=candidate_name,
+                    lan_trusted=plan.lan_trusted,
+                    allow_sanitized_private=plan.allow_sanitized_external,
+                )
+                candidate_request = self._with_backend_timeout(candidate_request, backend)
+            except PermissionError:
+                attempts.append(
+                    AiAttempt(
+                        backend=candidate_name,
+                        outcome="blocked",
+                        error_kind=AiErrorKind.UNAVAILABLE,
+                        detail="privacy_blocked",
+                    )
+                )
                 continue
-            if response.text and response.finish_reason not in {
-                "error", "unreachable", "timeout", "malformed_response"
-            }:
+            try:
+                health = backend.health()
+            except Exception as exc:
+                logger.exception("Streaming backend %s health check raised", candidate_name)
+                attempts.append(
+                    AiAttempt(
+                        backend=candidate_name,
+                        outcome="failed",
+                        error_kind=AiErrorKind.INTERNAL_ERROR,
+                        detail=type(exc).__name__,
+                    )
+                )
+                continue
+            if health.status not in {ServiceStatus.HEALTHY, ServiceStatus.DEGRADED}:
+                attempts.append(
+                    AiAttempt(
+                        backend=candidate_name,
+                        outcome="failed",
+                        error_kind=AiErrorKind.UNAVAILABLE,
+                        detail=f"health_{health.status.value.lower()}",
+                    )
+                )
+                continue
+            emitted_parts: list[str] = []
+            track_delta = tracking_callback(emitted_parts)
+
+            try:
+                if (
+                    isinstance(backend, StreamingAiBackend)
+                    and backend.capabilities().supports_streaming
+                ):
+                    response = backend.generate_stream(candidate_request, track_delta)
+                else:
+                    response = backend.generate(candidate_request)
+                    if response.text:
+                        track_delta(response.text)
+            except Exception as exc:
+                logger.exception("Streaming backend %s failed", candidate_name)
+                attempts.append(
+                    AiAttempt(
+                        backend=candidate_name,
+                        outcome="failed",
+                        error_kind=AiErrorKind.INTERNAL_ERROR,
+                        detail=type(exc).__name__,
+                    )
+                )
+                if emitted_parts:
+                    return AiResponse(
+                        text="".join(emitted_parts).strip(),
+                        provider=candidate_name,
+                        model=str(getattr(backend, "model", "unknown")),
+                        finish_reason="partial_stream_error",
+                        error_kind=AiErrorKind.INTERNAL_ERROR,
+                        attempts=list(attempts),
+                    ), plan
+                continue
+            success = self._is_success(response)
+            attempts.append(
+                AiAttempt(
+                    backend=candidate_name,
+                    outcome="success" if success else "failed",
+                    provider=response.provider,
+                    model=response.model,
+                    latency_ms=response.latency_ms,
+                    error_kind=response.error_kind,
+                    detail=response.finish_reason,
+                )
+            )
+            if success:
+                response.attempts = list(attempts)
                 self._publish_event(
                     EventType.INFERENCE_COMPLETED,
                     {
@@ -176,15 +371,67 @@ class AiOrchestrator:
                     },
                 )
                 return response, plan
-        return self._build_degraded_response("STREAM_ALL_FAILED"), plan
+            if emitted_parts:
+                # Once text may already be audible, trying another provider
+                # would splice two independent answers into one voice turn.
+                response.finish_reason = "partial_stream_error"
+                response.attempts = list(attempts)
+                return response, plan
+            if response.error_kind is AiErrorKind.RATE_LIMIT:
+                cooldown = response.retry_after_seconds or self._rate_limit_cooldown_seconds
+                self._cooldown_until[candidate_name] = self._monotonic() + min(
+                    300.0, max(1.0, cooldown)
+                )
+        return self._build_degraded_response(
+            "STREAM_ALL_FAILED", attempts=attempts
+        ), plan
 
-    def _build_degraded_response(self, detail: str) -> AiResponse:
+    @staticmethod
+    def _is_success(response: AiResponse) -> bool:
+        return bool(response.text) and response.error_kind is None and response.finish_reason not in {
+            "empty_response",
+            "error",
+            "malformed_response",
+            "rate_limited",
+            "timeout",
+            "unreachable",
+        }
+
+    @staticmethod
+    def _with_backend_timeout(request: AiRequest, backend: AiBackend) -> AiRequest:
+        """Bound a request by the adapter's configured timeout when available."""
+        configured = getattr(backend, "timeout_seconds", None)
+        if not isinstance(configured, (int, float)) or configured <= 0:
+            return request
+        request_timeout = request.timeout_seconds
+        effective = configured if request_timeout <= 0 else min(request_timeout, configured)
+        return replace(request, timeout_seconds=float(effective))
+
+    @staticmethod
+    def _attempt_payload(attempt: AiAttempt) -> dict[str, Any]:
+        return {
+            "backend": attempt.backend,
+            "outcome": attempt.outcome,
+            "provider": attempt.provider,
+            "model": attempt.model,
+            "latency_ms": attempt.latency_ms,
+            "error_kind": attempt.error_kind.value if attempt.error_kind else None,
+            "detail": attempt.detail,
+        }
+
+    def _build_degraded_response(
+        self,
+        detail: str,
+        attempts: list[AiAttempt] | None = None,
+    ) -> AiResponse:
         """Create a safe, user-friendly degraded response."""
         return AiResponse(
             text="La inteligencia conversacional no está disponible en este momento.",
             finish_reason="degraded",
             provider="system",
             model="degraded",
+            error_kind=AiErrorKind.UNAVAILABLE,
+            attempts=list(attempts or []),
         )
 
     def _publish_event(self, event_type: EventType, payload: dict[str, Any]) -> None:

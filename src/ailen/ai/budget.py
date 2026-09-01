@@ -1,4 +1,4 @@
-"""Economic budget enforcement policy for cloud AI providers.
+"""Economic budget enforcement policy for named remote AI providers.
 
 Tracks daily and monthly spend against configured limits and acts as a circuit breaker
 to prevent unexpected cloud charges.
@@ -11,17 +11,19 @@ from ailen.memory.repository import MemoryRepository
 
 
 class BudgetPolicy:
-    """Evaluates whether cloud AI inference is within budget limits."""
+    """Evaluate whether remote AI inference is within budget limits."""
 
     def __init__(
         self,
         repository: MemoryRepository | None = None,
         daily_budget_usd: float | None = None,
         monthly_budget_usd: float | None = None,
+        provider: str | None = None,
     ) -> None:
         self.repository = repository
         self.daily_budget_usd = daily_budget_usd
         self.monthly_budget_usd = monthly_budget_usd
+        self.provider = provider
 
     def get_spending_summary(self) -> dict[str, Any]:
         """Query and return current spending totals."""
@@ -37,8 +39,12 @@ class BudgetPolicy:
         start_of_day = now.strftime("%Y-%m-%dT00:00:00Z")
         start_of_month = now.strftime("%Y-%m-01T00:00:00Z")
 
-        _, _, daily_cost = self.repository.get_ai_usage_totals(since_iso=start_of_day)
-        _, _, monthly_cost = self.repository.get_ai_usage_totals(since_iso=start_of_month)
+        _, _, daily_cost = self.repository.get_ai_usage_totals(
+            since_iso=start_of_day, provider=self.provider
+        )
+        _, _, monthly_cost = self.repository.get_ai_usage_totals(
+            since_iso=start_of_month, provider=self.provider
+        )
 
         return {
             "daily_spent_usd": round(daily_cost, 6),
@@ -48,7 +54,7 @@ class BudgetPolicy:
         }
 
     def is_budget_available(self) -> tuple[bool, str, dict[str, Any]]:
-        """Check if cloud inference is currently allowed by budget.
+        """Check if remote inference is currently allowed by budget.
         
         Returns:
             (is_allowed, reason_code, spending_summary)

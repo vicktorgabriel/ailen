@@ -6,6 +6,7 @@ shim so thinking-capable models can explicitly run with `think=false`.
 
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -53,6 +54,7 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
         self.keep_alive = keep_alive
         self.allow_remote = allow_remote
         self.context_tokens = max(512, context_tokens)
+        self._request_lock = threading.Lock()
 
     def health(self) -> BackendHealth:
         if not self.model:
@@ -84,6 +86,10 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
 
     def warmup(self) -> bool:
         """Ask Ollama to load/retain this model without generating user-facing text."""
+        with self._request_lock:
+            return self._warmup_unlocked()
+
+    def _warmup_unlocked(self) -> bool:
         if not self.model:
             return False
         payload = {
@@ -111,7 +117,44 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
             logger.warning("Ollama warmup failed for %s: %s", self.model, exc)
             return False
 
+    def release_if_idle(self) -> bool:
+        """Unload this model without stopping Ollama when no request is active."""
+        if not self._request_lock.acquire(blocking=False):
+            return False
+        try:
+            if not self.model:
+                return False
+            payload = {
+                "model": self.model,
+                "messages": [],
+                "stream": False,
+                "keep_alive": 0,
+            }
+            req = urllib.request.Request(
+                f"{self.endpoint}/api/chat",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=min(2.0, self.timeout_seconds)) as resp:
+                if resp.status != 200:
+                    return False
+                raw = resp.read(1_000_001)
+                if len(raw) > 1_000_000:
+                    return False
+                data = json.loads(raw.decode("utf-8"))
+                return bool(data.get("done", False))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Ollama model release failed for %s: %s", self.model, exc)
+            return False
+        finally:
+            self._request_lock.release()
+
     def generate(self, request: AiRequest) -> AiResponse:
+        with self._request_lock:
+            return self._generate_unlocked(request)
+
+    def _generate_unlocked(self, request: AiRequest) -> AiResponse:
         start_t = time.monotonic()
         messages: list[dict[str, str]] = []
         system_parts: list[str] = []
@@ -214,6 +257,14 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
         on_text_delta: Callable[[str], bool | None],
     ) -> AiResponse:
         """Stream Ollama chat deltas and allow voice Core to stop after a useful phrase."""
+        with self._request_lock:
+            return self._generate_stream_unlocked(request, on_text_delta)
+
+    def _generate_stream_unlocked(
+        self,
+        request: AiRequest,
+        on_text_delta: Callable[[str], bool | None],
+    ) -> AiResponse:
         start_t = time.monotonic()
         messages: list[dict[str, str]] = []
         system_parts: list[str] = []

@@ -6,6 +6,7 @@ El Core nunca conoce marcas/modelos concretos; el Router elige el backend.
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 from ailen.domain.enums import PrivacyLevel, ServiceStatus, SocialMode
@@ -38,6 +39,32 @@ class ToolCallRequest:
     arguments: dict[str, Any] = field(default_factory=dict)
 
 
+class AiErrorKind(StrEnum):
+    """Stable failure taxonomy shared by adapters, fallback and diagnostics."""
+
+    TIMEOUT = "timeout"
+    RATE_LIMIT = "rate_limit"
+    AUTHENTICATION = "authentication"
+    INVALID_MODEL = "invalid_model"
+    NETWORK = "network"
+    UNAVAILABLE = "unavailable"
+    INVALID_RESPONSE = "invalid_response"
+    INTERNAL_ERROR = "internal_error"
+
+
+@dataclass
+class AiAttempt:
+    """One observable provider attempt in a fallback chain."""
+
+    backend: str
+    outcome: str
+    provider: str = ""
+    model: str = ""
+    latency_ms: float = 0.0
+    error_kind: AiErrorKind | None = None
+    detail: str = ""
+
+
 @dataclass
 class AiRequest:
     """Request for AI inference. Context is pre-built by Core (mínimo necesario)."""
@@ -64,6 +91,14 @@ class AiResponse:
     latency_ms: float = 0.0
     provider: str = "unknown"
     model: str = "unknown"
+    error_kind: AiErrorKind | None = None
+    retry_after_seconds: float | None = None
+    provider_setup_ms: float | None = None
+    provider_ready_ms: float | None = None
+    first_text_ms: float | None = None
+    request_chars: int | None = None
+    provider_tool_count: int | None = None
+    attempts: list[AiAttempt] = field(default_factory=list)
 
 
 @dataclass
@@ -98,7 +133,7 @@ class StreamingAiBackend(Protocol):
 
 @runtime_checkable
 class AiBackend(Protocol):
-    """Contract for AI inference backends (local, LAN Brain, cloud)."""
+    """Contract for AI inference backends (local, LAN Brain, named remote)."""
 
     def health(self) -> BackendHealth:
         """Return backend health status."""

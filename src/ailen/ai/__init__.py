@@ -1,7 +1,6 @@
 """AI package: backend contracts, router, context builder, policies, backends and orchestrator."""
 
 from ailen.ai.budget import BudgetPolicy
-from ailen.ai.cloud_backend import CloudAiBackend
 from ailen.ai.context import AiContextBuilder
 from ailen.ai.contracts import (
     AiBackend,
@@ -17,11 +16,16 @@ from ailen.ai.fake import FakeAiBackend
 from ailen.ai.http_backend import GenericOpenAiBackend
 from ailen.ai.lan_backend import LanBrainAiBackend
 from ailen.ai.local_backend import LocalAiBackend
+from ailen.ai.managed_local_backend import ManagedLocalAiBackend
 from ailen.ai.orchestrator import AiOrchestrator
 from ailen.ai.privacy import OutboundPrivacyPolicy
+from ailen.ai.remote_backend import (
+    AnthropicMessagesBackend,
+    OpenAiResponsesBackend,
+    build_remote_backend,
+)
 from ailen.ai.residency import ModelResidencyPolicy
 from ailen.ai.router import (
-    ROUTE_CLOUD,
     ROUTE_DEGRADED,
     ROUTE_LAN_BRAIN,
     ROUTE_LOCAL,
@@ -35,7 +39,6 @@ from ailen.ai.router import (
 from ailen.ai.secrets import SecretResolver
 
 __all__ = [
-    "ROUTE_CLOUD",
     "ROUTE_DEGRADED",
     "ROUTE_LAN_BRAIN",
     "ROUTE_LOCAL",
@@ -47,21 +50,24 @@ __all__ = [
     "AiRequest",
     "AiResponse",
     "AiUsage",
+    "AnthropicMessagesBackend",
     "BackendCapabilities",
     "BackendHealth",
     "BudgetPolicy",
     "ChatMessage",
-    "CloudAiBackend",
     "FakeAiBackend",
     "GenericOpenAiBackend",
     "LanBrainAiBackend",
     "LocalAiBackend",
+    "ManagedLocalAiBackend",
     "ModelResidencyPolicy",
+    "OpenAiResponsesBackend",
     "OutboundPrivacyPolicy",
     "RoutePlan",
     "RouteRequest",
     "RuleBasedRouter",
     "SecretResolver",
     "ToolCallRequest",
+    "build_remote_backend",
     "classify_fast_path_intent",
 ]

@@ -5,6 +5,7 @@ and session history. Applies SocialPrivacyPolicy and OutboundPrivacyPolicy deter
 """
 
 import json
+import re
 import uuid
 from typing import Any
 
@@ -49,12 +50,18 @@ class AiContextBuilder:
         identity_name: str | None = None,
         destination: str = "local",
         lan_trusted: bool = True,
+        allow_sanitized_private: bool = False,
         allowed_tools: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> AiRequest:
         """Construct a bounded, privacy-filtered AiRequest."""
         name = identity_name or self.default_identity_name
         request_metadata = metadata or {}
+        sanitized_private_remote = (
+            allow_sanitized_private
+            and privacy_level is PrivacyLevel.PRIVATE
+            and destination.lower().strip().startswith("remote:")
+        )
         system_parts: list[str] = [
             (
                 f"Sos {name}, asistente físico local. Modo: {mode.value}. "
@@ -85,6 +92,29 @@ class AiContextBuilder:
                 "Entrada por micrófono/STT: corregí errores obvios; si no se entiende, pedí repetir. "
                 "No inventes tono emocional, identidad vocal ni sonidos no clasificados por Core."
             )
+            stt_confidence = request_metadata.get("stt_confidence")
+            stt_engine = request_metadata.get("stt_engine")
+            if isinstance(stt_confidence, (int, float)):
+                bounded_confidence = max(0.0, min(1.0, float(stt_confidence)))
+                engine_label = (
+                    re.sub(r"[^a-zA-Z0-9_.:-]", "", stt_engine)[:32]
+                    if isinstance(stt_engine, str)
+                    else "desconocido"
+                )
+                system_parts.append(
+                    f"Core informa confianza acústica {bounded_confidence:.2f} de {engine_label}; "
+                    "no la conviertas en certeza semántica. Si el sentido depende de palabras dudosas, pedí repetir."
+                )
+            if request_metadata.get("utterance_interrupted"):
+                system_parts.append(
+                    "Core informa que este turno comenzó como barge-in del usuario; "
+                    "eso no implica por sí solo que la frase esté incompleta."
+                )
+            if request_metadata.get("utterance_truncated"):
+                system_parts.append(
+                    "Core informa que la frase quedó truncada por el límite de captura; "
+                    "no completes lo faltante y pedí repetir si cambia el sentido."
+                )
 
         conversational_expressions = request_metadata.get("conversational_expressions")
         if (
@@ -94,12 +124,12 @@ class AiContextBuilder:
         ):
             allowed_expressions = [
                 str(item) for item in conversational_expressions if isinstance(item, str)
-            ][:16]
+            ][:64]
             if allowed_expressions:
                 system_parts.append(
                     "Primero [[face:expresion]] (no se pronuncia). Permitidas: "
                     + ", ".join(allowed_expressions)
-                    + ". Elegí la emoción que corresponda; neutral sólo si no hay reacción clara."
+                    + ". Elegí una sólo cuando corresponda; sin reacción clara, omití el marcador."
                 )
 
         capabilities = request_metadata.get("capabilities")
@@ -173,7 +203,7 @@ class AiContextBuilder:
 
         # 1. Load conversation history from session. Keep semantic continuity,
         # but explicitly discourage copying the assistant's recent cadence.
-        if self.repository and session_id:
+        if self.repository and session_id and not sanitized_private_remote:
             try:
                 db_msgs = self.repository.get_session_messages(session_id, limit=self.max_recent_messages)
                 for msg in db_msgs:
@@ -199,7 +229,7 @@ class AiContextBuilder:
         messages.append(ChatMessage(role="user", content=user_message))
 
         # 3. Retrieve and sanitize domain memories according to SocialPrivacyPolicy
-        if self.repository:
+        if self.repository and not sanitized_private_remote:
             try:
                 raw_memories = self.repository.get_recent_memories(limit=self.max_memories)
                 safe_memories = SocialPrivacyPolicy.filter_memories(raw_memories, mode)
@@ -238,6 +268,7 @@ class AiContextBuilder:
             req,
             destination=destination,
             lan_trusted=lan_trusted,
+            allow_sanitized_private=sanitized_private_remote,
         )
 
         # 7. Truncate context if budget exceeded
