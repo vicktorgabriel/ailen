@@ -4,11 +4,11 @@
 
 ## Estado general
 
-Versión: `0.1.0-dev.0`
+Versión: `0.4.0-dev.0`
 
-Milestone activo: `R4 — capacidades cotidianas, periféricos intercambiables y operación persistente`.
+Milestone activo: `R4/R5 — consolidación de capacidades cotidianas + Web Admin`, con `R5B — FacePack realista extensible` como renderer lógico por defecto; `portrait` queda sólo como renderer legacy seleccionable manualmente.
 
-Los slices R1, R2A, R2B y R3A quedaron integrados y auditados. R3A cerró con 254 tests tras la revisión final y queda como baseline para el runtime de laboratorio.
+R1, R2, R3A/R3B/R3C están integrados. El baseline completo actual es de 1145 tests en verde, Ruff limpio, mypy limpio en 164 módulos fuente, diff-check y wheel de 202 entradas inspeccionado en verde. El gate C++/FacePack previo permanece válido porque este vertical no modificó el engine ni el pack.
 
 ## Bloque 0 — Antes de código
 
@@ -172,7 +172,7 @@ Debe quedar funcionando:
 - [x] Benchmark reproducible de audio y VAD en DEV machine (`docs/benchmarks/dev_audio_benchmark.md`).
 - [x] Documentos de investigación (`docs/research/AUDIO_IO_POC.md`, `docs/research/STT_BACKEND_POC.md`, `docs/research/TTS_BACKEND_POC.md`).
 
-## Bloque 9 — AI Router Híbrido y Proveedores Local/LAN/Cloud (R3A)
+## Bloque 9 — AI Router Híbrido R3A (histórico; sustituido por remotos nombrados en Bloque 18)
 
 - [x] AI Router v1 determinista con matriz completa por `DeviceProfile` (`SATELLITE`, `CLOUD`, `HYBRID`, `LOCAL`, `LAN_BRAIN`) y códigos de razón canónicos (`src/ailen/ai/router.py`).
 - [x] `OutboundPrivacyPolicy` determinista (`PUBLIC`, `RESTRICTED`, `PRIVATE`) que bloquea envíos a Cloud y LAN no confiable (`src/ailen/ai/privacy.py`).
@@ -180,10 +180,10 @@ Debe quedar funcionando:
 - [x] `BudgetPolicy` circuit breaker consultando la tabla `ai_usage` en SQLite para frenar cargos cloud automáticamente ante excesos diarios o mensuales (`src/ailen/ai/budget.py`).
 - [x] `AiContextBuilder` construyendo prompts mínimos acotados en caracteres/tokens con filtrado de privacidad social y outbound (`src/ailen/ai/context.py`).
 - [x] Cliente HTTP genérico OpenAI-compatible basado en stdlib (`urllib.request`) sin dependencias pesadas (`GenericOpenAiBackend`).
-- [x] Backends especializados para servidor HTTP local (`LocalAiBackend`), servidor LAN Brain con trust boundary (`LanBrainAiBackend`) y cloud con cost tracking (`CloudAiBackend`).
+- [x] Implementación histórica de `LocalAiBackend`, `LanBrainAiBackend` y `CloudAiBackend`; el backend cloud monolítico fue retirado en R4 y sustituido por `remote:<id>` con transportes por protocolo.
 - [x] `AiOrchestrator` ejecutando la secuencia de fallback de forma segura y registrando telemetría y eventos en `EventBus` (`src/ailen/ai/orchestrator.py`).
 - [x] `ConversationCoordinator` unificando Transcript STT -> Context -> Router -> Orchestrator -> TTS Output (`src/ailen/core/conversation.py`).
-- [x] Configuración extendida `[ai]`, `[ai.local]`, `[ai.lan]`, `[ai.cloud]` en `src/ailen/core/config.py` y `config/ailen.example.toml`.
+- [x] Configuración histórica `[ai.cloud]`, migrada en R4 a `[ai.remote.providers.<id>]`; el esquema actual conserva sólo la migración fail-closed.
 - [x] Comandos CLI `ailen diagnose ai` y `ailen demo ai "<prompt>" [--dry-run]`.
 - [x] Benchmark reproducible DEV del AI Router (`docs/benchmarks/dev_ai_router_benchmark.md`), sin extrapolar cifras a hardware objetivo.
 - [x] Documentos POC (`docs/research/AI_ROUTER_POC.md`, `docs/research/LOCAL_LLM_BACKEND_POC.md`, `docs/research/LAN_BRAIN_POC.md`, `docs/research/CLOUD_PROVIDER_POC.md`).
@@ -247,6 +247,9 @@ Debe quedar funcionando:
 
 - [x] agregar abstracción `InferenceProfile` (`RULE_ONLY`, `FAST`, `BALANCED`, `QUALITY`) y recomendación determinista por hardware (`recommend_inference_profile`), separada de `DeviceProfile`.
 - [x] conectar hardware -> `InferenceRecommendation` -> `ModelPlanner` -> residencia Ollama por perfil; sin model hopping automático por turno.
+- [x] persistir de forma atómica y consentida la selección target-qualified de
+  hardware/modelo/runtime/contexto/offload; runner fail-closed y sin lectura si
+  local está deshabilitado. Integración con el instalador Debian sigue en R6.
 - [x] benchmark reproducible de latencia/calidad (`ailen lab benchmark-ai`) evaluando modelos ya instalados en Ollama y reportando candidatos ausentes como `NOT_INSTALLED` sin descargas automáticas.
 - [x] incorporar candidatos en ModelCatalog (`llama-3.2-3b-instruct`, `qwen3.5-4b-instruct`, `gemma-3-4b-instruct`, `qwen2.5-3b-instruct`) con metadatos y `downloadable=False`.
 - [x] mantener fallback Rule-only/LAN/cloud cuando no haya modelo local viable con recomendación `RecommendedDeployment`.
@@ -292,6 +295,7 @@ Debe quedar funcionando:
 - [x] comandos de gesto facial allowlisted sobre `FaceAnimator`; once expresiones
   tienen geometría pixel propia, sobreviven `SPEAKING` de forma acotada y la boca
   continúa articulando durante playback.
+- [x] `face_style="portrait"`: renderer raster legacy manual usando el retrato exacto aprobado de AILEN como asset base, con parpadeo/wink, mirada, boca por nivel de habla y parallax; `pixel`/`vector` también son selecciones manuales. Assets incluidos en el wheel y prueba GUI funcional realizada; benchmark CPU/RSS raster en hardware objetivo queda pendiente.
 - [ ] visión avanzada opcional: objetos/pose/gestos y, en hardware potente, VLM local o LAN Brain; YuNet queda como baseline liviano de rostro/presencia.
 - [x] instalación limpia: `diagnose ai` y `demo ai` ejecutan migraciones SQLite antes de consultar `ai_usage`, evitando depender de una base ya inicializada en otro host.
 - [x] instalar Whisper.cpp tiny/base y verificar assets en Debian; [ ] decidir baseline STT sólo tras WER real sobre 10-20 utterances físicas.
@@ -320,9 +324,161 @@ Debe quedar funcionando:
 - [ ] validar físicamente un recordatorio audible y comprobar que `AudioTurnGate` evita auto-transcripción.
 - [ ] cerrar reproducción MPRIS audible y luego catálogo/playlists local seguro.
 - [ ] proveedor WebSearch real con rate limit, boundary no confiable y fail-closed.
-- [ ] Web Admin: sesiones persistentes + visores de conversaciones/memorias/notas/auditoría.
-- [ ] RTSP audio como `AudioInputBackend` opcional; NC250 no debe ser requisito de hardware.
-- [ ] provisionador Debian appliance idempotente y systemd endurecido, sin ejecutarlo destructivamente sobre Lab.
+## Bloque 18 — R4 Proveedores Externos Configurables y Panel Web Admin de IA (ADR-011)
+
+- [x] Abstracción `AiProvider` y `ProviderRegistry` desacoplando Core/Memoria/Herramientas de motores de inferencia.
+- [x] Experimentos históricos AGY/Antigravity y OpenCode medidos y retirados el
+  2026-09-01: no quedan adapters, runtimes, secretos, UI ni rutas productivas;
+  configs viejas migran a `auto` con warning. Sus reportes se conservan.
+- [x] `ExternalRuntimeManager` limitado a runtimes realmente soportados por el
+  producto: remotos HTTP configurados y local Ollama sólo cuando está habilitado.
+- [x] Web Admin `/ia` administra remotos nombrados y acciones reales de
+  catálogo/prueba/secreto, sin login/update de agentes CLI retirados.
+- [x] Almacén seguro de secretos (`SecretResolver`) con permisos atómicos POSIX `0600` y directorio `0700`, fuera de TOML y SQLite.
+- [x] Soporte de primer nivel para una instalación remota en Tier 4 GB
+  (`ai.local.enabled = false` documentado y verificado en preflight/runner), sin
+  confundir ese modo con el baseline local autónomo todavía por medir.
+- [x] Enrutamiento adaptativo determinista (`RuleBasedRouter`) con prioridades configurables y respeto estricto de `OutboundPrivacyPolicy`.
+- [x] Evidencia histórica AGY preservada como rechazo de producto: aislamiento
+  funcionó, pero ~6,7 s a primer texto y contexto interno impiden usarlo en voz.
+- [x] Gate histórico del Provider Manager: 697 tests, Ruff y mypy limpios; el
+  baseline integrado vigente se mantiene en el encabezado de este documento.
+- [x] ADR-011 documentado y actualizado.
+- [x] Semántica estricta de `ai.local.enabled=false`: sin discovery, backend,
+  startup, prewarm, parser semántico ni fallback local oculto.
+- [x] Contrato local común para Ollama/llama.cpp; llama.cpp administrado se carga
+  al primer uso y sólo un runtime propio/ocioso se libera por presión de RAM.
+- [x] Envelopes canónicos de planificación para 4/8/16/32/64+ GB con contexto, budget
+  de modelo y reserva; mantener etiqueta `TARGET_*_BENCHMARK_REQUIRED`.
+- [x] Propagar evidencia STT completa a Core y aplicar guarda de confianza a
+  tools con efecto, sin convertir confianza semántica en acústica.
+- [x] Streaming de conversación a frases TTS incrementales con prefetch uno,
+  cancelación de barge-in y prohibición de empalmar fallback tras salida parcial.
+- [x] Quitar saludos/charla abierta del fast path de respuestas deterministas y
+  generalizar la personalidad base sin perder contexto técnico cuando corresponde.
+- [x] Prioridades `/ia` conectadas al orden real; proveedor explícito sano
+  primero y remotos independientes `remote:<id>` para cascada observable.
+- [x] Taxonomía de error externa (`timeout`, `rate_limit`, `authentication`,
+  `invalid_model`, `network`, `unavailable`, `invalid_response`,
+  `internal_error`), fallback observable y cooldown acotado por 429.
+- [x] Boundary remoto reconstruido y probado por captura: sólo turno actual;
+  sin historial, memoria, persona, capabilities, paths, tools ni secretos.
+- [x] `/ia` distingue selección de verificación efectiva, fuente de catálogo,
+  clave propia, latencia medida y reinicio requerido; no inventa health/modelos.
+- [x] Harness sintético externo dry-run por defecto, sin contenido privado ni Ollama bajo
+  `runtime/lab/external_ai_validation/`.
+- [x] Transportes livianos OpenAI Responses SSE (`store=false`), OpenAI Chat
+  Completions SSE y Anthropic Messages SSE con tests simulados; presets OpenAI,
+  Anthropic, DeepSeek, Kimi y MiniMax permanecen no probados hasta consentimiento.
+- [x] `ProvisioningPlan` automático por hardware/calificación con runtime,
+  contexto, offload, reservas, hashes/licencia y acciones consentidas. Perfiles
+  Lab ya no fijan modelo; candidates no se instalan silenciosamente. El runtime
+  se indexa y selecciona por evidencia target-specific independiente y CPU/CUDA
+  nunca se infiere desde la mera compatibilidad del descriptor.
+- [x] El arranque local respeta el runtime exacto calificado y nunca ejecuta un
+  candidato automático ni cruza evidencia llama.cpp/Ollama; el campo
+  `ai.local.runtime` ya es consumido y validado.
+- [x] PipeWire default nativo sin `pactl` y target explícito sin ambigüedad;
+  cadena NS -> capture gain dB -> AGC bounded con gate/hold/release -> limiter,
+  con métricas raw/por etapa/final y SNR/clipping/WER RAM-only. Se retiró
+  `audio.input_volume` decorativo.
+- [ ] Seleccionar y medir GGUF local por tier en hardware reciclado objetivo con
+  el stack completo. ASRock/RTX no cierra soporte 4/8 GB.
+- [ ] Repetir la matriz de captura con los micrófonos integrados/nativos de
+  las placas recicladas a 30/75/100 cm. La campaña USB Jieli
+  `voice-20260901T084132Z-1cfb53` fue inconclusa y no aprobó ningún perfil.
+- [ ] Conectar el endpoint físico aprobado al onboarding/provisionador R6 de cada
+  unidad. Hasta entonces `input_device="default"` sigue siendo un valor Lab y no
+  una selección automática del micrófono nativo; no inferir calidad por nombre.
+- [ ] Validar físicamente VAD WebRTC modo 2/3 y silence 380/500/600 ms, TTFAR,
+  barge-in temprano/medio/tardío, transcript preservado y contaminación por eco.
+- [ ] Extender captura/STT con hipótesis parciales correlacionadas cuando un
+  backend real las entregue; nunca ejecutar un parcial como orden final.
+- [ ] Medir cancelación de Piper: distinguir stop de playback de inferencia ONNX
+  ya iniciada y cambiar chunking sólo si la evidencia muestra el cuello.
+- [x] Implementar lifecycle generacional de TTS: cancelación lógica, descarte
+  stale, lock de backend, joins acotados y exclusión de assistant parcial.
+- [x] Implementar bandas STT configurables y evitar que una frase multi-palabra
+  de confianza extremadamente baja llegue al LLM como válida.
+- [x] Reemplazar calibración RMS sintética del panel por captura real RAM-only o
+  `not_supported` honesto.
+- [x] Agregar `ailen lab calibrate-voice`, incluido `--barge-in-only`; queda
+  ejecutar la matriz con operador y micrófono físico. El modo sin `--device`
+  autodetecta un conjunto bounded/deduplicado; métricas raw/gained/processed y
+  snapshot de fuentes son escalares RAM-only y no cambian configuración.
+- [x] Agregar manifests y CLI de calificación local sin descargas; 1–1.7B y
+  3–4B continúan candidatos hasta benchmark objetivo.
+- [ ] Evaluar APIs directas de baja latencia (OpenAI Responses, Anthropic,
+  DeepSeek, Kimi, MiniMax u otra) con clave propia, TTFT físico y calidad rioplatense antes de
+  promover una suscripción administrada.
+
+
+## Bloque 19 — R5B FacePack realista extensible
+
+- [x] generar lote amplio de expresiones H3 usando identidad/cámara/resolución constantes.
+- [x] conservar videos fuente como materia prima y fuera del package-data del wheel.
+- [x] proteger MP4 crudos contra commit accidental mientras se clasifican.
+- [ ] terminar/regenerar retornos naturales para emociones intensas, sueño, llanto y risa; no sustituirlos por afirmaciones de calidad no observada.
+- [x] reconstruir orden cronológico y clasificar visualmente los 85 clips con manifiesto trazable.
+- [x] separar estados persistentes (`idle`, `waiting`, `attentive`, `listening`, `processing`, `sleeping`) de microacciones, emociones y speech.
+- [x] definir FacePack v1 versionado con tablas, anchors, intensidad, loopability, interruptibilidad, retorno, límites y checksums.
+- [x] construir `libailen_face_engine.so` C++17 con C ABI; ningún LLM controla frames/UI.
+- [x] implementar scheduler base + espera variable + microacción + retorno, sin repetir MP4 completos.
+- [x] validar capas ROI de ojos/cejas/boca: el tracking funcionó pero la mezcla de identidades H3 deformó rasgos; FacePack 1.6 usa movimiento full-frame limpio y conserva ROI sólo para futuros assets compatibles. Speech sigue siendo una categoría independiente de emoción.
+- [x] wrapper `ctypes`, renderer Tk y failover estable `facepack -> headless` tanto al cargar como ante fallo nativo durante una sesión; `pixel` permanece disponible sólo manualmente.
+- [x] demostrar expresión nueva en Pack B sin recompilar el engine mediante test nativo.
+- [x] proyectar expresiones dinámicas del pack al schema de Tool/metadata conversacional mediante el contrato Face, sin lista paralela del renderer.
+- [x] benchmark ASRock de carga/RSS/decode/CPU/Tk; no extrapolar a Raspberry/Banghó/SF20BA.
+- [x] documentar formato, ABI, build, pack compiler y procedimiento de actualización independiente.
+- [x] separar preflight Tk de health nativo: cargar ABI/pack para PASS y advertir display facial deshabilitado ante fallo.
+- [x] auditoría post-Codex R5B: timing natural del pack (`duration=0`), failover native->headless en caliente y 730 tests; Ruff, mypy (145 + 6 módulos), C++ warnings, diff-check y wheel sin MP4/FacePack/binarios nativos.
+- [x] ampliar el FacePack desktop a 79 secuencias/2.888 frames lógicos/39 emociones listables, usando 76 fuentes `keep/trim` y dejando fuera sólo redundancias o material inseguro.
+- [x] ejecutar `transition_in/out`, prioridad, `gaze_compatible`, estilos de speech y retorno visual compatible sin permitir que el renderer cambie el estado de Core.
+- [x] endurecer ABI 1.4: `noexcept` en exports, captura total de excepciones, snapshots thread-local, copia/copia bilinear segura, mutex por handle y errores limpios de JPEG/pack.
+- [x] corregir deformación/doble imagen: preservar movimiento full-frame authored, usar borde constante y trackear capas composables sobre la cabeza actual.
+- [x] eliminar saltos directos desde pose expresiva a neutral mediante retornos de frames reales y deduplicación de payload, sin crossfade.
+- [x] validar físicamente ojos y boca en showcase focal: `blink_double` quedó limpio y speech full-frame mejoró labios/dientes; el seam casi no se percibe a velocidad real.
+- [ ] validar físicamente todos los retornos/emociones del showcase completo; algunos clips intensos todavía necesitan un retorno H3 authored.
+- [ ] validar DLL Windows y CMake en un host con toolchain/libjpeg; CMake no estaba instalado en ASRock.
+- [ ] compilar/medir perfil LOW real antes de decidir JPEG Q, resolución o derivado RGB565.
+- [ ] validar una sesión conversacional completa con `face_style="facepack"` y speech_level PCM real; el smoke X11 actual no sustituye esa prueba.
+
+
+## Bloque 20 — R5 Web Admin: cero datos sintéticos
+
+- [x] `/ia` consume runtime/config/proveedores reales y protege acciones con CSRF.
+- [x] `/audio` lee configuración efectiva y expone pruebas controladas.
+- [ ] eliminar conteos, recuerdos, métricas, logs y estados ficticios de templates productivos.
+- [ ] `/memoria`: conectar búsqueda/CRUD/exportación a repositorios reales con confirmaciones y política de privacidad.
+- [ ] `/diagnostico`: conectar LabDoctor, health y telemetría reales; nunca mostrar PASS o latencias inventadas.
+- [ ] `/personalidad`: cargar/guardar estado real de identidad, SocialMode y Personality Engine; quitar sliders hardcodeados.
+- [ ] `/vision`: leer valores efectivos de SettingsService y estado de cámara/detector; conservar `/api/vision/test` como prueba explícita.
+- [ ] `/herramientas`: reflejar ToolRegistry/servicios reales y estado MPRIS/WebSearch; no mostrar “habilitada” si sólo existe contrato o falta validación física.
+- [ ] `/rostro`: sincronizar configuración real del renderer estable y, más adelante, metadata del FacePack sin acoplarlo al LLM.
+- [ ] `/sistema` y `/setup`: eliminar defaults ficticios, mantener acciones destructivas bajo confirmación y validar flujo móvil real.
+- [ ] tests de regresión que fallen si vuelven a aparecer datos sintéticos presentados como mediciones reales.
+
+## Bloque 21 — R6 Vertical 1: updates firmados y recuperables
+
+- [x] contrato/manifiesto JSON estricto y versionado, con compatibilidad de
+  plataforma/config/DB y rechazo de campos/URLs/tamaños inseguros.
+- [x] firma Ed25519 de bytes exactos mediante OpenSSL, inputs regulares
+  `O_NOFOLLOW`, límites, timeout y errores públicos redacted.
+- [x] downloader HTTPS bounded/cancelable/reanudable por ETag + Range y CAS
+  inmutable verificado por tamaño/SHA-256.
+- [x] journal atómico de operaciones, aprobación efímera, un worker y
+  recuperación sólo tras re-fetch/reverify/reapproval.
+- [x] extracción tar segura, preparación atómica, activación/probation/rollback
+  sobre fronteras inyectadas y compatibilidad DB sin down-migration automática.
+- [x] configuración/factory side-effect-free; Web `/actualizaciones` + API
+  autenticada/CSRF consumen sólo `UpdateAdminService` y DTOs redacted.
+- [x] aceptación sintética firmada: éxito, rollback por candidato unhealthy y
+  reanudación sin Internet, systemd, `/opt` ni base real.
+- [ ] daemon privilegiado `ailen-updaterd` y protocolo de activación Appliance.
+- [ ] pipeline de firma productivo, bundle offline y política de retención/GC.
+- [ ] pruebas físicas de power loss, disco lleno, health y rollback en appliance.
+- [ ] provisionamiento firmado independiente de modelos, voces y FacePack.
+
 
 ## Reglas del board
 

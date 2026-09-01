@@ -21,17 +21,24 @@ Antes de modificar código o arquitectura:
 
 ## Estado actual
 
-AILEN está en `0.1.0-dev.0` con Foundation/Core/Web, Face/Vision, Audio/STT/TTS, AI Router adaptativo y R3C Controlled Tools integrados. El baseline actual supera 500 tests. La prioridad de software pasa a R4 sin fingir validaciones físicas: backend musical local/MPRIS, proveedor WebSearch real y robustez de instalación limpia; STT G600/Whisper y hardware objetivo se validan sólo en los equipos físicos correspondientes.
+AILEN está en `0.4.0-dev.0` con Foundation/Core/Web, Face/Vision, Audio/STT/TTS, AI Router adaptativo, R3C Controlled Tools, recordatorios, proveedores externos y el Vertical 1 de updates firmados en Lab integrados. El baseline completo actual es de 1145 tests en verde, Ruff limpio, mypy limpio en 164 módulos fuente y wheel limpio de 202 entradas. R5B FacePack 1.6 es el renderer lógico por defecto; un fallo degrada a headless y nunca elige `portrait`/`pixel` automáticamente. La prioridad actual es consolidar R4/R5 y completar sus validaciones físicas; R6 Appliance Debian sigue siendo el siguiente hito estructural porque el daemon privilegiado de updates aún no existe.
+
+## Continuidad de agentes Codex
+
+- Thread canónico de AILEN: `01a03a1f-e86e-7213-9581-af295af5c7f1`. Reanudarlo; no hacer `fork` ni iniciar otro chat salvo pedido explícito del usuario.
+- Codex Sol Max sigue siendo el agente principal para arquitectura, auditorías amplias, migraciones y cierre de gates.
+- Codex Spark se integra como subagente `spark_worker` para cambios acotados, búsqueda rápida, UI, documentación y regresiones focales. Está definido en `.codex/agents/spark_worker.toml` y debe recibir instrucciones explícitas de ejecutar los tests pertinentes antes de devolver el turno.
+- Comandos y perfiles locales: `.agents/SESSION_REGISTRY.md` y `scripts/resume_codex_ailen.sh`. Cambiar de modelo no cambia de thread.
 
 ## Reglas esenciales
 
 - La identidad del asistente no pertenece al LLM.
 - Memoria, personalidad, preferencias, reglas y permisos pertenecen a AILEN Core.
-- Un proveedor cloud, modelo local o LAN Brain debe ser reemplazable.
+- Un proveedor remoto, modelo local o LAN Brain debe ser reemplazable.
 - Ningún LLM recibe shell general ni acceso irrestricto al sistema.
 - Las herramientas se implementan mediante contratos explícitos y allowlist.
 - No versionar API keys, tokens, contraseñas, grabaciones reales, datos de clientes ni memoria privada.
-- No enviar historial completo a proveedores cloud; construir contexto mínimo.
+- No enviar historial completo a proveedores remotos; construir contexto mínimo.
 - `SHOP/PUBLIC` no puede exponer memoria privada espontáneamente.
 - La evolución de personalidad nunca modifica permisos o seguridad.
 - El producto debe degradar capacidades, no colapsar, cuando Internet/LAN/modelos no están disponibles.

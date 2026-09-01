@@ -1,4 +1,159 @@
 # Changelog — AILEN
+
+## [0.4.0-dev.0] — 2026-08-31
+
+### Changed
+- La selección local de instalación queda ligada a evidencia por
+  `(hardware_class, model_id, runtime)`: soporte declarado no sustituye una
+  medición. Runtime, CPU/CUDA y `gpu_layers` se eligen coherentemente desde la
+  calificación; no se infiere offload GPU ni se admite offload parcial sin
+  implementación y benchmark.
+- AGY/Antigravity y OpenCode quedan retirados end-to-end del producto. Configs
+  antiguas migran a `provider=auto` con warning y no existe adapter/runtime/UI/
+  secreto capaz de reactivarlos; sus benchmarks históricos se conservan.
+- Provider Manager admite múltiples `remote:<id>` con secretos/prioridad/health/
+  cooldown propios y transportes SSE reales para OpenAI Responses (`store=false`),
+  OpenAI Chat-compatible y Anthropic Messages. OpenAI, Anthropic, DeepSeek, Kimi
+  y MiniMax son presets no probados, sin modelo hardcodeado ni gasto en esta pasada.
+- Los defaults internacionales fijan Kimi en `api.moonshot.ai/v1` y MiniMax en
+  `api.minimax.io/v1`; no seleccionan endpoints chinos implícitamente. Sólo
+  OpenAI anuncia catálogo `live`; el resto permanece `manual` hasta verificar
+  su endpoint oficial específico.
+- El provisioning detecta hardware y genera un plan consentido con runtime,
+  mejor modelo target-qualified que entra, fallback, contexto, offload, reservas,
+  hash/licencia y assets. Candidatos no se instalan automáticamente y perfiles
+  Lab ya no fijan un modelo.
+- La selección aprobada puede activarse explícitamente después de verificar el
+  artefacto exacto. Un manifiesto atómico `0600` liga hardware, runtime, modelo,
+  contexto, offload y hash; el runner lo consume sin replantear por turno y lo
+  ignora por completo cuando local está deshabilitado.
+- Los envelopes de 16/32/64+ GB dejan de heredar un techo fijo de 6 GB: reservan
+  margen proporcional y escalan por RAM/VRAM disponible más evidencia objetivo.
+  El runtime local configurado es vinculante y un modelo automático no entra al
+  factory si sigue `candidate` o si su evidencia pertenece a otro runtime.
+- Captura incorpora target PipeWire explícito y cadena NS -> gain dB -> AGC
+  acotado con gate/hold/release -> limiter. `pipewire` conserva el default nativo
+  de `pw-record` sin exigir `pactl`, mientras `pipewire:<node>` nunca pierde su
+  target. Se elimina `audio.input_volume` decorativo; calibración mide
+  silencio/voz/SNR/clipping/WER sólo en RAM, propone el gate desde silencio y no
+  persiste PCM.
+- Telemetría de captura separa RMS raw, salidas DSP intermedias y clean final.
+  El evento de drain TTS cancelado precede al contador cero y a la siguiente
+  inferencia sobre el backend serializado.
+- La calibración de ruido del panel ya no devuelve RMS hardcodeado: mide el
+  input real de forma acotada y RAM-only o informa que no está disponible.
+- `lab calibrate-voice` usa la cadena DSP canónica y, sin `--device`, compara un
+  conjunto acotado/deduplicado de fuentes observables. Expone RMS/peak/SNR por
+  etapa, clipping, ganancia, falsos VAD y fuente efectiva sin persistir PCM.
+- El calibrador físico compara por defecto 30/75/100 cm y perfiles
+  `raw`/`noise_only`/`full`; Easy Effects queda como referencia externa sin
+  doble preamp/AGC. La primera campaña nueva sobre USB Jieli reunió sólo cinco
+  muestras a 75 cm, WER 0,5–1,0 y falsos triggers; queda registrada como
+  inconclusa, sin promover configuración. Para equipos reciclados se prioriza el
+  micrófono integrado/nativo de la placa, siempre sujeto a calificación física.
+- `/audio` deja de prometer AEC o latencia Piper fija y elimina la escritura
+  incorrecta de `amixer sset Master`: la medición Web sigue siendo backend-side,
+  acotada y read-only. El form guarda explícitamente campos `audio.*` y
+  `speech.*` bajo el handler combinado.
+- STT conserva confidence real en bandas configurables; audio dudoso repregunta
+  aunque produzca varias palabras y el piso de acciones sigue separado en 0.72.
+- El habla incremental usa IDs de generación, serializa TTS no concurrente,
+  descarta PCM stale y limita joins. Un turno interrumpido no se persiste como
+  respuesta assistant completa; stop de playback y drain ONNX se miden aparte.
+- `provider=auto` decide por modalidad, privacidad, complejidad, disponibilidad y
+  elegibilidad realtime; las prioridades quedan para equivalentes/fallbacks.
+- ModelPlanner ordena por calificación, evidencia y `quality_rank` dentro de la
+  reserva segura y mantiene un fallback pequeño. Nuevo manifiesto/CLI de
+  calificación no descarga pesos ni inventa hashes.
+- Nuevo `ailen lab calibrate-voice` para matriz física WebRTC/Vosk y barge-in
+  guiado, sin WAV/PCM persistente ni cambios automáticos de configuración.
+- `demo ai` deja de inventar un backend local simulado cuando todos los backends
+  están deshabilitados; degrada de forma explícita.
+- El turno de voz conserva confianza STT real, motor, duración, identificador,
+  origen barge-in, truncamiento y alternativas hasta Core. Las tools con efecto
+  repreguntan ante audio dudoso/truncado; un barge-in completo sigue siendo
+  ejecutable y una consulta de lectura no se bloquea por esa guarda.
+- Conversación por voz solapa streaming real del LLM con segmentación segura y
+  TTS/playback incremental en una cola bounded. Barge-in cancela frases futuras y
+  evita concatenar el fallback de otro proveedor tras una salida parcial.
+- Ollama y llama.cpp quedan tras una interfaz local común. Un llama.cpp propiedad
+  de AILEN carga un GGUF verificado bajo demanda; el monitor puede liberar sólo
+  modelos/runtimes ociosos bajo presión de memoria.
+- Perfiles 4/8/16/32/64+ GB incorporan envelopes de contexto/modelo/RAM libre. Son
+  límites de planificación con benchmark objetivo pendiente, no afirmaciones de
+  realtime ni calidad.
+- Saludos y charla abierta vuelven al LLM. La personalidad de instalación es una
+  asistente general rioplatense y usa el taller sólo cuando el contexto es técnico.
+- Integración de IA corregida para separar el producto local-first de los
+  proveedores remotos opcionales. `ai.local.enabled=false` ahora impide discovery,
+  construcción, arranque, prewarm, parser semántico y fallback local.
+- `/ia` controla el proveedor preferido y prioridades reales, muestra selección
+  versus última inferencia verificada, catálogos con procedencia, secrets
+  separados y reinicio requerido. Cada remoto conserva una ruta propia.
+- Requests externos privados se reconstruyen en el boundary de salida: sólo
+  turno actual e instrucciones orales genéricas; sin historial, memoria,
+  personalidad/persona, capabilities, tools, paths ni secretos.
+- Los experimentos AGY NDJSON y OpenCode se conservaron como evidencia de
+  rechazo: AGY fue funcional pero demasiado lento para voz en ASRock contendido;
+  OpenCode Free produjo respuestas sin texto visible y 429.
+- R6 Vertical 1 incorpora updates firmados en `LAB_SIMULATION`: manifiesto JSON
+  estricto, Ed25519/OpenSSL sobre bytes exactos, fuente HTTPS bounded, downloader
+  reanudable, CAS inmutable, journal atómico y aprobación efímera.
+- Releases verificadas se extraen con política tar fail-closed, se preparan por
+  rename atómico y atraviesan preflight/switch/probation/rollback mediante
+  fronteras inyectadas. No se restauran ni bajan automáticamente schemas SQLite.
+- Nuevo panel autenticado `/actualizaciones` y API CSRF consumen sólo DTOs del
+  `UpdateAdminService`; no reciben paths/URLs/hashes ni ejecutan shell, tar o
+  systemd. El lifecycle continúa aunque se cierre el navegador.
+- Aceptación E2E sintética cubre activación sana, rollback de candidato unhealthy
+  y reanudación ETag/Range con re-verificación y re-aprobación. Appliance mode
+  permanece honestamente deshabilitado hasta implementar `ailen-updaterd` y
+  validarlo físicamente; no se habilitan updates automáticos.
+- Alineado versionado/documentación con el estado real: R1-R3C integrados,
+  R4/R5 activos y 1145 tests como baseline completo actual tras retirar las
+  superficies específicas de AGY/OpenCode; Ruff, mypy (164 módulos),
+  diff-check y wheel limpio de 202 entradas permanecen en verde.
+- `ADR-006` aceptado como baseline técnico provisional para 0.4.x; la elección definitiva de appliance sigue sujeta a benchmarks en hardware objetivo.
+- Nuevo bloque R5B para un `FacePack` realista, versionado y extensible. Los videos H3 actuales son corpus crudo: no se integran al runtime ni al wheel hasta clasificación/recorte y diseño del motor.
+- `facepack` pasa a ser el renderer lógico por defecto; `portrait` queda sólo como opción legacy manual y `pixel` como opción explícita para hardware muy limitado.
+- Auditoría R5 distingue páginas conectadas de maquetas: memoria/diagnóstico/personalidad/vision/tools siguen abiertas hasta eliminar datos/defaults sintéticos y leer servicios reales.
+- R5B incorpora `facepack` como default lógico: engine C++17 con C ABI, wrapper
+  `ctypes`, pack externo versionado/checksummed y degradación limpia a headless.
+  `portrait`/`pixel` permanecen sólo como elecciones manuales.
+- Los 85 videos H3 fueron clasificados visualmente. Los MP4 siguen como materia
+  prima fuera del wheel; runtime decodifica JPEG/libjpeg y nunca reproduce video.
+- Estados persistentes usan scheduler no periódico de base/microacciones.
+  La QA física demostró que recortar ojos o boca de un clip H3 y componerlos
+  sobre otro cambia geometría/identidad aunque el tracking sea correcto.
+  FacePack 1.6 conserva los gestos oculares y speech actuales como movimiento
+  full-frame real; no mezcla rostros, no usa crossfade y retoma el affect
+  semántico al terminar speech. ROI composable permanece soportado sólo para
+  futuros assets realmente segmentables.
+- Pack desktop-lab: 90.25 MB, 79 secuencias/2.888 frames lógicos/6 estados, 39 emociones,
+  28 microacciones y 10 speech; benchmark ASRock y límites en ADR-012.
+- Preflight valida ABI + FacePack independientemente de Tkinter y expone fallo
+  recuperable como `WARN` con display facial deshabilitado, no como falso `PASS`.
+- La lista dinámica del FacePack alimenta la allowlist de `FaceExpressionTool` y
+  de emoción conversacional; Pack B puede exponer un id nuevo sin recompilar la
+  librería ni duplicar el catálogo del renderer en Core.
+- R5B ejecuta timing natural (`duration=0`), anchors/transiciones, prioridad,
+  `gaze_compatible`, estilos de speech y retorno visual subordinado a Core. Los
+  clips sin salida authored usan sus propios frames curados en reversa y comparten
+  payload, evitando el salto abrupto sin sintetizar imágenes. ABI 1.4 suma copia
+  bilinear segura y tracking de capas opcionales; captura excepciones y serializa cada handle.
+- Validación física focal: `blink_double` dejó de deformar ojos al usar su clip
+  completo; los diez `talk_*` dejaron de deformar labios/dientes y su seam es
+  apenas perceptible a velocidad real.
+- Gate histórico de R5B: 767 tests, Ruff y mypy (146 módulos AILEN + 6 del compilador)
+  limpios; C++17 compila con warnings como errores, diff-check limpio y wheel de
+  183 entradas/3.018.784 bytes inspeccionado sin MP4/FacePack/binarios nativos/raw H3.
+- Gate integrado posterior: 1019 tests, Ruff, mypy en 157 archivos fuente y
+  diff-check limpios; wheel de 195 entradas/3.069.600 bytes con updater/template
+  presentes y sin modelos, multimedia, FacePack, binarios nativos, keys ni Lab.
+
+### Release gate
+- No crear tag/release hasta auditar el working tree, ejecutar suite completa + Ruff + mypy + `git diff --check`, construir/inspeccionar wheel y verificar ausencia de secretos/assets crudos.
+
 - **R4 camera portability + persistent reminders (2026-08-24)**:
   - `[vision].camera_source` incorpora `auto|usb|rtsp`: USB/RTSP estrictos, auto V4L2-first con fallback RTSP; compatibilidad legacy sin permitir que el flag viejo sobreescriba selección explícita.
   - Debian Lab queda preparado para webcam USB reciclada; NC250 permanece como cámara RTSP opcional de LAN y sus credenciales no se persisten.
@@ -157,10 +312,10 @@ El proyecto usa versionado semántico durante desarrollo, con prereleases cuando
   - `BudgetPolicy` circuit breaker: `0 USD` significa no gastar, `None` significa sin límite interno y precios cloud desconocidos no se interpretan como cero; los precios vigentes deben configurarse explícitamente.
   - Constructor de contexto `AiContextBuilder` que produce prompts mínimos acotados en caracteres y tokens, integrando memorias y datos de negocio filtrados por `SocialPrivacyPolicy` y `OutboundPrivacyPolicy` (`src/ailen/ai/context.py`).
   - Cliente HTTP genérico OpenAI-compatible `GenericOpenAiBackend` construido exclusivamente con la librería estándar de Python (`urllib.request`), con timeouts estrictos, manejo de errores de red y parseo resiliente de respuestas y tool calls (`src/ailen/ai/http_backend.py`).
-  - Backends especializados para servidor HTTP local (`LocalAiBackend`), LAN Brain con awareness de trust boundary (`LanBrainAiBackend`) y Cloud con cálculo de costos por tokens (`CloudAiBackend`).
+  - Implementación histórica R3A de `LocalAiBackend`, `LanBrainAiBackend` y `CloudAiBackend`; R4 retiró el backend Cloud monolítico y lo sustituyó por remotos nombrados.
   - Orquestador de inferencia `AiOrchestrator` que ejecuta la secuencia de backends primario y fallbacks, registra telemetría de tokens/costo en SQLite y publica eventos en `EventBus` (`src/ailen/ai/orchestrator.py`).
   - Coordinador conversacional end-to-end `ConversationCoordinator` conectando `Transcript` STT -> `AiContextBuilder` -> `RuleBasedRouter` -> `AiOrchestrator` -> `AudioInteractionCoordinator.speak()` (`src/ailen/core/conversation.py`).
-  - Configuración extendida `[ai]`, `[ai.local]`, `[ai.lan]`, `[ai.cloud]`, serialización TOML recursiva/round-trip y validación de endpoint/model/pricing cuando un backend está habilitado.
+  - Configuración histórica `[ai.cloud]`; R4 la migra de forma fail-closed a `[ai.remote.providers.<id>]` y el esquema activo ya no la expone.
   - Nuevos comandos CLI: `ailen diagnose ai` y `ailen demo ai "<prompt>" [--dry-run]`.
   - Benchmark reproducible del AI Router (`tools/benchmark_ai_router.py`) con reportes DEV en `docs/benchmarks/dev_ai_router_benchmark.md` y `.json`; las cifras se regeneran y no se extrapolan a hardware objetivo.
   - Documentos de arquitectura y POCs: `docs/research/AI_ROUTER_POC.md`, `docs/research/LOCAL_LLM_BACKEND_POC.md`, `docs/research/LAN_BRAIN_POC.md`, `docs/research/CLOUD_PROVIDER_POC.md`, `ADR-009`.

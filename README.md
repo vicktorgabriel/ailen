@@ -8,8 +8,8 @@ La idea central no es crear un chatbot dentro de una computadora, sino un **disp
 
 ## Estado
 
-- Versión de trabajo: `0.1.0-dev.0`
-- Fase: definición y prototipo inicial.
+- Versión de trabajo: `0.4.0-dev.0`
+- Fase: consolidación R4/R5 sobre runtime físico de laboratorio ya funcional; FacePack nativo es el renderer lógico por defecto (fallo => headless, nunca portrait automático) y el siguiente hito es Appliance Debian.
 - Hardware objetivo del primer prototipo: Banghó Zero G05, 8 GB RAM, M.2 500 GB.
 - Sistema base previsto: Debian 13 minimal.
 - Primer objetivo de optimización posterior: SF20BA de 8 GB y 4 GB.
@@ -20,7 +20,7 @@ La idea central no es crear un chatbot dentro de una computadora, sino un **disp
 1. **La identidad no vive dentro del LLM.** Personalidad, memoria, preferencias, configuración y estado pertenecen a AILEN Core.
 2. **IA híbrida.** El mismo asistente puede usar LLM local, un cerebro LAN y/o APIs externas rápidas y económicas.
 3. **Degradación progresiva.** Si falla Internet, el nodo conserva las capacidades locales que pueda ejecutar. Si el cerebro LAN está apagado, puede usar local o nube.
-4. **Hardware reciclado primero.** El software debe ser medible y adaptable a 2, 4, 8 GB y equipos modernos.
+4. **Hardware reciclado primero.** El software debe ser medible y adaptable a 2, 4, 8 GB y equipos modernos. En los equipos reciclados se prioriza el micrófono integrado/nativo de la placa, pero cada endpoint se califica físicamente antes de persistirlo; un USB o Easy Effects no es requisito del producto.
 5. **Sin escritorio pesado.** El producto final debe arrancar directamente como appliance dedicado.
 6. **Administración web responsive.** Configuración y mantenimiento desde celular/PC por LAN, sin app móvil obligatoria.
 7. **Funciones limitadas y controladas.** Música, búsquedas, información del comercio, notas, recordatorios, presencia y conversación; el LLM no obtiene shell libre.
@@ -48,7 +48,7 @@ El primer prototipo útil debe poder:
 - detectar presencia/rostro sin identificación obligatoria;
 - escuchar y transcribir voz;
 - hablar mediante TTS;
-- conversar usando un router local/LAN/cloud;
+- conversar usando un router local/LAN/remotos nombrados;
 - recordar conversaciones y datos explícitamente guardados;
 - saludar en modo comercio sin resultar invasivo;
 - responder información configurada del negocio;
@@ -67,7 +67,7 @@ El primer prototipo útil debe poder:
 - `docs/architecture/MODULE_CONTRACTS.md`: contratos entre módulos.
 - `ROADMAP.md`: etapas y entregables.
 - `TASKS.md`: trabajo inmediato y primer slice integrable.
-- `docs/operations/AGENT_HANDOFF.md`: instrucciones para Gemini/OpenCode/Codex.
+- `docs/operations/AGENT_HANDOFF.md`: continuidad y roles para Codex Sol Max, Codex Spark y otros agentes; OpenCode queda sólo como antecedente histórico.
 - `docs/operations/R1_PARALLEL_WORK.md`: división concreta del primer trabajo paralelo.
 - `docs/context/COMMERCIAL_MVP.md`: alcance del primer piloto vendible.
 - `docs/testing/ACCEPTANCE_MATRIX.md`: criterios verificables por subsistema.

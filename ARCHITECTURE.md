@@ -4,7 +4,11 @@
 
 ## 1. Objetivo arquitectónico
 
-AILEN debe ejecutar un asistente físico expresivo en hardware heterogéneo, desde netbooks de 2 GB hasta PCs modernas, sin acoplar identidad, memoria ni experiencia del usuario a un modelo de IA concreto.
+AILEN debe ejecutar un asistente físico expresivo en hardware heterogéneo. Un
+nodo autónomo de producto apunta a equipos reciclados de 4 a 8 GB y debe poder
+conversar completamente local; una máquina de 2 GB sólo puede considerarse
+satélite si una medición demuestra ese perfil. Una PC potente puede aprovechar
+GPU y prestar LLM/TTS por LAN, pero no define el requisito mínimo.
 
 La arquitectura prioriza:
 
@@ -21,8 +25,8 @@ La arquitectura prioriza:
 
 ```text
                          ┌───────────────────────┐
-                         │     Cloud Provider    │
-                         │  modelo rápido/API   │
+                         │ Remote Provider(s)   │
+                         │ Responses/Chat/SSE   │
                          └───────────┬───────────┘
                                      │
                              HTTPS / gateway
@@ -42,7 +46,7 @@ La arquitectura prioriza:
 │                                           │                            │
 │  ┌──────────────────┐              ┌──────┴─────────────────────┐     │
 │  │ Responsive Web UI│◄────────────►│         AI Router          │     │
-│  └──────────────────┘              │ rules/local/LAN/cloud      │     │
+│  └──────────────────┘              │ rules/local/LAN/remote:*   │     │
 │                                    └──────┬───────┬─────────────┘     │
 └───────────────────────────────────────────┼───────┼────────────────────┘
                                             │       │
@@ -131,23 +135,60 @@ Estados de error y degradación deben ser ortogonales al estado expresivo:
 
 ## 7. Face
 
-El rostro debe ser vectorial/2D y barato de renderizar.
+El rostro debe ser 2D, barato de renderizar y reemplazable detrás de
+`FaceController`. A partir de R5B `facepack` es el default lógico; los renderers
+anteriores se conservan sólo como elecciones manuales:
+
+- `facepack`: engine nativo C++17 + pack externo de frames curados;
+- `portrait`/`vector`: renderers Tkinter legacy seleccionables manualmente;
+- `pixel`: renderer mínimo explícito para displays/hardware muy restringidos.
+
+Si engine/pack falla, el contrato se degrada a headless. No existe una ruta
+automática `facepack -> portrait`.
 
 Responsabilidades:
 
 - ojos y pupilas;
 - párpados;
 - cejas opcionales;
-- boca simple;
+- boca/articulación independiente de la emoción;
 - expresiones;
 - parpadeo no determinista;
 - mirada hacia coordenadas provistas por Vision;
 - animación de escucha/procesamiento/habla/reposo;
-- sincronización simple de boca con amplitud o marcas del TTS.
+- sincronización de boca con amplitud o, cuando exista, visemas del TTS.
 
 No generar imágenes mediante IA en runtime.
 
-El backend gráfico definitivo se decidirá por ADR después de probar DRM/KMS/SDL2 y una alternativa mínima sobre X/Wayland si fuera necesaria por drivers.
+El engine nativo no reproduce MP4. Los videos H3, FFmpeg, OpenCV y YuNet son
+insumos exclusivos del compilador offline. Runtime recibe un `.facepack`
+versionado con tablas, checksums y payloads JPEG accesibles por frame:
+
+```text
+Core: state / expression / gaze / speech
+                  │
+                  ▼
+        ctypes + C ABI estable
+                  │
+                  ▼
+  libailen_face_engine.so / ailen_face_engine.dll
+                  │
+                  ▼
+       ailen_default.facepack externo
+```
+
+Estados persistentes son una base neutral más microacciones no periódicas con
+esperas/cooldowns. No se hace loop de un clip idle/listening completo. FacePack
+1.4 compone base/expresión + delta ROI de ojos/cejas + ROI labial de reemplazo
+alineado. El compilador conserva el movimiento real de cabeza/cuerpo en clips
+full-frame y registra la pose de la cara por frame para aplicar ojos y boca en la
+posición, rotación y escala correctas. Los retornos curados recorren frames reales,
+sin crossfade ni mezcla de dos rostros. Las microacciones full-frame de cabeza se
+ejecutan cuando no hay una expresión transitoria. Agregar una emoción modifica
+assets/manifest/FacePack, no el engine.
+
+El transporte final de display puede evolucionar de Tk/X11 a SDL2/DRM/KMS sin
+cambiar Core ni el formato lógico. Ver ADR-012 y `FACEPACK_FORMAT_V1.md`.
 
 ## 8. Vision
 
@@ -171,7 +212,7 @@ Fuera del MVP:
 Pipeline conceptual:
 
 ```text
-microphone -> VAD/wake -> buffer -> STT -> text
+captura continua -> VAD/final de turno -> STT -> Transcript -> Core
 ```
 
 El backend podrá variar por hardware:
@@ -180,11 +221,21 @@ El backend podrá variar por hardware:
 - local de mayor calidad;
 - remoto opcional.
 
-El Core recibe texto normalizado más metadatos mínimos, no depende del backend.
+El Core recibe un turno normalizado con texto, confianza acústica real o
+desconocida, motor, duración, identificador, origen barge-in, truncamiento y
+alternativas si existen. Barge-in no implica que la frase esté cortada; alcanzar
+el límite máximo de captura sí. La confianza no se sintetiza cuando el backend no la entrega ni se
+reemplaza con la confianza semántica del resolver.
+
+Las acciones con efectos secundarios requieren turno no cortado, confianza
+acústica suficiente e intención inequívoca. Ante duda se repregunta; el texto
+no se descarta silenciosamente antes de que Core pueda aplicar esta política.
 
 ## 10. Speech / TTS
 
-El TTS debe admitir backend local y, si se decide, remoto.
+El TTS debe admitir Piper local siempre disponible y backends expresivos locales
+o LAN, como Chatterbox, en equipos capaces. Todos atraviesan el mismo coordinador
+de audio.
 
 La salida debe publicar eventos para la cara:
 
@@ -193,6 +244,24 @@ La salida debe publicar eventos para la cara:
 - `speech_finished`.
 
 La selección de dispositivo de audio debe ser configurable desde el panel.
+
+El modo de llamada solapa etapas sin esperar la respuesta completa:
+
+```text
+LLM delta -> segmentador de frase seguro -> cola TTS bounded(1) -> playback
+```
+
+La captura permanece activa para barge-in. La interrupción detiene playback,
+suprime frases futuras y propaga cancelación hacia TTS/modelo cuando el backend
+lo permite. El estado y las colas se limpian por turno. El contrato no promete
+cancelar una operación nativa que el backend no pueda abortar, ni llama
+"streaming" a dividir una respuesta ya completa.
+
+Cada habla tiene `turn_id/generation_id`. Cancelar invalida resultados tardíos,
+detiene playback y libera lógicamente el turno. Un sintetizador no concurrente
+queda serializado; si una inferencia ONNX no cancelable sigue activa, termina en
+background y su drain se mide sin permitir que reproduzca PCM obsoleto. Una
+respuesta interrumpida no se incorpora como mensaje assistant completo.
 
 ## 11. Memory
 
@@ -249,7 +318,7 @@ Orden conceptual de resolución:
 2. herramienta directa;
 3. LLM local;
 4. LAN Brain;
-5. cloud.
+5. uno o más `remote:<provider_id>`.
 
 No es obligatorio seguir ese orden para cada petición. El router considera:
 
@@ -262,13 +331,29 @@ No es obligatorio seguir ese orden para cada petición. El router considera:
 - preferencia de instalación;
 - longitud del contexto.
 
+Con `provider=auto`, esas señales eligen primero la clase de backend; las
+prioridades numéricas ordenan opciones equivalentes y fallbacks, no sustituyen
+la política adaptativa. Una preferencia explícita se honra si sigue siendo
+elegible. En voz, un provider medido como no-realtime no se promueve
+automáticamente a primary.
+
+Ollama y llama.cpp comparten `AiBackend`/`StreamingAiBackend`; LAN y proveedores
+externos implementan el mismo límite. El router no depende de un runtime concreto
+y agota los backends elegibles antes de degradar. `ai.local.enabled=false` es una
+decisión estricta de esa instalación: no descubre, arranca, calienta ni usa local;
+no elimina la capacidad local del producto.
+
+El saludo y la conversación abierta llegan al LLM. El resolver determinista se
+reserva para routing, herramientas verificables, errores operativos y repreguntas
+de STT; no actúa como chatbot genérico.
+
 ### Ejemplos
 
 `subir volumen` -> herramienta local, sin LLM.
 
-`qué anoté de esta placa` -> búsqueda SQLite + LLM local/cloud si hace falta redactar.
+`qué anoté de esta placa` -> búsqueda SQLite + LLM local/LAN/remoto si hace falta redactar.
 
-`explicame este componente` -> local, LAN o cloud según router.
+`explicame este componente` -> local, LAN o remoto según router.
 
 `cuánto está X ahora` -> web tool + síntesis.
 
@@ -431,15 +516,54 @@ Cada perfil se validará con:
 
 ## 23. Hardware profiles
 
-El detector de hardware sugerirá, pero no impondrá, uno de:
+El detector produce una recomendación explicable. `ProvisioningPlanner` la
+combina con catálogo y calificación específica de esa clase de hardware para
+emitir un `ProvisioningPlan` con runtime, modelo/fallback, contexto, offload,
+reservas, descarga y acciones consentidas. No descarga ni promueve un modelo sin
+consentimiento, descriptor verificado y evidencia `qualified` del hardware
+objetivo.
+Los envelopes actuales son límites de planificación, no soporte certificado:
 
-- `satellite`;
-- `cloud`;
-- `hybrid`;
-- `local`;
-- `lan_brain`.
+- `< 3,5 GB`: sin presupuesto local autónomo declarado; candidato satélite;
+- `4 GB nominal`: contexto 1024, hasta 1400 MB para modelo y piso libre de
+  700 MB;
+- `8 GB nominal`: contexto 2048, hasta 3000 MB para modelo y piso libre de
+  1200 MB;
+- `16 GB nominal`: contexto inicial 4096 y reserva de al menos 1800 MB;
+- `32 GB nominal`: contexto inicial 8192 y reserva de al menos 3000 MB;
+- `64 GB+`: contexto inicial 16384 y reserva de al menos 6000 MB.
 
-Los umbrales se definirán con benchmarks del prototipo, no de forma fija en esta etapa.
+Desde 16 GB no existe un techo fijo universal para el modelo: el presupuesto es
+la RAM actualmente disponible menos la mayor entre la reserva mínima y el 15%
+de la RAM total. En GPU se usa únicamente la VRAM dedicada disponible de un
+adaptador compatible; una iGPU/memoria compartida no se suma otra vez a la RAM.
+Contexto, modelo y offload finales quedan además limitados por evidencia
+calificada del artefacto y runtime exactos.
+
+Una GPU dedicada se perfila por VRAM medida y puede habilitar un modelo mayor y
+Chatterbox local sin convertirlos en requisito. Un nodo `lan_brain` expone el
+mismo contrato de inferencia/TTS a clientes confiables; el cliente conserva
+Core, privacidad, Vosk y Piper y vuelve a local/externo según su política.
+
+AILEN carga un GGUF verificado bajo demanda y puede descargar de memoria un
+modelo local ocioso cuando cruza el piso de su perfil. No detiene runtimes ajenos
+ni cambia de modelo por turno. El runtime persistido por provisioning
+(`ollama` o `llama_cpp`) es vinculante: otro runtime sano no puede reutilizar su
+calificación. Cada tier requiere medir RSS/peak, TTFA, calidad,
+tokens/s y convivencia con Vosk, Piper, SQLite y rostro en el hardware objetivo.
+
+La frontera plan/runtime se materializa en
+`data/provisioning/local-ai-selection.json`: el instalador sólo puede escribirla
+con consentimiento explícito después de verificar el artefacto exacto. El
+registro atómico `0600` liga clase de hardware, modelo, runtime, contexto,
+CPU/CUDA, offload y SHA-256. Al arrancar, Core la consume únicamente si
+`ai.local.enabled=true` y no existe un override Lab; si falta, fue alterada,
+cambió el hardware o el hash no coincide, falla cerrado y no promueve el
+candidato diagnóstico. La reevaluación ocurre al provisionar/reconfigurar, no
+por consulta.
+
+Los modos operativos siguen siendo `satellite`, `cloud`, `hybrid`, `local` y
+`lan_brain`; el administrador puede forzar una opción compatible.
 
 ## 24. Decisiones abiertas
 
@@ -448,8 +572,8 @@ Los umbrales se definirán con benchmarks del prototipo, no de forma fija en est
 - backend gráfico;
 - STT baseline por perfil;
 - TTS baseline;
-- LLM baseline local;
-- proveedores cloud iniciales;
+- modelo/quant local aprobado por tier tras benchmark físico;
+- benchmark y calificación realtime de proveedores remotos iniciales;
 - protocolo multi-node;
 - sistema de descubrimiento LAN;
 - formato final de releases;

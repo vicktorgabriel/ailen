@@ -13,6 +13,10 @@ dist/
 *.egg-info/
 release/*.tar.gz
 release/*.zip
+*.facepack
+*.dll
+*.dylib
+*.so
 
 # Runtime / local data
 var/
@@ -42,3 +46,6 @@ recordings/
 .idea/
 .DS_Store
 Thumbs.db
+# H3 raw face corpus — material de trabajo, no package/release
+src/ailen/face/assets/*.mp4
+src/ailen/face/assets/raw_h3/

@@ -12,4 +12,4 @@ Documento de normas internas del proyecto.
 - Mantener datos persistentes separados de las releases.
 - No crear commits ni publicar cambios sin autorización del propietario.
 - Revisar dependencias nuevas por consumo y compatibilidad con Debian 13.
-- Tratar `AILEN` como nombre provisional hasta decidir la marca definitiva.
+- `AILEN` es el nombre estable del proyecto/plataforma; la disponibilidad marcaria/legal se verifica antes de comercialización formal y no cambia la separación entre plataforma e identidad visible del personaje.

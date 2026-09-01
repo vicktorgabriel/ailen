@@ -4,7 +4,7 @@
 # Copy this file to config/ailen.toml or /etc/ailen/ailen.toml
 # Do NOT store real API keys or passwords directly in this file.
 
-schema_version = 1
+schema_version = 3
 
 [node]
 node_id = "ailen-bangho-01"
@@ -20,7 +20,10 @@ display_name = "Asistente"
 [display]
 enabled = true
 backend = "auto"               # auto, sdl2, drm, x11, headless
-face_style = "vector"           # vector, pixel
+face_style = "facepack"         # facepack, portrait, vector, pixel
+face_engine_library = ""        # empty = runtime/native/<platform library>
+facepack_path = "runtime/facepacks/ailen_default.facepack"
+facepack_root = "runtime/facepacks" # trusted root; traversal/symlinks outside are rejected
 width = 1280
 height = 720
 fullscreen = true
@@ -29,7 +32,16 @@ fps_limit = 30
 [audio]
 input_device = "default"        # use "auto" for hot-plug capture discovery
 output_device = "default"       # use "auto" for hot-plug playback discovery
-input_volume = 80
+input_processing_mode = "auto"  # auto, raw or easyeffects (already processed)
+capture_gain_db = 0.0           # bounded digital pre-gain; calibrate before changing
+auto_gain_enabled = false
+auto_gain_target_rms = 0.12
+max_auto_gain_db = 18.0
+auto_gain_attack_ms = 120.0
+auto_gain_release_ms = 600.0
+auto_gain_noise_gate_rms = 0.008 # AGC never increases gain below this input RMS
+auto_gain_gate_hold_ms = 300.0  # bridge short speech pauses before gain decays
+capture_limiter_peak = 0.98
 output_volume = 80
 music_volume = 60
 sample_rate = 16000
@@ -55,6 +67,9 @@ stt_language = "es"
 stt_fallback_engine = "none"
 stt_fallback_model_path = ""
 stt_fallback_confidence_threshold = 0.72
+voice_action_min_confidence = 0.72 # side-effecting voice commands below this ask for repetition
+stt_noise_confidence_max = 0.20 # below this is acoustic noise, never valid conversation
+stt_conversation_min_confidence = 0.45 # below this asks for a brief repetition
 stt_model_path = ""            # path to vosk/whisper model directory or file
 tts_engine = "mock"            # mock, piper, chatterbox, cloud
 tts_voice = "es_ES-standard"   # e.g. es_ES-davefx-medium
@@ -82,44 +97,139 @@ interruption_calibration_ms = 160
 interruption_leak_multiplier = 1.25
 
 [ai]
-provider = "mock"              # mock, local, lan_brain, cloud
-model = "default"
+provider = "auto"              # auto, local, lan_brain, remote:<provider_id>
 max_tokens = 512
 temperature = 0.6
 context_recent_messages = 4
 context_char_budget = 2400
 timeout_seconds = 10.0
 daily_budget_usd = 1.0
-allow_cloud = true
+allow_remote = true
+allow_sanitized_external_prompts = false  # only the current turn may leave Core
 
 [ai.local]
 enabled = false
-endpoint = "http://127.0.0.1:8080/v1"
-model = "local-model"
+endpoint = "http://127.0.0.1:11434/v1"
+model = ""                     # selected by provisioning; explicit lab override is allowed
 timeout_seconds = 20.0
 context_tokens = 2048
-# keep_alive = "24h"  # optional: avoid cold starts on an always-on node
+priority = 40
+runtime = "auto"               # auto, ollama, llama_cpp
+intent_model = ""
+intent_timeout_seconds = 5.0
 
 [ai.lan]
 enabled = false
+provider = "openai_compatible"
 endpoint = "http://192.168.1.100:8080/v1"
-model = "lan-model"
-trusted = false             # opt-in: only mark true for a LAN Brain you control/trust
+model = ""
+trusted = false
 timeout_seconds = 15.0
+priority = 30
 
-[ai.cloud]
+[ai.remote]
+enabled = true
+
+# Presets define protocol/endpoints only. Model IDs are selected manually or
+# loaded from a live catalog; no preset claims that a model is currently valid.
+[ai.remote.providers.openai]
 enabled = false
-provider = "openai_compatible" # configure a current provider explicitly
+preset = "openai"
+protocol = "openai_responses"
+endpoint = "https://api.openai.com/v1"
+model = ""
+api_key_env = "AILEN_OPENAI_API_KEY"
+api_key_file = "remote_openai_key"
+auth_mode = "api_key"
+priority = 40
+timeout_seconds = 10.0
+streaming_enabled = true
+voice_realtime_eligible = false
+qualification_status = "configured"
+catalog_mode = "live"
+
+[ai.remote.providers.anthropic]
+enabled = false
+preset = "anthropic"
+protocol = "anthropic_messages"
+endpoint = "https://api.anthropic.com/v1"
+model = ""
+api_key_env = "AILEN_ANTHROPIC_API_KEY"
+api_key_file = "remote_anthropic_key"
+auth_mode = "api_key"
+priority = 50
+timeout_seconds = 10.0
+streaming_enabled = true
+voice_realtime_eligible = false
+qualification_status = "configured"
+catalog_mode = "manual"
+anthropic_version = "2023-06-01"
+
+[ai.remote.providers.deepseek]
+enabled = false
+preset = "deepseek"
+protocol = "openai_chat"
+endpoint = "https://api.deepseek.com"
+model = ""
+api_key_env = "AILEN_DEEPSEEK_API_KEY"
+api_key_file = "remote_deepseek_key"
+auth_mode = "api_key"
+priority = 60
+timeout_seconds = 10.0
+streaming_enabled = true
+voice_realtime_eligible = false
+qualification_status = "configured"
+catalog_mode = "manual"
+
+[ai.remote.providers.kimi]
+enabled = false
+preset = "kimi"
+protocol = "openai_chat"
+endpoint = "https://api.moonshot.ai/v1"
+model = ""
+api_key_env = "AILEN_KIMI_API_KEY"
+api_key_file = "remote_kimi_key"
+auth_mode = "api_key"
+priority = 70
+timeout_seconds = 10.0
+streaming_enabled = true
+voice_realtime_eligible = false
+qualification_status = "configured"
+catalog_mode = "manual"
+
+[ai.remote.providers.minimax]
+enabled = false
+preset = "minimax"
+protocol = "openai_chat"
+endpoint = "https://api.minimax.io/v1"
+model = ""
+api_key_env = "AILEN_MINIMAX_API_KEY"
+api_key_file = "remote_minimax_key"
+auth_mode = "api_key"
+priority = 80
+timeout_seconds = 10.0
+streaming_enabled = true
+voice_realtime_eligible = false
+qualification_status = "configured"
+catalog_mode = "manual"
+
+# Add any number of separately named compatible providers. Use a distinct
+# secret env/file for each provider; never put the secret value in TOML.
+[ai.remote.providers.my_openai_compatible]
+enabled = false
+preset = "openai_compatible"
+protocol = "openai_chat"
 endpoint = ""
 model = ""
-api_key_env = "AILEN_AI_CLOUD_API_KEY"
-api_key_file = "ai_cloud_key"
-daily_budget_usd = 1.0
-monthly_budget_usd = 20.0
+api_key_env = ""
+api_key_file = ""
+auth_mode = "api_key"
+priority = 90
 timeout_seconds = 10.0
-# input_cost_per_million = 0.0   # REQUIRED when enabling cloud: set current provider pricing
-# output_cost_per_million = 0.0  # REQUIRED when enabling cloud: set current provider pricing
-
+streaming_enabled = true
+voice_realtime_eligible = false
+qualification_status = "configured"
+catalog_mode = "manual"
 [memory]
 sqlite_path = "data/ailen.db"
 fts_enabled = true
@@ -154,7 +264,7 @@ rate_limit_rpm = 60
 
 [network]
 # Outbound network permission for controlled WebSearch/WebFetch tools.
-# Independent from ai.cloud.enabled/allow_cloud.
+# Independent from conversational remote-provider permissions.
 outbound_web_enabled = false
 web_search_provider = "none"
 web_search_region = "ar-es"
@@ -163,6 +273,11 @@ web_search_region = "ar-es"
 channel = "beta"               # nightly, beta, stable
 auto_check = false
 check_interval_hours = 24
+manifest_url = ""
+manifest_signature_url = ""
+trust_public_key_path = ""
+auto_install = false
+maintenance_window = "03:00"
 
 [logging]
 level = "INFO"                 # DEBUG, INFO, WARNING, ERROR, CRITICAL
