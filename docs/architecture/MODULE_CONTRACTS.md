@@ -558,6 +558,23 @@ MemoryAdminService
 UpdateAdminService
 ```
 
+`MemoryAdmin` proyecta `MemoryPage`/`MemoryItem` y permite listado paginado,
+lectura por ID, alta/edición/borrado individual y exportación acotada. El
+repositorio posee el SQL parametrizado; la Web sólo autentica, valida CSRF y
+renderiza. El alcance default es PUBLIC; incluir PRIVATE/RESTRICTED en pantalla
+/exportación requiere opt-in explícito del admin, independiente del modo social.
+Guardar/borrar/exportar exige confirmación. No expone purga, paths, credenciales,
+notas, recordatorios ni mensajes como si fueran recuerdos explícitos.
+
+`DiagnosticsAdmin` entrega `DiagnosticsSnapshot`: salud del proceso actual,
+checks de disponibilidad y escalares de la última sesión finalizada. GET no
+arranca LabDoctor; `run_checks()` exige acción administrativa POST+CSRF y evita
+concurrencia. El lector de reportes tiene root inyectado, tamaño/cantidad
+acotados y rechazo de symlinks; sólo proyecta fecha y métricas numéricas finitas
+allowlisted. `execution_mode=real` indica backends no simulados, no certificación
+física. Reportes legacy/simulados nunca se promueven a medición real. No comparte
+logs, paths, errores internos ni contenido conversacional.
+
 `UpdateAdminService` proyecta sólo DTOs acotados. La Web no recibe URLs de
 artefactos, hashes de confianza, paths locales ni primitivas de extracción,
 procesos o servicios.

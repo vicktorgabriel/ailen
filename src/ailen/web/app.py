@@ -9,7 +9,7 @@ import json
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any
@@ -17,6 +17,8 @@ from urllib.parse import parse_qs, quote
 
 from ailen.audio.calibration import NoiseCalibrator
 from ailen.domain.models import utc_now_iso
+from ailen.services.diagnostics_admin_service import DiagnosticsAdmin
+from ailen.services.memory_admin_service import MemoryAdmin
 from ailen.updates.contracts import (
     OperationStatus,
     UpdateChannel,
@@ -25,6 +27,10 @@ from ailen.updates.contracts import (
     UpdatePhase,
 )
 from ailen.updates.service import DisabledUpdateService
+from ailen.web.diagnostics_view import diagnostics_content
+from ailen.web.face_view import face_context
+from ailen.web.memory_view import memory_content
+from ailen.web.pers_view import personality_context
 from ailen.web.services import (
     AuthService,
     SettingField,
@@ -32,7 +38,11 @@ from ailen.web.services import (
     StatusService,
     UpdateAdminService,
 )
+from ailen.web.setup_view import setup_context
+from ailen.web.sys_view import system_context
 from ailen.web.templates import render
+from ailen.web.tools_view import tools_context
+from ailen.web.vision_view import vision_context
 
 logger = logging.getLogger("ailen.web.app")
 
@@ -200,6 +210,8 @@ class AILENWebApp:
         runtime_manager: Any = None,
         updates: UpdateAdminService | None = None,
         noise_calibrator: NoiseCalibrator | None = None,
+        memory: MemoryAdmin | None = None,
+        diagnostics: DiagnosticsAdmin | None = None,
     ) -> None:
         self._auth = auth
         self._status = status
@@ -213,6 +225,8 @@ class AILENWebApp:
         from ailen.face.animator import FaceAnimator
         self._animator = FaceAnimator()
         self._noise_calibrator = noise_calibrator
+        self._memory = memory
+        self._diagnostics = diagnostics
         self._updates = updates or DisabledUpdateService(
             channel=UpdateChannel.BETA,
             reason="update service is not configured",
@@ -305,6 +319,22 @@ class AILENWebApp:
         redirect = self._require_auth(request)
         if redirect is not None:
             return redirect
+
+        if path == "/diagnostico/run":
+            if method != "POST":
+                return WebResponse.json({"error": "método no permitido"}, status=405)
+            if not self._check_csrf(request):
+                return self._admin_error(request, "CSRF inválido.", 403)
+            if self._diagnostics is None:
+                return self._admin_error(request, "Diagnóstico no disponible.", 503)
+            if not self._diagnostics.run_checks():
+                return self._admin_error(request, "Ya hay una comprobación en curso.", 409)
+            return WebResponse.redirect("/diagnostico")
+
+        if path.startswith("/memoria/"):
+            if method != "POST":
+                return WebResponse.json({"error": "método no permitido"}, status=405)
+            return self._memory_action(request, path.removeprefix("/memoria/"))
 
         if path == "/config":
             if method == "GET":
@@ -552,27 +582,26 @@ class AILENWebApp:
 
     def _personality_page(self, request: WebRequest) -> WebResponse:
         _, csrf = self._session(request)
-        content = render(
-            "personality.html",
-            csrf=csrf or "",
-            display_name="Ailén",
-            sel_workshop=" selected",
-            sel_shop="",
-            sel_home="",
-            sel_public="",
-            sel_private="",
-            chk_rioplatense=" checked",
-            chk_neutral="",
-            chk_informal=" checked",
-            chk_formal="",
-            chk_evolution=" checked",
-            chk_freeze="",
-            val_humor="58",
-            val_verbosity="42",
-            val_curiosity="30",
-            val_patience="85",
+        content = self._flash(request) + render(
+            "personality.html", **{**personality_context(self._effective_config()), "csrf": csrf or ""}
         )
         return self._page(request, "Personalidad", content, active="personalidad")
+
+    def _effective_config(self):
+        """Config efectiva del SettingsService; sin él, los defaults de Core."""
+        from ailen.core.config import AILENConfig
+
+        return self._settings.get_config() if self._settings else AILENConfig()
+
+    @staticmethod
+    def _flash(request: WebRequest) -> str:
+        """Banner de guardado/error desde la query; el texto siempre se escapa."""
+        params = {k: v[0] for k, v in parse_qs(request.query).items() if v}
+        if params.get("error"):
+            return f'<div class="notice error">{html.escape(params["error"][:200], quote=True)}</div>'
+        if params.get("saved") == "1":
+            return '<div class="notice ok">Cambios guardados. Algunos requieren reiniciar AILEN.</div>'
+        return ""
 
     def _audio_page(self, request: WebRequest) -> WebResponse:
         from ailen.audio.alsa_backend import AlsaDeviceEnumerator
@@ -1570,73 +1599,107 @@ class AILENWebApp:
 
 
     def _memory_page(self, request: WebRequest) -> WebResponse:
-        content = render("memory.html")
+        if self._memory is None:
+            return self._admin_error(request, "Memoria no disponible.", 503)
+        params = {k: v[0] for k, v in parse_qs(request.query).items() if v}
+        try:
+            query = params.get("q", "")
+            include_private = params.get("include_private") == "1"
+            page = self._memory.list_memories(query, include_private, int(params.get("page", "1")))
+            editing = self._memory.get(params["edit"], include_private) if params.get("edit") else None
+            _, csrf = self._session(request)
+            content = memory_content(
+                page, csrf=csrf or "", query=query, include_private=include_private,
+                editing=editing, saved=params.get("saved") == "1",
+            )
+        except ValueError:
+            return self._admin_error(request, "Búsqueda o página inválida.", 400)
+        except LookupError:
+            return self._admin_error(request, "Recuerdo no encontrado en este alcance.", 404)
+        except Exception:  # noqa: BLE001 - do not expose private backend errors
+            logger.error("Memory administration unavailable")
+            return self._admin_error(request, "Memoria no disponible.", 503)
         return self._page(request, "Memoria", content, active="memoria")
+
+    def _admin_error(self, request: WebRequest, message: str, status: int) -> WebResponse:
+        response = self._page(request, "Administración", f"<p role=\"alert\">{html.escape(message)}</p>")
+        response.status = status
+        return response
+
+    def _memory_action(self, request: WebRequest, action: str) -> WebResponse:
+        if not self._check_csrf(request):
+            return self._admin_error(request, "CSRF inválido.", 403)
+        if self._memory is None:
+            return self._admin_error(request, "Memoria no disponible.", 503)
+        data = request.form()
+        confirmed = data.get("confirm") == "yes"
+        try:
+            if action in {"create", "update"}:
+                if action == "update" and not data.get("memory_id"):
+                    raise ValueError("Falta el identificador del recuerdo.")
+                self._memory.save(
+                    data.get("content", ""), data.get("category", "general"),
+                    data.get("scope", "PRIVATE"),
+                    data.get("memory_id", "") if action == "update" else "",
+                    confirmed=confirmed,
+                )
+            elif action == "delete":
+                self._memory.delete(data.get("memory_id", ""), confirmed)
+            elif action == "export":
+                records = self._memory.export(
+                    data.get("q", ""), data.get("include_private") == "1", confirmed,
+                )
+                response = WebResponse.json({
+                    "schema_version": 1, "exported_at": utc_now_iso(),
+                    "kind": "explicit_memories", "count": len(records),
+                    "memories": [asdict(item) for item in records],
+                })
+                response.headers.update({
+                    "Content-Disposition": 'attachment; filename="ailen-memories.json"',
+                    "Cache-Control": "no-store",
+                })
+                return response
+            else:
+                return self._admin_error(request, "Acción no encontrada.", 404)
+        except ValueError as exc:
+            return self._admin_error(request, str(exc), 400)
+        except LookupError:
+            return self._admin_error(request, "Recuerdo no encontrado.", 404)
+        except Exception:  # noqa: BLE001 - do not expose private backend errors
+            logger.error("Memory administration failed")
+            return self._admin_error(request, "Memoria no disponible.", 503)
+        return WebResponse.redirect("/memoria?saved=1")
 
     def _tools_page(self, request: WebRequest) -> WebResponse:
         _, csrf = self._session(request)
-        content = render(
-            "tools.html",
-            csrf=csrf or "",
-            chk_web_search=" checked",
-            sel_ddgs=" selected",
-            sel_brave="",
-            sel_tavily="",
-            sel_results_3=" selected",
-            sel_results_5="",
+        content = self._flash(request) + render(
+            "tools.html", **{**tools_context(self._effective_config()), "csrf": csrf or ""}
         )
         return self._page(request, "Herramientas & Red", content, active="herramientas")
 
     def _vision_page(self, request: WebRequest) -> WebResponse:
         _, csrf = self._session(request)
-        content = render(
-            "vision.html",
-            csrf=csrf or "",
-            sel_cam_auto="",
-            sel_cam_usb=" selected",
-            sel_cam_rtsp="",
-            sel_cam_disabled="",
-            sel_det_yunet=" selected",
-            sel_det_haar="",
-            sel_fps_5=" selected",
-            sel_fps_10="",
-            sel_fps_15="",
-            val_face_conf="0.85",
-            val_face_conf_int="85",
-            entry_debounce="500",
-            exit_debounce="2000",
-            chk_auto_greet=" checked",
+        content = self._flash(request) + render(
+            "vision.html", **{**vision_context(self._effective_config()), "csrf": csrf or ""}
         )
         return self._page(request, "Visión & Presencia", content, active="vision")
 
     def _face_page(self, request: WebRequest) -> WebResponse:
         _, csrf = self._session(request)
-        content = render(
-            "face.html",
-            csrf=csrf or "",
-            sel_face_amber=" selected",
-            sel_face_emerald="",
-            sel_face_cyan="",
-            val_lip_sens="1.00",
-            val_lip_sens_int="100",
+        content = self._flash(request) + render(
+            "face.html", **{**face_context(self._effective_config()), "csrf": csrf or ""}
         )
         return self._page(request, "Rostro & Avatar", content, active="rostro")
 
     def _system_page(self, request: WebRequest) -> WebResponse:
         _, csrf = self._session(request)
         try:
-            runtime = self._status.get_runtime_state()
-            node_name = runtime.node_id
+            node_id = self._status.get_runtime_state().node_id
         except Exception:
             logger.exception("get_runtime_state falló en _system_page")
-            node_name = "no disponible"
-        content = render(
-            "system.html",
-            csrf=csrf or "",
-            node_name=node_name,
-            chk_appliance="",
-            chk_lab=" checked",
-            web_port="8080",
+            node_id = "no disponible"
+        content = self._flash(request) + render(
+            "system.html", **{**system_context(self._effective_config(), node_id), "csrf": csrf or ""},
         )
         return self._page(request, "Sistema & Nodo", content, active="sistema")
 
@@ -1766,29 +1829,26 @@ class AILENWebApp:
         )
 
     def _diagnostics_page(self, request: WebRequest) -> WebResponse:
-        content = render("diagnostics.html")
+        if self._diagnostics is None:
+            return self._admin_error(request, "Diagnóstico no disponible.", 503)
+        _, csrf = self._session(request)
+        content = diagnostics_content(self._diagnostics.snapshot(), csrf or "")
         return self._page(request, "Diagnóstico", content, active="diagnostico")
 
     def _setup_page(self, request: WebRequest) -> WebResponse:
-        hw = self._get_hw_report()
-        content = render(
-            "setup.html",
-            cpu_name=hw.cpu.model,
-            cpu_cores=str(hw.cpu.cores_logical),
-            ram_total_mb=f"{hw.memory.total_mb:.0f}",
-            rec_profile=hw.recommended_profile.value,
+        _, csrf = self._session(request)
+        content = self._flash(request) + render(
+            "setup.html", **{**setup_context(self._get_hw_report(), self._effective_config()), "csrf": csrf or ""},
         )
         return self._page(request, "Setup Wizard", content, active="setup")
 
     def _get_hw_report(self):
+        """Hardware detectado o None; nunca fabrica valores."""
         try:
             return self._status.get_hardware_report()
         except Exception:
             logger.exception("get_hardware_report falló")
-            from ailen.domain.models import HardwareReport, MemoryInfo
-            rep = HardwareReport()
-            rep.memory = MemoryInfo(total_mb=8192.0)
-            return rep
+            return None
 
     # -- configuración ----------------------------------------------------
 
@@ -1959,9 +2019,9 @@ class AILENWebApp:
                 target = "/personalidad?saved=1"
             elif section == "vision":
                 target = "/vision?saved=1"
-            elif section == "face":
+            elif section in ("face", "display"):
                 target = "/rostro?saved=1"
-            elif section == "tools":
+            elif section in ("tools", "network"):
                 target = "/herramientas?saved=1"
             elif section in ("system", "node"):
                 target = "/sistema?saved=1"
@@ -1979,9 +2039,9 @@ class AILENWebApp:
             return WebResponse.redirect(f"/personalidad?error={quote(err_msg)}")
         if section == "vision":
             return WebResponse.redirect(f"/vision?error={quote(err_msg)}")
-        if section == "face":
+        if section in ("face", "display"):
             return WebResponse.redirect(f"/rostro?error={quote(err_msg)}")
-        if section == "tools":
+        if section in ("tools", "network"):
             return WebResponse.redirect(f"/herramientas?error={quote(err_msg)}")
         if section in ("system", "node"):
             return WebResponse.redirect(f"/sistema?error={quote(err_msg)}")

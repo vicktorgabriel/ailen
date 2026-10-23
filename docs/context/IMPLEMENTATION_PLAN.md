@@ -4,6 +4,16 @@
 
 > **Estado 2026-08-30:** las fases A-H de este documento describen el camino histórico y su baseline ya está implementado. La ejecución inmediata vive en `TASKS.md` (R4/R5 + R5B FacePack) y `ROADMAP.md`; el siguiente bloque estructural no cerrado es Appliance Debian/Updater. No reconstruir Foundation/Core a partir de este plan.
 
+## Ejecución vigente — 2026-10-02
+
+El slice R5 de memoria/diagnóstico conecta las vistas a servicios de aplicación:
+recuerdos explícitos con CRUD/búsqueda/exportación y diagnóstico con health,
+LabDoctor a pedido y telemetría de sesión finalizada. No representa cierre de
+R5: siguen pendientes personalidad, visión, herramientas, rostro, sistema/setup,
+comercio, notas/recordatorios administrables e historial. Continuar por esos
+bloques de `TASKS.md`, manteniendo las pruebas físicas R4/R5B como gates separados.
+R6 Appliance es el siguiente hito estructural, con updater productivo aún abierto.
+
 ## 1. Objetivo inmediato
 
 Construir un prototipo end-to-end en la Banghó Zero G05 de 8 GB que pueda:

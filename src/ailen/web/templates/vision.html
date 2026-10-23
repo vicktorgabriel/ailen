@@ -1,12 +1,16 @@
 <div class="page-header">
   <div>
-    <h1 class="page-title">Visión Artificial & Presencia</h1>
-    <p class="page-lede">Configuración de fuentes de cámara USB o RTSP, detector facial YuNet y debouncing de presencia.</p>
+    <h1 class="page-title">Visión &amp; Presencia</h1>
+    <p class="page-lede">Configuración de fuente de cámara, detector facial y ventanas de confirmación de presencia.</p>
   </div>
 </div>
 
-<div class="notice ok">
-  <span>🔒 <strong>Garantía de Privacidad Física:</strong> Las imágenes de la cámara se procesan al 100% de forma local en memoria RAM. No se guardan fotos ni se envían fotogramas a la nube.</span>
+<div class="notice info">
+  <span><strong>Procesamiento local:</strong> las observaciones de presencia se calculan en memoria RAM sin enviar fotogramas a proveedores externos.</span>
+</div>
+
+<div id="vision-alert" style="display: none;" class="notice info" role="status">
+  <span id="vision-alert-text"></span>
 </div>
 
 <form method="post" action="/config" style="display: flex; flex-direction: column; gap: 1.25rem;">
@@ -14,17 +18,16 @@
   <input type="hidden" name="section" value="vision">
 
   <div class="grid grid-cols-2">
-    <!-- Bloque 1: Fuente de Cámara & Detector -->
     <div class="card">
       <div class="card-header">
-        <h2 class="card-title">📷 Origen de Cámara & Motor</h2>
-        <span class="status-pill ok">YuNet Neural</span>
+        <h2 class="card-title">Origen de Cámara &amp; Detector</h2>
+        <span class="badge-neutral">{{ vision_status }} · {{ detector_label }}</span>
       </div>
       <div class="card-body">
         <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.35rem 0; margin-bottom: 0.5rem;">
           <div>
-            <div style="font-weight: 600; font-size: 0.88rem;">Detección Visual Habilitada</div>
-            <div class="form-help">Activa el procesamiento de cámara para presencia y mirada.</div>
+            <div style="font-weight: 600; font-size: 0.88rem;">Detección de presencia habilitada</div>
+            <div class="form-help">Activa la lectura de cámara configurada al iniciar el servicio de visión.</div>
           </div>
           <label class="switch">
             <input type="hidden" name="__present.vision.enabled" value="1">
@@ -34,67 +37,61 @@
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="f-camera-source">Fuente de Entrada</label>
+          <label class="form-label" for="f-camera-source">Fuente de cámara</label>
           <select id="f-camera-source" name="vision.camera_source">
-            <option value="auto"{{ sel_cam_auto }}>Automático (Detecta USB antes de RTSP)</option>
-            <option value="usb"{{ sel_cam_usb }}>USB V4L2 (/dev/video* - Webcam Local)</option>
-            <option value="rtsp"{{ sel_cam_rtsp }}>RTSP Red (Cámara IP NC250 HD 720p)</option>
+            <option value="auto"{{ sel_cam_auto }}>Automático (prioriza USB antes de RTSP)</option>
+            <option value="usb"{{ sel_cam_usb }}>USB V4L2 local</option>
+            <option value="rtsp"{{ sel_cam_rtsp }}>RTSP de red configurada</option>
           </select>
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="f-face-detector">Detector Facial</label>
+          <label class="form-label" for="f-camera-device">Cámara seleccionada</label>
+          <input type="text" id="f-camera-device" name="vision.camera_device" maxlength="120" value="{{ camera_device }}">
+          <div class="form-help">Dispositivo local configurado (por ejemplo <code>/dev/video0</code>).</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="f-face-detector">Detector facial</label>
           <select id="f-face-detector" name="vision.detector">
-            <option value="yunet"{{ sel_det_yunet }}>YuNet Neural (Recomendado - 49ms @ 5 FPS, Confianza ~92%)</option>
-            <option value="haar"{{ sel_det_haar }}>Haar Cascades (Experimental / CPU Legacy)</option>
+            <option value="yunet"{{ sel_det_yunet }}>yunet</option>
+            <option value="haar"{{ sel_det_haar }}>haar</option>
           </select>
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="f-camera-fps">Tasa de Muestreo de Cuadros</label>
-          <select id="f-camera-fps" name="vision.fps">
-            <option value="5"{{ sel_fps_5 }}>5 FPS (Ahorro extremo de CPU - Recomendado)</option>
-            <option value="10"{{ sel_fps_10 }}>10 FPS (Fluidez intermedia)</option>
-            <option value="15"{{ sel_fps_15 }}>15 FPS (Alta reactividad)</option>
-          </select>
+          <label class="form-label" for="f-camera-fps">Cuadros por segundo (1–30 FPS)</label>
+          <input type="number" id="f-camera-fps" name="vision.fps" min="1" max="30" step="1" value="{{ val_fps }}">
         </div>
       </div>
     </div>
 
-    <!-- Bloque 2: Calibración de Presencia & Saludos -->
     <div class="card">
       <div class="card-header">
-        <h2 class="card-title">🎯 Calibración de Presencia</h2>
-        <span class="card-subtitle">Seguimiento de mirada y debouncer</span>
+        <h2 class="card-title">Calibración de Presencia</h2>
+        <span class="card-subtitle">Umbral y ventanas en segundos</span>
       </div>
       <div class="card-body">
-        <div class="slider-group">
-          <div class="slider-header">
-            <span class="slider-title">Umbral de Confianza Facial</span>
-            <span class="slider-value-badge" id="badge-face-conf">{{ val_face_conf }}</span>
-          </div>
-          <div class="slider-controls">
-            <span class="slider-bound-label">Baja (0.70)</span>
-            <input type="range" min="70" max="98" value="{{ val_face_conf_int }}" class="custom-range range-synced" data-badge="badge-face-conf" data-scale="100" name="vision.detector_score_threshold">
-            <span class="slider-bound-label">Alta (0.98)</span>
-          </div>
+        <div class="form-group">
+          <label class="form-label" for="f-face-conf">Umbral detector facial (0.10–1.00)</label>
+          <input type="number" id="f-face-conf" name="vision.detector_score_threshold" min="0.1" max="1.0" step="0.01" value="{{ val_face_conf }}">
         </div>
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-top: 0.5rem;">
-          <div>
-            <span style="font-size: 0.78rem; font-weight: 600;">Confirmación Presencia (seg)</span>
-            <input type="number" step="0.1" min="0.1" max="10" name="vision.presence_confirm_seconds" value="{{ entry_debounce }}">
+          <div class="form-group">
+            <label class="form-label" for="f-presence-confirm">Confirmación de presencia (seg)</label>
+            <input type="number" id="f-presence-confirm" step="0.1" min="0.1" max="10" name="vision.presence_confirm_seconds" value="{{ entry_debounce }}">
           </div>
-          <div>
-            <span style="font-size: 0.78rem; font-weight: 600;">Confirmación Ausencia (seg)</span>
-            <input type="number" step="0.1" min="0.1" max="10" name="vision.absence_confirm_seconds" value="{{ exit_debounce }}">
+          <div class="form-group">
+            <label class="form-label" for="f-absence-confirm">Confirmación de ausencia (seg)</label>
+            <input type="number" id="f-absence-confirm" step="0.1" min="0.1" max="10" name="vision.absence_confirm_seconds" value="{{ exit_debounce }}">
           </div>
         </div>
 
         <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.35rem 0; margin-top: 0.75rem;">
           <div>
-            <div style="font-weight: 600; font-size: 0.88rem;">Saludo por Presencia Estable</div>
-            <div class="form-help">Saluda espontáneamente al detectar una persona tras ausencia.</div>
+            <div style="font-weight: 600; font-size: 0.88rem;">Saludo automático al detectar presencia</div>
+            <div class="form-help">Habilita el saludo cuando la presencia supera la ventana de confirmación.</div>
           </div>
           <label class="switch">
             <input type="hidden" name="__present.social.auto_greeting_enabled" value="1">
@@ -102,16 +99,27 @@
             <span class="slider-toggle"></span>
           </label>
         </div>
+
+        <ul class="kv-list" style="margin-top: 0.75rem;">
+          <li class="kv-item">
+            <span class="kv-key">Telemetría de inferencia en vivo</span>
+            <span class="kv-val">{{ vision_metrics }}</span>
+          </li>
+          <li class="kv-item">
+            <span class="kv-key">Estado de captura en este proceso</span>
+            <span class="kv-val">{{ sensor_status }}</span>
+          </li>
+        </ul>
       </div>
     </div>
   </div>
 
   <div class="card">
     <div class="card-footer" style="display: flex; justify-content: space-between; align-items: center;">
-      <span>El procesamiento de cámara se ejecuta de forma aislada en segundo plano.</span>
+      <span>Los cambios se validan mediante SettingsService y se persisten en la configuración.</span>
       <div style="display: flex; gap: 0.75rem;">
-        <button type="button" class="btn btn-secondary" id="btn-preview-camera">📷 Probar Sensor de Cámara</button>
-        <button type="submit" class="btn btn-primary">💾 Guardar Configuración de Visión</button>
+        <button type="button" class="btn btn-secondary" id="btn-preview-camera">Consultar nodos /dev/video*</button>
+        <button type="submit" class="btn btn-primary">Guardar configuración de visión</button>
       </div>
     </div>
   </div>
@@ -120,11 +128,20 @@
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const btn = document.getElementById('btn-preview-camera');
+  const alertBox = document.getElementById('vision-alert');
+  const alertText = document.getElementById('vision-alert-text');
   const CSRF = "{{ csrf }}";
 
+  function showVisionNotice(text, isError) {
+    if (!alertBox || !alertText) return;
+    alertBox.className = 'notice ' + (isError ? 'error' : 'info');
+    alertText.textContent = text;
+    alertBox.style.display = 'flex';
+  }
+
   btn?.addEventListener('click', async () => {
-    const oldText = btn.innerText;
-    btn.innerText = '⌛ Consultando...';
+    const oldText = btn.textContent;
+    btn.textContent = 'Consultando...';
     btn.disabled = true;
 
     try {
@@ -134,15 +151,16 @@ document.addEventListener('DOMContentLoaded', () => {
         body: new URLSearchParams({ _csrf: CSRF }).toString()
       });
       const data = await res.json();
-      if (data.ok) {
-        showAlert('✓ ' + data.message, !data.detected);
+      if (res.ok && data.ok) {
+        const deviceInfo = data.device ? ` (${data.device})` : '';
+        showVisionNotice((data.message || 'Consulta completada') + deviceInfo, !data.detected);
       } else {
-        showAlert('✗ ' + (data.error || 'Error probando cámara'), true);
+        showVisionNotice(data.error || 'Error consultando nodos de cámara', true);
       }
     } catch (err) {
-      showAlert('✗ Error de conexión con el subsistema de visión', true);
+      showVisionNotice('Error de conexión al consultar /api/vision/test', true);
     } finally {
-      btn.innerText = oldText;
+      btn.textContent = oldText;
       btn.disabled = false;
     }
   });

@@ -1,0 +1,14 @@
+<tr>
+  <td style="white-space: pre-wrap; overflow-wrap: anywhere;">{{ content }}</td>
+  <td>{{ category }}</td><td>{{ scope }}</td>
+  <td>Actualizado: {{ updated_at }}<br>Vence: {{ expires_at }}</td>
+  <td>
+    <a class="btn btn-secondary btn-sm" href="{{ edit_url }}">Editar</a>
+    <form method="post" action="/memoria/delete">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <input type="hidden" name="memory_id" value="{{ memory_id }}">
+      <label><input type="checkbox" name="confirm" value="yes" required> Confirmo borrar este recuerdo</label>
+      <button type="submit" class="btn btn-danger btn-sm">Borrar</button>
+    </form>
+  </td>
+</tr>

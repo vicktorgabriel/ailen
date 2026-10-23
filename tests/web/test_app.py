@@ -2,11 +2,18 @@
 
 import json
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from urllib.parse import quote
 
 from ailen.audio.contracts import AudioDevice
 from ailen.core.config import AILENConfig
+from ailen.infrastructure.sqlite.connection import SQLiteManager
+from ailen.infrastructure.sqlite.migrations import MigrationRunner
+from ailen.memory.repository import MemoryRepository
+from ailen.services.diagnostics_admin_service import DiagnosticsAdminService
+from ailen.services.memory_admin_service import MemoryAdminService
 from ailen.web.app import AILENWebApp, WebRequest
 from ailen.web.services import FakeAuthService, FakeStatusService
 
@@ -31,7 +38,16 @@ def post(path: str, form: dict[str, str], **kwargs) -> WebRequest:
 class TestWebApp(unittest.TestCase):
     def setUp(self):
         self.auth = FakeAuthService(password=PASSWORD)
-        self.app = AILENWebApp(auth=self.auth, status=FakeStatusService())
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        manager = SQLiteManager(Path(directory.name) / "test.db")
+        MigrationRunner(manager).run_migrations()
+        status = FakeStatusService()
+        self.app = AILENWebApp(
+            auth=self.auth, status=status,
+            memory=MemoryAdminService(MemoryRepository(manager)),
+            diagnostics=DiagnosticsAdminService(status, lambda: AILENConfig()),
+        )
 
     def _login_cookie(self) -> str:
         response = self.app.handle(post("/login", {"username": "admin", "password": PASSWORD}))

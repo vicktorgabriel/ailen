@@ -3,6 +3,33 @@
 ## [0.4.0-dev.0] — 2026-08-31
 
 ### Changed
+- 2026-10-23 R5: `/herramientas`, `/vision`, `/rostro`, `/personalidad`, `/sistema` y
+  `/setup` leen la configuración efectiva (módulos `web/*_view.py` con funciones
+  `*_context`) y dejan de mostrar latencias, benchmarks, modelos de cámara, estados
+  "Habilitada" y botones de recarga inventados. `/setup` ya no fabrica 8192 MB si el
+  hardware no se detecta. Corrige escala del umbral de visión, sección de guardado de
+  `/rostro` y `/herramientas`, y agrega banner de guardado/error. Implementado con
+  AGY (herramientas, visión, rostro) y OpenCode (personalidad, sistema, setup);
+  cableado y gates por el agente principal. Suite: 1190 tests.
+- 2026-10-23: auditoría delegada de `/memoria` y `/diagnostico` (AGY sin hallazgos;
+  OpenCode DeepSeek free con 11, verificados por el agente principal). Corregidos:
+  el log de cierre de conexión ya no incluye query string, y `execution_mode`
+  pasa a `no_backends` cuando `--no-camera --no-audio --no-ai` desactivan todo, de
+  modo que el diagnóstico no lo presenta como medición real.
+- 2026-10-23: ADR-014 (agente de Core con niveles de autonomía N1–N3) y ADR-015
+  (proveedor de voz en vivo opcional) aceptados; `PRODUCT.md` §9 ajustado. AGY
+  (Gemini) y OpenCode (DeepSeek free) quedan como agentes auxiliares de desarrollo
+  obligatorios para delegación; AGENTS.md, REGLAMENTO.md y AGENT_HANDOFF.md
+  documentan la regla y que todo cambio debe documentarse. Sin cambios de código.
+- R5 (2026-10-02): `/memoria` reemplaza maquetas por CRUD/búsqueda literal paginada
+  y exportación JSON de recuerdos explícitos reales, con opt-in privado,
+  confirmaciones y CSRF. No altera notas, recordatorios ni historial.
+- `/diagnostico` muestra health del proceso, comprobaciones LabDoctor explícitas
+  y métricas allowlisted de la última sesión Lab finalizada; diferencia muestras
+  reales, simulación y reportes legacy sin procedencia. No expone logs crudos.
+- `serve` deja periféricos no iniciados en UNKNOWN; LabDoctor omite discovery
+  local cuando `ai.local.enabled=false`. Reportes Lab agregan procedencia y
+  número de muestras sin modificar audio/inferencia.
 - La selección local de instalación queda ligada a evidencia por
   `(hardware_class, model_id, runtime)`: soporte declarado no sustituye una
   medición. Runtime, CPU/CUDA y `gpu_layers` se eligen coherentemente desde la

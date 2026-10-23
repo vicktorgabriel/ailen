@@ -2,7 +2,40 @@
 
 **Fecha:** 2026-09-01
 **Versión:** `0.4.0-dev.0`
-**Fase:** R4/R5 en consolidación sobre baseline R3C auditado; R5B FacePack realista está implementado como default lógico en ASRock/Linux y `portrait` queda sólo como opción legacy manual. Fallo de engine/pack degrada a headless, nunca selecciona `portrait`. R5 tiene mezcla de vistas funcionales y maquetas: `/ia`, `/audio` y `/actualizaciones` consumen servicios reales, mientras memoria/diagnóstico/personalidad/vision/tools requieren eliminar defaults/datos sintéticos antes de considerarse cerradas. El Provider Manager usa rutas remotas nombradas, prioridades reales, secretos separados y requests de turno actual saneado. AGY/Antigravity y OpenCode fueron retirados del producto por evidencia de latencia/inestabilidad; los presets OpenAI, Anthropic, DeepSeek, Kimi y MiniMax siguen sin prueba paga. La instalación local se decide mediante un `ProvisioningPlan` basado en hardware y calificación objetivo; `ai.local.enabled=false` sigue siendo estricto. Baseline completo actual: 1145 tests, Ruff limpio, mypy limpio en 164 archivos fuente, diff-check y wheel limpio de 202 entradas/3.115.079 bytes inspeccionados; el engine/FacePack no cambió en esta pasada.
+**Fase:** R4/R5 en consolidación sobre baseline R3C auditado; R5B FacePack realista está implementado como default lógico en ASRock/Linux y `portrait` queda sólo como opción legacy manual. Fallo de engine/pack degrada a headless, nunca selecciona `portrait`. R5 tiene mezcla de vistas funcionales y maquetas: `/ia`, `/audio`, `/actualizaciones`, `/memoria` (recuerdos explícitos) y `/diagnostico` consumen servicios reales; personalidad/vision/tools y otras vistas aún requieren eliminar defaults/datos sintéticos. El Provider Manager usa rutas remotas nombradas, prioridades reales, secretos separados y requests de turno actual saneado. AGY/Antigravity y OpenCode fueron retirados del producto por evidencia de latencia/inestabilidad; los presets OpenAI, Anthropic, DeepSeek, Kimi y MiniMax siguen sin prueba paga. La instalación local se decide mediante un `ProvisioningPlan` basado en hardware y calificación objetivo; `ai.local.enabled=false` sigue siendo estricto. Baseline completo actual: 1164 tests, Ruff limpio, mypy limpio en 168 archivos fuente, diff-check y wheel limpio de 211 entradas inspeccionadas; el engine/FacePack no cambió en esta pasada.
+
+## Definición de producto y agente — 2026-10-23
+
+- Producto: asistente tipo Alexa para equipos modestos; LLM local cuantizado/híbrido
+  según hardware o, si no es viable, proveedor externo con voz en vivo (ADR-015).
+- Capacidad objetivo: ejecutar tools locales y de red, navegar y modificar archivos
+  locales como una persona usando el equipo, bajo niveles N1–N3 de ADR-014 con
+  agente en Core, confirmación humana y sin shell general (N4 fuera).
+- R5 Web Admin: además de `/ia`, `/audio`, `/actualizaciones`, `/memoria` y `/diagnostico`, ahora `/herramientas`, `/vision`, `/rostro`, `/personalidad`, `/sistema` y `/setup` consumen config efectiva sin datos sintéticos. Baseline: 1190 tests, Ruff y mypy (174 módulos) limpios; wheel no reverificado en este lote.
+- Estado: ADR-014/015 aceptados; implementación pendiente (Bloque 22 de TASKS, R5C).
+- AGY (Gemini) y OpenCode (DeepSeek free) son agentes auxiliares de desarrollo
+  obligatorios para delegar; no son proveedores runtime.
+
+## R5 — Memoria y diagnóstico reales — 2026-10-02
+
+- `/memoria` administra recuerdos explícitos del repositorio: búsqueda literal
+  paginada (50), alta/edición/borrado individual confirmado y exportación JSON
+  explícita (máximo 1000; rechaza exceso, no trunca). Público por defecto;
+  privados/restringidos requieren opt-in de visualización/exportación del admin.
+- No modifica política conversacional, notas, recordatorios, sesiones,
+  personalidad ni credenciales. Búsqueda administrativa usa LIKE escapado; no se
+  anuncia como FTS5. No hay purga masiva ni promesa de cifrado SQLite.
+- `/diagnostico` distingue health del proceso del panel, LabDoctor a pedido
+  (POST + CSRF, una ejecución simultánea) y última sesión Lab finalizada.
+  El panel no inicia los periféricos de Lab ni los marca saludables por default.
+- Reportes nuevos declaran `execution_mode` y cantidad de muestras por latencia.
+  Simulados/dry-run/legacy sin procedencia no se presentan como medición real.
+  Sólo se proyectan escalares allowlisted; no se exponen logs/transcripts/paths.
+- LabDoctor respeta `ai.local.enabled=false` sin descubrir runtimes locales.
+- Siguiente software: personalidad/visión/herramientas/rostro/sistema/setup con
+  valores efectivos, más comercio e historial. Validaciones físicas R4/R5B y
+  Appliance R6 siguen abiertas.
+- Evidencia y alcance: `docs/testing/R5_ADMIN_REAL_DATA.md`.
 
 ## R4 AI local-first y proveedores remotos opcionales — 2026-08-31
 
@@ -337,7 +370,7 @@
 - `LabRunner` (`src/ailen/runtime/runner.py`) con cableado end-to-end de hardware real (Face GUI Tkinter, Visión OpenCV, Audio ALSA, Vosk/Whisper STT, Piper TTS, AI Router), single-flight interaction lock y telemetría de sesión `LabSessionMetrics`;
 - `LabDoctor` (`src/ailen/runtime/doctor.py`) con diagnósticos de solo lectura, remediaciones explícitas y salida `--json`;
 - Comandos CLI operativos: `ailen lab inspect`, `ailen lab start [--simulate] [--fullscreen]`, `ailen lab doctor [--json]`, `ailen lab prepare-ai [--yes] [--start-runtime]`, `ailen lab benchmark`, `ailen models list`, `ailen models plan [--purpose]`, `ailen models fetch`, `ailen models verify`;
-- Baseline integrado vigente: 1145 tests; Ruff limpio, mypy limpio en 164 archivos fuente, `git diff --check` y wheel de 202 entradas validados. Los conteos menores de R3B.2 se conservan sólo en documentos históricos.
+- Baseline integrado vigente: 1164 tests; Ruff limpio, mypy limpio en 168 archivos fuente, `git diff --check` y wheel de 211 entradas validados. Los conteos menores de R3B.2 se conservan sólo en documentos históricos.
 
 ## Qué NO existe todavía
 

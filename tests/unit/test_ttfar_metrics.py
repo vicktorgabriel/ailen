@@ -45,3 +45,9 @@ def test_ai_metrics_separate_prompt_and_generation_latency() -> None:
     assert ai["prompt_eval_avg_ms"] == 300.0
     assert ai["generation_avg_ms"] == 500.0
     assert ai["load_avg_ms"] == 10.0
+
+
+def test_execution_mode_keeps_positional_timestamp_compatible() -> None:
+    metrics = LabSessionMetrics("legacy-positional", 1234.0)
+    assert metrics.started_at == 1234.0
+    assert metrics.to_dict()["execution_mode"] == "unknown"

@@ -219,6 +219,12 @@ port = 8080
             self.assertEqual(kwargs["port"], 9099)
             app = mocked_serve.call_args.args[0]
             self.assertIs(app._updates, update_service)
+            self.assertIsNotNone(app._memory)
+            self.assertIsNotNone(app._diagnostics)
+            component_status = dict(app._diagnostics.snapshot().components)
+            self.assertEqual(component_status["audio"], "UNKNOWN")
+            self.assertEqual(component_status["vision"], "UNKNOWN")
+            self.assertEqual(component_status["memory"], "HEALTHY")
             mocked_build_updates.assert_called_once()
             _, build_kwargs = mocked_build_updates.call_args
             self.assertEqual(build_kwargs["mode"], "lab")

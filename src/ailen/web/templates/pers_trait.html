@@ -1,0 +1,11 @@
+<div class="slider-group">
+  <div class="slider-header">
+    <span class="slider-title">{{ title }}</span>
+    <span class="slider-value-badge" id="badge-{{ trait_id }}">{{ value_pct }}</span>
+  </div>
+  <div class="slider-controls">
+    <span class="slider-bound-label">{{ low_label }}</span>
+    <input type="range" min="0" max="1" step="0.01" value="{{ value }}" class="custom-range range-synced" data-badge="badge-{{ trait_id }}" data-suffix="%" data-scale="0.01" name="personality.{{ field }}">
+    <span class="slider-bound-label">{{ high_label }}</span>
+  </div>
+</div>

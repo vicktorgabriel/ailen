@@ -1,4 +1,45 @@
+## Agente de Core y voz en vivo — 2026-10-23
+
+- Visión de producto reafirmada: asistente tipo Alexa para equipos modestos, con
+  LLM local cuantizado/híbrido según hardware y, si el equipo no lo sostiene,
+  proveedor externo con voz en vivo. Debe poder ejecutar herramientas locales y de
+  red, navegar y modificar archivos locales siguiendo instrucciones.
+- ADR-014 (Accepted): el agente corre en Core con niveles N1 tools, N2 archivos
+  en raíces autorizadas, N3 navegador aislado; N4 shell/computer-use general queda
+  fuera. Acciones destructivas o con efecto externo piden confirmación humana.
+- ADR-015 (Accepted): ruta opcional `remote_realtime:<id>` por WebSocket; Core
+  conserva identidad, memoria y tools (function-calling hacia `ToolExecutor`).
+- AGY (Gemini) y OpenCode (DeepSeek free) se usan como agentes auxiliares de
+  desarrollo, obligatoriamente para delegar auditorías, revisión y tareas acotadas
+  y ahorrar tokens del agente principal. No son proveedores runtime.
+- Auditoría delegada 2026-10-23 (AGY + OpenCode): 2 hallazgos reales corregidos
+  (query en log de BrokenPipe; `execution_mode` con todos los backends apagados).
+  Pendientes de baja prioridad: allowlist explícita en export de memoria, ruta
+  absoluta de `reports_dir`, `LabDoctor` con timeout/worker, mensajes fijos en
+  ValueError, redirect conservando alcance y tests HTTP de 409/503 en
+  `/diagnostico/run`. Descartado: "Todos (142)" es aserción negativa válida.
+- R5 cierre de vistas (2026-10-23): cada vista tiene `web/<x>_view.py` con
+  `<x>_context(cfg)`; `app.py` solo cablea y aplica `_flash`. Sin SettingsService se
+  usan los defaults de Core. Estado en vivo de tools/visión/personalidad evolucionada
+  requiere servicios inyectados desde el runtime (siguiente trabajo).
+- Regla de proceso: todo cambio, decisión y delegación se documenta en el mismo
+  lote de trabajo (ver AGENTS.md y REGLAMENTO.md).
+
 ### R4 — remotos nombrados, provisioning por hardware y captura medible (2026-09-01)
+
+## R5: administración real y procedencia del diagnóstico — 2026-10-02
+
+- Memoria Web administra recuerdos explícitos mediante servicio/repositorio;
+  sólo públicos por defecto. El admin debe seleccionar acceso privado y
+  confirmar cambios/exportaciones. No se incorpora purga masiva ni se mezclan
+  notas, recordatorios o conversaciones en la exportación.
+- Diagnóstico distingue health de `serve`, comprobaciones LabDoctor a pedido
+  y mediciones de sesión Lab finalizada. No inferir health de otro proceso ni
+  convertir reportes simulados/legacy en mediciones reales.
+- Se amplía ADR-005 y MODULE_CONTRACTS sin cambiar esquema SQLite ni agregar
+  dependencias runtime. Siguiente trabajo: resto de vistas R5 con datos reales;
+  pruebas físicas y Appliance permanecen abiertos.
+
 
 - **Runtime local calificado, no inferido**: `HardwareQualificationStore`
   conserva evidencia independiente por `(hardware_class, model_id, runtime)`.

@@ -494,3 +494,14 @@ def test_external_request_timeout_does_not_inherit_disabled_local_timeout() -> N
     assert runner.conversation_coordinator is not None
     assert runner.conversation_coordinator.context_builder.request_timeout_seconds == 7.0
     assert runner.conversation_coordinator.semantic_intent_resolver is None
+
+
+def test_execution_mode_reflects_enabled_backends(tmp_path: Path) -> None:
+    cfg = AILENConfig()
+    real = LabRunner(config=cfg, log_dir=tmp_path)
+    assert real.metrics.execution_mode == "real"
+    partial = LabRunner(config=cfg, no_camera=True, log_dir=tmp_path)
+    assert partial.metrics.execution_mode == "real"
+    none = LabRunner(config=cfg, no_camera=True, no_audio=True, no_ai=True, log_dir=tmp_path)
+    assert none.metrics.execution_mode == "no_backends"
+    assert LabRunner(config=cfg, dry_run=True, log_dir=tmp_path).metrics.execution_mode == "dry_run"

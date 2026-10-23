@@ -123,7 +123,18 @@ class LabRunner:
 
         self.log_dir = Path(log_dir) if log_dir else Path("runtime/lab")
         self._session_id = f"lab_{int(time.time())}_{uuid.uuid4().hex[:6]}"
-        self.metrics = LabSessionMetrics(session_id=self._session_id)
+        self.metrics = LabSessionMetrics(
+            session_id=self._session_id,
+            execution_mode=(
+                "dry_run"
+                if dry_run
+                else "simulation"
+                if simulate
+                else "no_backends"
+                if no_camera and no_audio and no_ai
+                else "real"
+            ),
+        )
 
         self._is_running = False
         self._shutdown_requested = False

@@ -157,9 +157,11 @@
 - [ ] Cámara y presencia: backend/API existen; la vista `/vision` todavía precarga varios defaults hardcodeados.
 - [x] IA/proveedores/presupuesto.
 - [ ] Personalidad y evolución: Core existe; la vista `/personalidad` todavía presenta valores de maqueta.
-- [ ] Memoria administrable: SQLite/FTS/repositorio existen; `/memoria` todavía muestra contenido sintético y no debe declararse terminada.
+- [x] Recuerdos explícitos administrables en `/memoria`: búsqueda literal paginada, CRUD y exportación JSON real con privacidad y confirmaciones.
+- [ ] Administración integrada de notas y recordatorios desde el panel.
 - [ ] Conversaciones e historial.
-- [ ] Diagnóstico: LabDoctor/telemetría existen; `/diagnostico` todavía muestra datos estáticos y debe conectarse al servicio real.
+- [x] Diagnóstico: health del proceso, LabDoctor a pedido y telemetría del último reporte Lab finalizado con procedencia/muestras/fecha; faltantes explícitos.
+- [ ] Estado entre procesos en vivo y visor de logs redactados.
 - [ ] PWA opcional.
 - [ ] Primera experiencia de setup desde celular.
 - [x] `/actualizaciones` autenticado consume el servicio firmado y muestra
@@ -184,6 +186,17 @@
 - [ ] Medir perfil LOW real en Raspberry/Banghó/SF20BA antes de fijar resolución/calidad o soporte.
 - [x] Probar físicamente ROI normalizado de ojos/cejas/boca y retirar esas capas del pack H3 al confirmar deformación entre identidades; blink/gaze/speech actuales reproducen frames completos limpios. El engine conserva composición ROI para futuros assets preparados como capas.
 - [x] Preservar movimiento full-frame authored y eliminar regresos abruptos mediante frames reales reversibles, sin crossfade ni doble rostro.
+
+## R5C — Agente de Core y voz en vivo — OBJETIVO 0.5.x (ADR-014, ADR-015)
+
+- [ ] Contrato de niveles de autonomía en `ToolRegistry`/`ToolExecutor` (N1–N3) con tope por instalación y por `SocialMode`.
+- [ ] Bucle de agente en Core con presupuesto de pasos/tiempo/tokens, cancelación por voz y panel, y confirmación humana para acciones destructivas o externas.
+- [ ] N2 archivos: raíces autorizadas, anti traversal/symlink, respaldo o papelera, tests de seguridad.
+- [ ] N3 navegador aislado: perfil efímero, contenido web como dato no confiable, confirmación para formularios/compras/login.
+- [ ] Proveedor `remote_realtime:<id>`: adaptador WebSocket, opt-in con aviso de privacidad, barge-in, `BudgetPolicy`, fallback a cascada de texto; medir TTFT/TTFAR antes de declarar calidad.
+- [ ] Web Admin: raíces autorizadas, nivel máximo, historial de acciones y cancelación.
+- [ ] Provisioning: ofrecer realtime remoto cuando el hardware no sostiene LLM local, con aviso de costo/privacidad.
+- N4 (shell/computer-use general) queda fuera de alcance y exige ADR nuevo.
 
 ## R6 — Instalación appliance y actualizaciones — OBJETIVO 0.5.x
 

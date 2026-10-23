@@ -94,7 +94,11 @@ class _Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             # Normal cuando el navegador recarga, navega a otra página o cancela
             # un fetch antes de que termine la respuesta. No es un fallo de AILÉN.
-            logger.debug("Cliente cerró la conexión durante %s %s", self.command, self.path)
+            logger.debug(
+                "Cliente cerró la conexión durante %s %s",
+                self.command,
+                urlsplit(self.path).path,
+            )
 
     do_GET = _dispatch
     do_POST = _dispatch
@@ -108,6 +112,10 @@ class _Handler(BaseHTTPRequestHandler):
     do_DELETE = _method_not_allowed
     do_OPTIONS = _method_not_allowed
     do_TRACE = _method_not_allowed
+
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        # Search queries may contain private memory. Never log the query string.
+        logger.debug("HTTP %s %s %s", self.command, urlsplit(self.path).path, code)
 
     def log_message(self, fmt: str, *args: object) -> None:
         logger.debug("%s - %s", self.address_string(), fmt % args)

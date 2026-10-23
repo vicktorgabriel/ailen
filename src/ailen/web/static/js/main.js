@@ -31,21 +31,6 @@
     }
   });
 
-  // 3. Buscador de Memoria en /memoria
-  var memInput = document.getElementById("memory-search-input");
-  var memTableBody = document.getElementById("memory-table-body");
-
-  if (memInput && memTableBody) {
-    memInput.addEventListener("input", function () {
-      var filter = memInput.value.toLowerCase();
-      var rows = memTableBody.querySelectorAll("tr");
-      rows.forEach(function (row) {
-        var text = row.textContent.toLowerCase();
-        row.style.display = text.includes(filter) ? "" : "none";
-      });
-    });
-  }
-
   // 4. Live Connection & Telemetry Heartbeat
   var stateEl = document.getElementById("assistant-state");
   var sidebarStateEl = document.getElementById("sidebar-assistant-state");

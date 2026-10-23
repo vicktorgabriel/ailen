@@ -151,20 +151,25 @@ class LabDoctor:
                 checks.append(DiagnosticCheck(name="TTS Voice Model", result="WARN", detail=f"TTS engine '{tts_engine}'"))
 
         # 6. Local AI Runtimes
-        runtime_mgr = LocalRuntimeManager()
-        runtimes = runtime_mgr.detect_available_runtimes()
-        healthy_runtimes = [r for r in runtimes if r.health and r.health.status == RuntimeStatus.HEALTHY]
-
-        if healthy_runtimes:
-            rt = healthy_runtimes[0]
-            checks.append(DiagnosticCheck(name="Local AI Runtime", result="PASS", detail=f"{rt.runtime_type.value} at {rt.endpoint} (HEALTHY)"))
-        else:
+        if self.config is not None and not self.config.ai.local.enabled:
             checks.append(DiagnosticCheck(
-                name="Local AI Runtime",
-                result="WARN",
-                detail="No active runtime at 8080/11434",
-                remediation="Start Ollama (ollama serve) or run llama-server",
+                name="Local AI Runtime", result="SKIP", detail="Local AI disabled by configuration",
             ))
+        else:
+            runtime_mgr = LocalRuntimeManager()
+            runtimes = runtime_mgr.detect_available_runtimes()
+            healthy_runtimes = [r for r in runtimes if r.health and r.health.status == RuntimeStatus.HEALTHY]
+
+            if healthy_runtimes:
+                rt = healthy_runtimes[0]
+                checks.append(DiagnosticCheck(name="Local AI Runtime", result="PASS", detail=f"{rt.runtime_type.value} at {rt.endpoint} (HEALTHY)"))
+            else:
+                checks.append(DiagnosticCheck(
+                    name="Local AI Runtime",
+                    result="WARN",
+                    detail="No active runtime at 8080/11434",
+                    remediation="Start Ollama (ollama serve) or run llama-server",
+                ))
 
         # 7. Model Store and Recommended Model
         free_gb = round(shutil.disk_usage(store.base_dir if store.base_dir.exists() else Path.home()).free / (1024**3), 2)

@@ -1,65 +1,62 @@
 <div class="page-header">
   <div>
     <h1 class="page-title">Sistema & Configuración del Nodo</h1>
-    <p class="page-lede">Identificación del hardware, perfiles de despliegue y copias de seguridad.</p>
+    <p class="page-lede">Identificación del nodo, perfil de despliegue y rutas efectivas leídas de la configuración activa.</p>
   </div>
 </div>
+
+<div id="sys-alert" class="notice ok" style="display: none;"><span id="sys-alert-text"></span></div>
 
 <form method="post" action="/config" style="display: flex; flex-direction: column; gap: 1.25rem;">
   <input type="hidden" name="_csrf" value="{{ csrf }}">
   <input type="hidden" name="section" value="node">
 
   <div class="grid grid-cols-2">
-    <!-- Información del Nodo & Despliegue -->
+    <!-- Identificación del nodo y despliegue -->
     <div class="card">
       <div class="card-header">
         <h2 class="card-title">🖥️ Identificación del Nodo</h2>
-        <span class="status-pill ok">Activo</span>
       </div>
       <div class="card-body">
         <div class="form-group">
           <label class="form-label" for="f-node-name">Nombre del Nodo</label>
           <input type="text" id="f-node-name" name="node.name" value="{{ node_name }}">
-          <span class="form-help">Identificador visible en red local (ej: `ailen-taller`).</span>
+          <span class="form-help">Identificador visible en la red local.</span>
         </div>
 
         <div class="form-group">
           <label class="form-label" for="f-node-profile">Perfil de Despliegue del Nodo</label>
-          <select id="f-node-profile" name="node.profile">
-            <option value="hybrid"{{ sel_prof_hybrid }}>HYBRID (Recomendado - 8GB a 48GB con IA externa/local)</option>
-            <option value="appliance"{{ sel_prof_appliance }}>APPLIANCE (Dedicado Kiosco / Pantalla completa)</option>
-            <option value="workshop"{{ sel_prof_workshop }}>WORKSHOP (Taller de electrónica)</option>
-            <option value="server"{{ sel_prof_server }}>SERVER (Sin display directo)</option>
-          </select>
+          <select id="f-node-profile" name="node.profile">{{ raw:profile_options }}</select>
+          <span class="form-help">El detector sugiere; el administrador puede forzar uno compatible.</span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="f-node-id">ID de Nodo en Ejecución</label>
+          <input type="text" id="f-node-id" value="{{ node_id }}" readonly style="opacity: 0.7; cursor: not-allowed;">
         </div>
 
         <div class="form-group">
           <label class="form-label" for="f-web-port">Puerto del Panel Web</label>
           <input type="text" id="f-web-port" value="{{ web_port }}" disabled style="opacity: 0.7; cursor: not-allowed;">
-          <span class="form-help">Puerto TCP local (por seguridad, se modifica en config/ailen.toml al iniciar).</span>
+          <span class="form-help">Sólo lectura; se define en el archivo de configuración y toma efecto al reiniciar.</span>
         </div>
       </div>
     </div>
 
-    <!-- Almacenamiento & Base de Datos -->
+    <!-- Almacenamiento y base de datos -->
     <div class="card">
       <div class="card-header">
         <h2 class="card-title">💾 Almacenamiento & SQLite</h2>
-        <span class="badge-neutral" style="font-size: 0.75rem; color: var(--fg-muted);">Permisos 0600</span>
       </div>
       <div class="card-body">
         <ul class="kv-list">
           <li class="kv-item">
             <span class="kv-key">Archivo de Configuración</span>
-            <span class="kv-val">config/ailen.toml</span>
+            <span class="kv-val">{{ config_path }}</span>
           </li>
           <li class="kv-item">
             <span class="kv-key">Base de Datos SQLite</span>
-            <span class="kv-val">runtime/lab/ailen_lab.db</span>
-          </li>
-          <li class="kv-item">
-            <span class="kv-key">Aislamiento de Secretos</span>
-            <span class="kv-val" style="color: var(--status-ok);">0600 (Sin API Keys en TOML)</span>
+            <span class="kv-val">{{ db_path }}</span>
           </li>
         </ul>
 
@@ -71,22 +68,8 @@
     </div>
   </div>
 
-  <!-- Gestión de Servicios -->
   <div class="card">
-    <div class="card-header">
-      <h2 class="card-title">⚙️ Sincronización de Subsistemas</h2>
-      <span class="card-subtitle">Recarga segura de subsistemas sin reiniciar el equipo</span>
-    </div>
-    <div class="card-body">
-      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem;">
-        <button type="button" class="btn btn-secondary btn-sm btn-restart-svc" data-svc="Core Engine">🔄 Core Engine</button>
-        <button type="button" class="btn btn-secondary btn-sm btn-restart-svc" data-svc="IA Router">🔄 IA Router</button>
-        <button type="button" class="btn btn-secondary btn-sm btn-restart-svc" data-svc="Audio PipeWire">🔄 Audio PipeWire</button>
-        <button type="button" class="btn btn-secondary btn-sm btn-restart-svc" data-svc="Visión YuNet">🔄 Visión YuNet</button>
-      </div>
-    </div>
-    <div class="card-footer" style="display: flex; justify-content: space-between; align-items: center;">
-      <span>El panel web permanece accesible de forma independiente ante fallas de otros servicios.</span>
+    <div class="card-footer" style="display: flex; justify-content: flex-end;">
       <button type="submit" class="btn btn-primary">💾 Guardar Configuración de Sistema</button>
     </div>
   </div>
@@ -95,6 +78,15 @@
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const CSRF = "{{ csrf }}";
+
+  function showAlert(text, isError) {
+    const box = document.getElementById('sys-alert');
+    const label = document.getElementById('sys-alert-text');
+    if (!box || !label) return;
+    label.textContent = text;
+    box.className = isError ? 'notice error' : 'notice ok';
+    box.style.display = 'block';
+  }
 
   document.getElementById('btn-create-backup')?.addEventListener('click', async () => {
     const btn = document.getElementById('btn-create-backup');
@@ -138,31 +130,6 @@ document.addEventListener('DOMContentLoaded', () => {
     } finally {
       btn.disabled = false;
     }
-  });
-
-  document.querySelectorAll('.btn-restart-svc').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const svc = btn.getAttribute('data-svc');
-      const oldText = btn.innerText;
-      btn.innerText = '⌛...';
-      btn.disabled = true;
-      try {
-        const res = await fetch('/api/system/restart', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ _csrf: CSRF, service: svc }).toString()
-        });
-        const data = await res.json();
-        if (data.ok) {
-          showAlert('✓ ' + data.message, false);
-        }
-      } catch (e) {
-        showAlert('✗ Error comunicando con ' + svc, true);
-      } finally {
-        btn.innerText = oldText;
-        btn.disabled = false;
-      }
-    });
   });
 });
 </script>

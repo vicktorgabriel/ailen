@@ -158,8 +158,9 @@ No se requiere una app móvil nativa.
 No forman parte del primer MVP:
 
 - robot caminante;
-- navegación autónoma general por escritorio;
-- shell libre controlado por el LLM;
+- navegación autónoma general por escritorio (el navegador aislado y los archivos
+  acotados con confirmación son objetivo posterior, ver ADR-014);
+- shell libre controlado por el LLM (fuera de alcance, ADR-014 nivel N4);
 - domótica compleja;
 - reconocimiento facial obligatorio;
 - videovigilancia avanzada;

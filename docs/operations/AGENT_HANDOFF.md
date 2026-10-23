@@ -4,7 +4,7 @@
 
 ## 1. Estado
 
-AILEN está en `0.4.0-dev.0` y ya tiene un runtime funcional de laboratorio: Foundation/Core/Web, persistencia SQLite, Face/Vision, Audio/VAD/STT/TTS, AI Router adaptativo, R3C Controlled Tools, recordatorios, local Ollama/llama.cpp, LAN Brain y remotos HTTP nombrados. AGY/Antigravity y OpenCode están retirados del producto. OpenAI/Anthropic/DeepSeek/Kimi/MiniMax son presets no probados hasta disponer de clave/modelo y benchmark consentido. El baseline vigente es de 1145 tests, Ruff limpio, mypy limpio en 164 módulos y wheel limpio de 202 entradas; usar siempre el gate más reciente de `CURRENT_STATE.md`. El provisioning exige evidencia separada por hardware/modelo/runtime y no infiere runtime ni GPU offload desde compatibilidad declarada. FacePack 1.6 es default, falla a headless y nunca selecciona `portrait`/`pixel` automáticamente. Los agentes deben partir de `docs/memory/CURRENT_STATE.md` y `TASKS.md`; no deben reconstruir Foundation ni asumir que los bloques R1-R3 siguen pendientes.
+AILEN está en `0.4.0-dev.0` y ya tiene un runtime funcional de laboratorio: Foundation/Core/Web, persistencia SQLite, Face/Vision, Audio/VAD/STT/TTS, AI Router adaptativo, R3C Controlled Tools, recordatorios, local Ollama/llama.cpp, LAN Brain y remotos HTTP nombrados. AGY/Antigravity y OpenCode están retirados del producto. OpenAI/Anthropic/DeepSeek/Kimi/MiniMax son presets no probados hasta disponer de clave/modelo y benchmark consentido. El baseline vigente es de 1164 tests, Ruff limpio, mypy limpio en 168 módulos y wheel limpio de 211 entradas; usar siempre el gate más reciente de `CURRENT_STATE.md`. El provisioning exige evidencia separada por hardware/modelo/runtime y no infiere runtime ni GPU offload desde compatibilidad declarada. FacePack 1.6 es default, falla a headless y nunca selecciona `portrait`/`pixel` automáticamente. Los agentes deben partir de `docs/memory/CURRENT_STATE.md` y `TASKS.md`; no deben reconstruir Foundation ni asumir que los bloques R1-R3 siguen pendientes.
 
 ## 1.1 Continuidad del thread Codex
 
@@ -13,6 +13,10 @@ AILEN está en `0.4.0-dev.0` y ya tiene un runtime funcional de laboratorio: Fou
 - Spark: subagente `spark_worker` para tareas estrechas y rápidas. Sol puede delegarlo desde el thread canónico; el child thread devuelve su resumen al principal. No se usa para cerrar una migración extensa sin revisión de Sol y sus prompts deben ordenar tests y revisión del diff.
 - Reanudación: `scripts/resume_codex_ailen.sh sol` o `scripts/resume_codex_ailen.sh spark`. No usar `codex fork` ni crear una sesión nueva salvo autorización expresa.
 - El perfil Spark queda preparado, pero su acceso real depende de que la cuenta Codex lo tenga habilitado; un fallo de disponibilidad no cambia de thread ni habilita otro proveedor automáticamente.
+
+## 1.2 AGY (Gemini) y OpenCode (DeepSeek free)
+
+Agentes auxiliares de desarrollo por orden del propietario (no runtime del producto). Invocación y reglas en `AGENTS.md`: `agy -p "<prompt>"` y `opencode run --model opencode/deepseek-v4.1-flash-free "<prompt>"`.
 
 ## 2. Lectura obligatoria
 
@@ -57,7 +61,7 @@ Trabajar sobre R4 y deudas verificables sin reabrir bloques cerrados:
 ```text
 1. consolidar el working tree 0.4.0-dev.0 y mantener documentación/versionado sincronizados;
 2. ejecutar en hardware reciclado la calificación local y la matriz de voz sobre el micrófono integrado/nativo de cada placa; ASRock/USB/Easy Effects sirven sólo como laboratorio. No guardar PCM ni promover modelos o micrófonos por detección;
-3. terminar R5 Web Admin con datos reales: eliminar maquetas/hardcodes de memoria, diagnóstico, personalidad, visión y tools sin acoplar handlers a infraestructura;
+3. terminar R5 Web Admin con datos reales: completar personalidad, visión, tools, rostro y sistema/setup; memoria explícita y diagnóstico ya consumen servicios reales sin acoplar handlers a infraestructura;
 4. continuar R5B desde ADR-012 y el pack desktop de 79 secuencias: `facepack` es
    default y falla a headless; falta validar DLL/release packaging, perfiles LOW
    y una sesión conversacional completa con PCM/Vision reales;

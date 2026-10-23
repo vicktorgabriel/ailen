@@ -42,6 +42,18 @@ class TestHTTPSmoke(unittest.TestCase):
             status=FakeStatusService(),
             settings=SettingsService(ConfigService(cfg_path)),
         )
+        from ailen.infrastructure.sqlite.connection import SQLiteManager
+        from ailen.infrastructure.sqlite.migrations import MigrationRunner
+        from ailen.memory.repository import MemoryRepository
+        from ailen.services.diagnostics_admin_service import DiagnosticsAdminService
+        from ailen.services.memory_admin_service import MemoryAdminService
+
+        manager = SQLiteManager(Path(tmp.name) / "test.db")
+        MigrationRunner(manager).run_migrations()
+        self.app._memory = MemoryAdminService(MemoryRepository(manager))
+        self.app._diagnostics = DiagnosticsAdminService(
+            self.app._status, self.app._settings.get_config, Path(tmp.name),
+        )
         self.server = create_server(self.app, "127.0.0.1", 0)
         port = self.server.server_address[1]
         self.base = f"http://127.0.0.1:{port}"
@@ -105,6 +117,35 @@ class TestHTTPSmoke(unittest.TestCase):
         status, _, body = self._request("/", headers={"Cookie": cookie})
         self.assertEqual(status, 200)
         self.assertIn("Panel", body.decode())
+
+    def test_memory_and_diagnostics_over_tcp(self):
+        from urllib.parse import urlencode
+
+        cookie = self._login()
+        status, headers, page = self._request("/memoria", headers={"Cookie": cookie})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        csrf = page.decode().split('name="_csrf" value="')[1].split('"')[0]
+        status, _, _ = self._request(
+            "/memoria/create", method="POST",
+            data=urlencode({"_csrf": csrf, "content": "tcp-memory", "confirm": "yes"}).encode(),
+            headers={"Cookie": cookie},
+        )
+        self.assertEqual(status, 303)
+        status, _, page = self._request("/memoria?include_private=1", headers={"Cookie": cookie})
+        self.assertEqual(status, 200)
+        self.assertIn(b"tcp-memory", page)
+        status, headers, body = self._request(
+            "/memoria/export", method="POST",
+            data=urlencode({"_csrf": csrf, "confirm": "yes", "include_private": "1"}).encode(),
+            headers={"Cookie": cookie},
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("attachment", headers["Content-Disposition"])
+        self.assertIn(b"tcp-memory", body)
+        status, _, body = self._request("/diagnostico", headers={"Cookie": cookie})
+        self.assertEqual(status, 200)
+        self.assertIn("Sin medición", body.decode())
 
     def test_oversized_body_rejected_with_413(self):
         headers = {

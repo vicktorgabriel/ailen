@@ -8,7 +8,7 @@ Versión: `0.4.0-dev.0`
 
 Milestone activo: `R4/R5 — consolidación de capacidades cotidianas + Web Admin`, con `R5B — FacePack realista extensible` como renderer lógico por defecto; `portrait` queda sólo como renderer legacy seleccionable manualmente.
 
-R1, R2, R3A/R3B/R3C están integrados. El baseline completo actual es de 1145 tests en verde, Ruff limpio, mypy limpio en 164 módulos fuente, diff-check y wheel de 202 entradas inspeccionado en verde. El gate C++/FacePack previo permanece válido porque este vertical no modificó el engine ni el pack.
+R1, R2, R3A/R3B/R3C están integrados. El baseline completo actual es de 1164 tests en verde, Ruff limpio, mypy limpio en 168 módulos fuente, diff-check y wheel de 211 entradas inspeccionado en verde. El gate C++/FacePack previo permanece válido porque este vertical no modificó el engine ni el pack.
 
 ## Bloque 0 — Antes de código
 
@@ -21,7 +21,7 @@ R1, R2, R3A/R3B/R3C están integrados. El baseline completo actual es de 1145 te
 - [x] Nombre del proyecto/plataforma fijado: `AILEN`.
 - [x] Repo Git local inicializado en `main`.
 - [x] Remoto `origin` configurado: `git@github.com:vicktorgabriel/ailen.git`.
-- [ ] ADR-006 cerrado o aceptado como baseline provisional.
+- [x] ADR-006 aceptado como baseline provisional 0.4.x; benchmarks de hardware objetivo siguen abiertos.
 
 ## Bloque 1 — Foundation/Core
 
@@ -448,15 +448,18 @@ Debe quedar funcionando:
 
 - [x] `/ia` consume runtime/config/proveedores reales y protege acciones con CSRF.
 - [x] `/audio` lee configuración efectiva y expone pruebas controladas.
-- [ ] eliminar conteos, recuerdos, métricas, logs y estados ficticios de templates productivos.
-- [ ] `/memoria`: conectar búsqueda/CRUD/exportación a repositorios reales con confirmaciones y política de privacidad.
-- [ ] `/diagnostico`: conectar LabDoctor, health y telemetría reales; nunca mostrar PASS o latencias inventadas.
-- [ ] `/personalidad`: cargar/guardar estado real de identidad, SocialMode y Personality Engine; quitar sliders hardcodeados.
-- [ ] `/vision`: leer valores efectivos de SettingsService y estado de cámara/detector; conservar `/api/vision/test` como prueba explícita.
-- [ ] `/herramientas`: reflejar ToolRegistry/servicios reales y estado MPRIS/WebSearch; no mostrar “habilitada” si sólo existe contrato o falta validación física.
-- [ ] `/rostro`: sincronizar configuración real del renderer estable y, más adelante, metadata del FacePack sin acoplarlo al LLM.
-- [ ] `/sistema` y `/setup`: eliminar defaults ficticios, mantener acciones destructivas bajo confirmación y validar flujo móvil real.
-- [ ] tests de regresión que fallen si vuelven a aparecer datos sintéticos presentados como mediciones reales.
+- [x] eliminar estados ficticios de `/herramientas`, `/vision`, `/rostro`, `/personalidad`, `/sistema` y `/setup` (2026-10-23); conteos/logs en vivo siguen pendientes (observabilidad).
+- [x] `/memoria`: búsqueda literal paginada, CRUD y exportación JSON de recuerdos explícitos sobre SQLite; públicos por defecto, opt-in privado, confirmación y CSRF para cambios/exportación.
+- [ ] Ampliar administración de memoria a notas, recordatorios e historial; el slice actual no mezcla esas tablas ni ofrece purga masiva.
+- [x] `/diagnostico`: health del proceso, LabDoctor explícito y métricas del último reporte Lab finalizado; procedencia real/simulación, muestras y fecha, sin PASS/latencias inventadas.
+- [ ] Observabilidad entre procesos en vivo y visor de logs redactados; el reporte de sesión finalizada no los sustituye.
+- [x] `/personalidad`: lee identidad, SocialMode y rasgos base desde config; el simulador queda marcado no disponible. Falta mostrar rasgos evolucionados persistidos (PersonalityService solo existe en runtime Lab).
+- [x] `/vision`: leer valores efectivos de SettingsService y estado de cámara/detector; conservar `/api/vision/test` como prueba explícita.
+- [x] (catálogo por config; estado en vivo de tools requiere inyectar ToolRegistry en `serve`) `/herramientas`: reflejar ToolRegistry/servicios reales y estado MPRIS/WebSearch; no mostrar “habilitada” si sólo existe contrato o falta validación física.
+- [x] (config real; metadata FacePack pendiente) `/rostro`: sincronizar configuración real del renderer estable y, más adelante, metadata del FacePack sin acoplarlo al LLM.
+- [x] (defaults eliminados; setup aún sin wizard multi-paso ni POST; validar flujo móvil real pendiente) `/sistema` y `/setup`: eliminar defaults ficticios, mantener acciones destructivas bajo confirmación y validar flujo móvil real.
+- [x] Regresiones de memoria/diagnóstico: datos reales, vacíos, privacidad, CSRF, errores redactados, exportación acotada y procedencia de métricas.
+- [ ] Extender la misma cobertura al resto de vistas al conectarlas.
 
 ## Bloque 21 — R6 Vertical 1: updates firmados y recuperables
 
@@ -480,6 +483,19 @@ Debe quedar funcionando:
 - [ ] provisionamiento firmado independiente de modelos, voces y FacePack.
 
 
+## Bloque 22 — R5C Agente de Core y voz en vivo (ADR-014, ADR-015)
+
+- [x] ADR-014 y ADR-015 aceptados; PRODUCT.md §9, ADR README, CHANGELOG y RECENT_DECISIONS actualizados (2026-10-23).
+- [x] Auditoría delegada del working tree R5 (memoria/diagnóstico) con AGY y OpenCode; 2 fixes aplicados, gates: pytest 1164+1, Ruff y mypy (168) en verde.
+- [ ] Baja prioridad de la auditoría: allowlist en export de memoria, `reports_dir` absoluto, LabDoctor con timeout, tests HTTP 409/503 de `/diagnostico/run`.
+- [ ] Definir contrato `autonomy_level` (N1–N3) en el registro de tools y tope configurable.
+- [ ] Servicio de confirmación humana (voz/panel) con regla de transcripción de baja confianza.
+- [ ] Tool de archivos N2 con raíces autorizadas y tests de traversal/symlink/respaldo.
+- [ ] Bucle de agente con presupuesto y cancelación.
+- [ ] Adaptador `remote_realtime` WebSocket + harness dry-run + tests simulados.
+- [ ] Tool de navegador N3 aislado con tests de prompt injection.
+- [ ] Vistas Web Admin de agente (raíces, nivel, historial, cancelar).
+
 ## Reglas del board
 
 - No marcar hardware como validado sin prueba real.
@@ -487,3 +503,4 @@ Debe quedar funcionando:
 - Cambios de arquitectura se reflejan en ADR.
 - Este archivo se actualiza al cerrar cada lote de trabajo relevante.
 - No hacer commit/push sin autorización del propietario.
+- Todo cambio y decisión se documenta en el mismo lote (TASKS, CURRENT_STATE, RECENT_DECISIONS, CHANGELOG, ADR); la delegación a AGY/OpenCode también se registra.

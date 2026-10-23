@@ -230,6 +230,58 @@ class MemoryRepository:
         """Fetch most recently stored memories."""
         return self.search_memories(query="", scope=scope, limit=limit)
 
+    def admin_list_memories(
+        self, query: str = "", *, include_private: bool = False,
+        limit: int = 50, offset: int = 0,
+    ) -> tuple[list[MemoryItem], int]:
+        """Literal substring search with stable pagination and scoped counts."""
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        conditions = "content LIKE ? ESCAPE '\\'"
+        params: list[str | int] = [f"%{escaped}%"]
+        if not include_private:
+            conditions += " AND scope = ?"
+            params.append(PrivacyLevel.PUBLIC.value)
+        with self.db_manager.connection() as conn:
+            # Keep the count and page in the same SQLite read snapshot.
+            conn.execute("BEGIN")
+            total = int(conn.execute(
+                f"SELECT COUNT(*) FROM memories WHERE {conditions}", params,
+            ).fetchone()[0])
+            rows = conn.execute(
+                f"SELECT * FROM memories WHERE {conditions} "
+                "ORDER BY updated_at DESC, memory_id DESC LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ).fetchall()
+        return [MemoryItem(**{**dict(row), "scope": PrivacyLevel(row["scope"])}) for row in rows], total
+
+    def get_memory(self, memory_id: str) -> MemoryItem | None:
+        """Fetch one explicit memory by identity."""
+        with self.db_manager.connection() as conn:
+            row = conn.execute("SELECT * FROM memories WHERE memory_id = ?", (memory_id,)).fetchone()
+        if row is None:
+            return None
+        values = dict(row)
+        values["scope"] = PrivacyLevel(values["scope"])
+        return MemoryItem(**values)
+
+    def update_memory(
+        self, memory_id: str, *, content: str, category: str, scope: PrivacyLevel,
+    ) -> bool:
+        """Change admin-editable fields, preserving importance/expiry/creation."""
+        with self.db_manager.connection() as conn:
+            result = conn.execute(
+                "UPDATE memories SET content = ?, category = ?, scope = ?, updated_at = ? "
+                "WHERE memory_id = ?",
+                (content, category, scope.value, utc_now_iso(), memory_id),
+            )
+            return result.rowcount > 0
+
+    def delete_memory(self, memory_id: str) -> bool:
+        """Delete exactly one explicit memory; other data remains untouched."""
+        with self.db_manager.connection() as conn:
+            result = conn.execute("DELETE FROM memories WHERE memory_id = ?", (memory_id,))
+            return result.rowcount > 0
+
     # -------------------------------------------------------------------------
     # Business Facts
     # -------------------------------------------------------------------------

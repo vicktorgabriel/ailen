@@ -20,6 +20,10 @@ Estados válidos: `Proposed`, `Accepted`, `Superseded`, `Rejected`.
 - `ADR-012-native-facepack-engine.md` — engine C ABI desacoplado y FacePack externo versionado.
 - `ADR-013-signed-provisioning-and-recoverable-updates.md` — manifiestos Ed25519,
   CAS, journal y activación/rollback simulados; daemon Appliance pendiente.
+- `ADR-014-core-agent-and-autonomy-levels.md` — agente en Core con niveles de
+  autonomía N1–N3 (tools, archivos acotados, navegador aislado); N4 fuera. Accepted.
+- `ADR-015-realtime-voice-provider.md` — proveedor remoto de voz en vivo opcional
+  por WebSocket con tools vía function-calling en Core. Accepted.
 
 
 Vision/STT/TTS continúan sujetos a POC/benchmark físico. FacePack queda aceptado

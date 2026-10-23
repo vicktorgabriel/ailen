@@ -11,6 +11,7 @@ class LabSessionMetrics:
     """Collects real observational latency and throughput metrics during a lab session."""
 
     session_id: str
+    execution_mode: str = field(default="unknown", kw_only=True)
     started_at: float = field(default_factory=time.time)
     ended_at: float | None = None
 
@@ -244,6 +245,7 @@ class LabSessionMetrics:
 
         return {
             "session_id": self.session_id,
+            "execution_mode": self.execution_mode,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "duration_seconds": dur,
@@ -251,16 +253,20 @@ class LabSessionMetrics:
                 "utterances": self.utterances_count,
                 "stt_success": self.stt_success_count,
                 "stt_fail": self.stt_fail_count,
+                "stt_latency_samples": len(self.stt_latencies_ms),
                 "stt_latency_avg_ms": self._avg(self.stt_latencies_ms),
                 "stt_latency_p95_ms": self._p95(self.stt_latencies_ms),
                 "tts_calls": self.tts_calls_count,
+                "tts_latency_samples": len(self.tts_latencies_ms),
                 "tts_latency_avg_ms": self._avg(self.tts_latencies_ms),
                 "tts_latency_p95_ms": self._p95(self.tts_latencies_ms),
+                "ttfar_samples": len(self.ttfar_latencies_ms),
                 "ttfar_avg_ms": self._avg(self.ttfar_latencies_ms),
                 "ttfar_p95_ms": self._p95(self.ttfar_latencies_ms),
             },
             "ai": {
                 "calls": self.ai_calls_count,
+                "latency_samples": len(self.ai_latencies_ms),
                 "latency_avg_ms": self._avg(self.ai_latencies_ms),
                 "latency_p95_ms": self._p95(self.ai_latencies_ms),
                 "prompt_eval_avg_ms": self._avg(self.ai_prompt_eval_ms),

@@ -581,6 +581,17 @@ def cmd_serve(args: argparse.Namespace, config_path: str | None) -> int:
             "AILEN: no hay contraseña de administración configurada.\n"
             "Ejecutá `ailen admin set-password` y volvé a levantar el panel."
         )
+    # serve owns the admin process, not the separate Lab audio/vision/AI runtime.
+    from ailen.domain.enums import ServiceStatus
+    from ailen.memory.repository import MemoryRepository
+    from ailen.services.diagnostics_admin_service import DiagnosticsAdminService
+    from ailen.services.memory_admin_service import MemoryAdminService
+
+    for component in ("display", "audio", "vision", "ai"):
+        health.set_component_status(component, ServiceStatus.UNKNOWN)
+    health.set_component_status(
+        "memory", ServiceStatus.HEALTHY if db_mgr.check_health() else ServiceStatus.UNHEALTHY,
+    )
     status = StatusService(health_service=health)
     config_service = ConfigService(config_path)
     settings = SettingsService(config_service)
@@ -638,6 +649,10 @@ def cmd_serve(args: argparse.Namespace, config_path: str | None) -> int:
             settings=settings,
             updates=update_service,
             noise_calibrator=noise_calibrator,
+            memory=MemoryAdminService(MemoryRepository(db_mgr)),
+            diagnostics=DiagnosticsAdminService(
+                status, settings.get_config, reports_dir=Path("runtime/lab"),
+            ),
         )
 
         logger.info("Starting AILEN web panel on %s:%d", host, port)

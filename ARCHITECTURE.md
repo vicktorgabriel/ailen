@@ -372,7 +372,7 @@ Baseline:
 - `system_status`;
 - `time_weather` mediante backend apropiado.
 
-Nunca exponer shell arbitrario al modelo.
+Nunca exponer shell arbitrario al modelo. Archivos acotados y navegador aislado se habilitan sólo por los niveles de autonomía N2/N3 de ADR-014, ejecutados por Core con confirmación humana.
 
 Las herramientas con efectos deben validar argumentos independientemente de la salida del LLM.
 

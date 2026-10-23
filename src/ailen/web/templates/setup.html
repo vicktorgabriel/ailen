@@ -1,52 +1,121 @@
 <div class="page-header">
   <div>
-    <h1 class="page-title">🚀 Asistente de Configuración Inicial (Setup Wizard)</h1>
-    <p class="page-lede">Paso a paso guiado para dejar a AILÉN 100% operativa en este equipo.</p>
+    <h1 class="page-title">Revisión inicial de hardware</h1>
+    <p class="page-lede">Datos reportados por el detector de hardware de este equipo. Este paso no descarga modelos ni cambia la configuración.</p>
+  </div>
+  <div class="header-actions">
+    <span class="status-pill ok">{{ hw_status }}</span>
   </div>
 </div>
 
 <div class="card">
   <div class="card-header">
-    <div style="display: flex; gap: 1rem; align-items: center; width: 100%; justify-content: space-between;">
-      <span class="status-pill ok" id="wizard-step-badge">Paso 1 de 4</span>
-      <div style="display: flex; gap: 0.5rem; font-size: 0.82rem; color: var(--fg-muted);">
-        <strong style="color: var(--brand-primary);">1. Hardware</strong> ➔
-        <span>2. Voz & Mic</span> ➔
-        <span>3. Identidad</span> ➔
-        <span>4. Finalizar</span>
-      </div>
-    </div>
+    <h2 class="card-title">Paso único: revisión de hardware</h2>
   </div>
   <div class="card-body">
-    <!-- Paso 1: Detección Hardware -->
-    <div id="wizard-step-1" class="wizard-step-content">
-      <h2 style="font-size: 1.15rem; color: var(--fg-primary); margin-bottom: 0.5rem;">Paso 1: Detección y Calibración de Hardware</h2>
-      <p style="color: var(--fg-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
-        AILÉN analizó los componentes de esta computadora para sugerir el perfil de inferencia con menor latencia y mejor consumo:
-      </p>
+    {{ raw:hardware_html }}
+    <p class="form-help" style="margin-top: 0.75rem;">Última detección reportada: {{ hw_timestamp }}</p>
+  </div>
+</div>
 
-      <ul class="kv-list" style="margin-bottom: 1rem;">
-        <li class="kv-item">
-          <span class="kv-key">Procesador (CPU)</span>
-          <span class="kv-val">{{ cpu_name }} ({{ cpu_cores }} hilos)</span>
-        </li>
-        <li class="kv-item">
-          <span class="kv-key">Memoria RAM</span>
-          <span class="kv-val">{{ ram_total_mb }} MB</span>
-        </li>
-        <li class="kv-item">
-          <span class="kv-key">Perfil Sugerido</span>
-          <span class="kv-val" style="color: var(--brand-primary); font-weight: 700;">{{ rec_profile }}</span>
-        </li>
-      </ul>
-
-      <div class="notice warn">
-        <span>Este perfil es una recomendación de capacidad, no una certificación. El instalador debe generar un ProvisioningPlan y sólo ofrecer un modelo local calificado para esta clase de hardware, con margen para voz, rostro y sistema. Si no existe, propondrá LAN o remoto sin descargar pesos automáticamente.</span>
-      </div>
+<div class="card" style="margin-top: 1.25rem;">
+  <div class="card-header">
+    <h2 class="card-title">Perfil sugerido</h2>
+  </div>
+  <div class="card-body">
+    <ul class="kv-list">
+      <li class="kv-item">
+        <span class="kv-key">Sugerencia del detector</span>
+        <span class="kv-val" style="color: var(--brand-primary); font-weight: 700;">{{ rec_profile }}</span>
+      </li>
+      <li class="kv-item">
+        <span class="kv-key">Perfil efectivo del nodo</span>
+        <span class="kv-val">{{ node_profile }}</span>
+      </li>
+    </ul>
+    <div class="notice warn" style="margin-top: 1rem;">
+      <span>Este perfil es una recomendación de capacidad, no una certificación. El instalador debe generar un ProvisioningPlan y sólo ofrecer un modelo local calificado para esta clase de hardware, con margen para voz, rostro y sistema. Si no existe, propondrá LAN o remoto sin descargar pesos automáticamente.</span>
     </div>
+
+    <form method="post" action="/config" style="display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin-top: 1rem;">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <input type="hidden" name="section" value="node">
+      <div class="form-group" style="flex: 1 1 220px; margin: 0;">
+        <label class="form-label" for="f-setup-node-profile">Perfil del nodo (override explícito)</label>
+        <select id="f-setup-node-profile" name="node.profile">
+          {{ raw:profile_options }}
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary">Guardar perfil del nodo</button>
+    </form>
   </div>
-  <div class="card-footer" style="justify-content: flex-end; gap: 0.75rem;">
-    <a href="/audio" class="btn btn-secondary">Saltar al Panel</a>
-    <a href="/audio" class="btn btn-primary">Siguiente: Calibrar Voz & Sonido ➔</a>
+</div>
+
+<div class="card" style="margin-top: 1.25rem;">
+  <div class="card-header">
+    <h2 class="card-title">Configuración efectiva actual</h2>
   </div>
+  <div class="card-body">
+    <ul class="kv-list">
+      <li class="kv-item">
+        <span class="kv-key">Nodo</span>
+        <span class="kv-val">{{ node_name }}</span>
+      </li>
+      <li class="kv-item">
+        <span class="kv-key">Personaje</span>
+        <span class="kv-val">{{ identity_name }}</span>
+      </li>
+      <li class="kv-item">
+        <span class="kv-key">Entrada de audio</span>
+        <span class="kv-val">{{ audio_input_device }}</span>
+      </li>
+      <li class="kv-item">
+        <span class="kv-key">Salida de audio</span>
+        <span class="kv-val">{{ audio_output_device }}</span>
+      </li>
+      <li class="kv-item">
+        <span class="kv-key">Pre-ganancia de captura</span>
+        <span class="kv-val">{{ audio_capture_gain }}</span>
+      </li>
+      <li class="kv-item">
+        <span class="kv-key">AGC de captura</span>
+        <span class="kv-val">{{ audio_agc }}</span>
+      </li>
+      <li class="kv-item">
+        <span class="kv-key">Motor STT</span>
+        <span class="kv-val">{{ speech_stt_engine }}</span>
+      </li>
+      <li class="kv-item">
+        <span class="kv-key">Motor TTS</span>
+        <span class="kv-val">{{ speech_tts_engine }}</span>
+      </li>
+      <li class="kv-item">
+        <span class="kv-key">Voz configurada</span>
+        <span class="kv-val">{{ speech_tts_voice }}</span>
+      </li>
+      <li class="kv-item">
+        <span class="kv-key">Visión</span>
+        <span class="kv-val">{{ vision_enabled }}</span>
+      </li>
+      <li class="kv-item">
+        <span class="kv-key">Cámara configurada</span>
+        <span class="kv-val">{{ vision_camera_device }}</span>
+      </li>
+      <li class="kv-item">
+        <span class="kv-key">Backend de IA</span>
+        <span class="kv-val">{{ ai_provider }}</span>
+      </li>
+      <li class="kv-item">
+        <span class="kv-key">Proveedores remotos</span>
+        <span class="kv-val">{{ ai_remote }}</span>
+      </li>
+    </ul>
+  </div>
+</div>
+
+<div class="card-footer" style="justify-content: flex-end; gap: 0.75rem; margin-top: 1.25rem;">
+  <a href="/audio" class="btn btn-secondary">Revisar audio</a>
+  <a href="/ia" class="btn btn-secondary">Revisar IA</a>
+  <a href="/vision" class="btn btn-secondary">Revisar visión</a>
+  <a href="/personalidad" class="btn btn-primary">Revisar personalidad</a>
 </div>

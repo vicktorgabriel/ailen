@@ -83,7 +83,7 @@ body {
 /* App Shell Structure */
 .app-layout {
   display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   grid-template-rows: var(--topbar-h) 1fr;
   grid-template-areas:
     "sidebar topbar"
@@ -313,6 +313,7 @@ body {
 /* Main Content Area */
 .app-main {
   grid-area: main;
+  min-width: 0;
   padding: 1.75rem;
   max-width: var(--max-width);
   width: 100%;
@@ -780,6 +781,7 @@ input[type="range"].custom-range::-webkit-slider-thumb:hover {
 }
 
 input[type="text"],
+input[type="search"],
 input[type="password"],
 input[type="number"],
 select,
@@ -796,6 +798,7 @@ textarea {
 }
 
 input[type="text"]:focus,
+input[type="search"]:focus,
 input[type="password"]:focus,
 input[type="number"]:focus,
 select:focus,
@@ -1104,7 +1107,7 @@ input:checked + .slider-toggle:before {
 /* Responsive Media Queries */
 @media (max-width: 900px) {
   .app-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "topbar"
       "main";
@@ -1135,5 +1138,27 @@ input:checked + .slider-toggle:before {
 
   .app-main {
     padding: 1rem 1rem 4.5rem 1rem;
+  }
+}
+
+/* Admin forms must fit the viewport; tables scroll inside their own card. */
+.admin-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.admin-form input:not([type="checkbox"]),
+.admin-form textarea,
+.admin-form select {
+  min-width: 0;
+  max-width: 100%;
+}
+.admin-form .btn {
+  align-self: flex-start;
+}
+@media (max-width: 600px) {
+  .topbar-right {
+    display: none;
   }
 }

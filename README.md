@@ -10,6 +10,7 @@ La idea central no es crear un chatbot dentro de una computadora, sino un **disp
 
 - Versión de trabajo: `0.4.0-dev.0`
 - Fase: consolidación R4/R5 sobre runtime físico de laboratorio ya funcional; FacePack nativo es el renderer lógico por defecto (fallo => headless, nunca portrait automático) y el siguiente hito es Appliance Debian.
+- R5: memoria explícita y diagnóstico ya usan servicios reales; [alcance y validación](docs/testing/R5_ADMIN_REAL_DATA.md). Las demás vistas pendientes figuran en `TASKS.md`.
 - Hardware objetivo del primer prototipo: Banghó Zero G05, 8 GB RAM, M.2 500 GB.
 - Sistema base previsto: Debian 13 minimal.
 - Primer objetivo de optimización posterior: SF20BA de 8 GB y 4 GB.

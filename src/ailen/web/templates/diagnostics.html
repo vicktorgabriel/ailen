@@ -1,125 +1,38 @@
 <div class="page-header">
   <div>
-    <h1 class="page-title">Diagnóstico & Observabilidad Forense</h1>
-    <p class="page-lede">Informe de preflight del LabDoctor, métricas de latencia de percentiles (p50/p95) y visor de logs estructurados.</p>
-  </div>
-  <div class="header-actions">
-    <button class="btn btn-primary btn-sm" id="btn-run-doctor">🩺 Ejecutar Doctor Completo</button>
+    <h1 class="page-title">Diagnóstico</h1>
+    <p class="page-lede">Salud del proceso del panel, comprobaciones de disponibilidad y mediciones de sesiones de laboratorio.</p>
   </div>
 </div>
-
-<!-- Preflight Doctor Results -->
 <div class="card">
-  <div class="card-header">
-    <h2 class="card-title">🩺 Estado del Preflight Doctor</h2>
-    <span class="status-pill ok">PASS (Sin errores críticos)</span>
-  </div>
+  <div class="card-header"><h2 class="card-title">Estado del proceso: {{ health }}</h2></div>
   <div class="card-body">
-    <ul class="kv-list">
-      <li class="kv-item">
-        <span class="kv-key">🟢 Hardware & Plataforma</span>
-        <span class="kv-val">CPU 6 núcleos, 8 GB RAM, Vulkan disponible</span>
-      </li>
-      <li class="kv-item">
-        <span class="kv-key">🟢 Audio I/O (ALSA / PipeWire)</span>
-        <span class="kv-val">Micrófono G600 y salida estéreo reconocidos a 16kHz Mono 16-bit LE</span>
-      </li>
-      <li class="kv-item">
-        <span class="kv-key">🟢 Motores de Voz (Vosk & Piper)</span>
-        <span class="kv-val">Vosk small-es 0.42 listo · Piper es_AR-daniela cacheada</span>
-      </li>
-      <li class="kv-item">
-        <span class="kv-key">🟢 Inferencia Local (Ollama)</span>
-        <span class="kv-val">Qwen 3.5 2B cargado en Vulkan (~15.4 tok/s)</span>
-      </li>
-      <li class="kv-item">
-        <span class="kv-key">🟡 Cámara / RTSP</span>
-        <span class="kv-val" style="color: var(--status-warn);">1 reconexión en 24h (Degradación leve)</span>
-      </li>
-    </ul>
+    <p>Estado: {{ assistant_state }} · Consultado: {{ checked_at }}</p>
+    <ul class="kv-list">{{ raw:components }}</ul>
+    <p>El panel y la conversación Lab pueden ejecutarse en procesos separados. Un componente no iniciado en este proceso permanece UNKNOWN.</p>
+    <a href="/diagnostico" class="btn btn-secondary">Actualizar estado</a>
   </div>
 </div>
-
-<!-- Métricas de Latencia p50 / p95 -->
 <div class="card" style="margin-top: 1.25rem;">
-  <div class="card-header">
-    <h2 class="card-title">📊 Percentiles de Latencia (Últimas 50 Interacciones)</h2>
-    <span class="card-subtitle">Mediciones reales registradas en la tabla `telemetry` de SQLite</span>
-  </div>
+  <div class="card-header"><h2 class="card-title">Disponibilidad de componentes: {{ doctor_state }}</h2></div>
   <div class="card-body">
-    <div class="table-responsive">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Etapa del Pipeline</th>
-            <th>Mediana (p50)</th>
-            <th>Percentil 95 (p95)</th>
-            <th>Evaluación</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>🎙️ STT Transcripción de Audio</td>
-            <td><strong>340 ms</strong></td>
-            <td>460 ms</td>
-            <td><span class="status-pill ok">Excelente</span></td>
-          </tr>
-          <tr>
-            <td>🧭 Resolver / Intent Routing</td>
-            <td><strong>6 ms</strong></td>
-            <td>14 ms</td>
-            <td><span class="status-pill ok">Instantáneo</span></td>
-          </tr>
-          <tr>
-            <td>🧠 LLM Generación Textual</td>
-            <td><strong>610 ms</strong></td>
-            <td>980 ms</td>
-            <td><span class="status-pill ok">Fluido</span></td>
-          </tr>
-          <tr>
-            <td>🗣️ TTS Primer Chunk (Piper)</td>
-            <td><strong>Sin medición</strong></td>
-            <td>—</td>
-            <td><span class="status-pill warn">Pendiente de sesión</span></td>
-          </tr>
-          <tr>
-            <td>⏱️ Turno Total de Voz (TTFAR)</td>
-            <td><strong>1.25 s</strong></td>
-            <td>1.70 s</td>
-            <td><span class="status-pill ok">Conversación Natural</span></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <p>Última comprobación: {{ doctor_checked_at }}</p>
+    <ul class="kv-list">{{ raw:checks }}</ul>
+    <p>Las comprobaciones inspeccionan dependencias, dispositivos y disponibilidad local. PASS no certifica calidad acústica, rendimiento ni una conversación completa.</p>
+    <form method="post" action="/diagnostico/run">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <button class="btn btn-primary" type="submit">Ejecutar comprobaciones</button>
+    </form>
   </div>
 </div>
-
-<!-- Logs Estructurados en Vivo -->
 <div class="card" style="margin-top: 1.25rem;">
-  <div class="card-header">
-    <h2 class="card-title">📜 Logs Estructurados en Vivo</h2>
-    <div style="display: flex; gap: 0.5rem;">
-      <select id="log-filter-subsystem" style="padding: 0.2rem 0.5rem; font-size: 0.78rem;">
-        <option value="all">Todos los Subsistemas</option>
-        <option value="audio">Audio & VAD</option>
-        <option value="stt">STT Vosk</option>
-        <option value="router">AI Router</option>
-        <option value="tts">TTS Piper</option>
-        <option value="vision">Visión YuNet</option>
-      </select>
-    </div>
-  </div>
-  <div class="card-body">
-    <div style="background: #0d0b0a; border: 1px solid var(--border-card); border-radius: var(--radius-sm); padding: 0.75rem; font-family: ui-monospace, monospace; font-size: 0.78rem; max-height: 260px; overflow-y: auto; color: var(--fg-secondary);">
-      <p style="color: var(--status-ok);">15:40:12.102 [INFO] [ailen.audio.vad] Speech start detected (RMS: 0.031, threshold: 0.022)</p>
-      <p style="color: var(--fg-primary);">15:40:13.340 [INFO] [ailen.stt.vosk] Transcript: "qué hora es" (confidence: 0.98, time: 320ms)</p>
-      <p style="color: var(--brand-primary);">15:40:13.348 [INFO] [ailen.router] Fast-path deterministic match: ClockTool (exec_time: 8ms)</p>
-      <p style="color: var(--status-info);">[INFO] [ailen.tts.piper] Sin eventos TTS medidos en esta sesión.</p>
-      <p style="color: var(--fg-primary);">15:40:13.480 [INFO] [ailen.audio.out] Playback started on hw:0,0 (Total turn latency: 1.138s)</p>
-    </div>
-  </div>
-  <div class="card-footer">
-    <span>Los logs enmascaran automáticamente contraseñas, secretos y API keys.</span>
-    <button type="button" class="btn btn-secondary btn-sm" id="btn-copy-logs">📋 Copiar Logs Sanitizados</button>
+  <div class="card-header"><h2 class="card-title">Latencias registradas</h2></div>
+  <div class="card-body table-responsive">
+    <p>{{ telemetry_detail }}</p><p>Fin de sesión: {{ telemetry_timestamp }}</p>
+    <table class="data-table">
+      <thead><tr><th>Etapa</th><th>Muestras</th><th>Promedio</th><th>p95</th></tr></thead>
+      <tbody>{{ raw:metrics }}</tbody>
+    </table>
+    <p>Los tiempos corresponden a la sesión indicada. El primer PCM es una referencia de latencia, no una medición acústica del parlante.</p>
   </div>
 </div>

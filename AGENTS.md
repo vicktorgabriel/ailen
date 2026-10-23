@@ -21,7 +21,7 @@ Antes de modificar código o arquitectura:
 
 ## Estado actual
 
-AILEN está en `0.4.0-dev.0` con Foundation/Core/Web, Face/Vision, Audio/STT/TTS, AI Router adaptativo, R3C Controlled Tools, recordatorios, proveedores externos y el Vertical 1 de updates firmados en Lab integrados. El baseline completo actual es de 1145 tests en verde, Ruff limpio, mypy limpio en 164 módulos fuente y wheel limpio de 202 entradas. R5B FacePack 1.6 es el renderer lógico por defecto; un fallo degrada a headless y nunca elige `portrait`/`pixel` automáticamente. La prioridad actual es consolidar R4/R5 y completar sus validaciones físicas; R6 Appliance Debian sigue siendo el siguiente hito estructural porque el daemon privilegiado de updates aún no existe.
+AILEN está en `0.4.0-dev.0` con Foundation/Core/Web, Face/Vision, Audio/STT/TTS, AI Router adaptativo, R3C Controlled Tools, recordatorios, proveedores externos y el Vertical 1 de updates firmados en Lab integrados. El baseline completo actual es de 1164 tests en verde, Ruff limpio, mypy limpio en 168 módulos fuente y wheel limpio de 211 entradas. R5B FacePack 1.6 es el renderer lógico por defecto; un fallo degrada a headless y nunca elige `portrait`/`pixel` automáticamente. La prioridad actual es consolidar R4/R5 y completar sus validaciones físicas; R6 Appliance Debian sigue siendo el siguiente hito estructural porque el daemon privilegiado de updates aún no existe.
 
 ## Continuidad de agentes Codex
 
@@ -29,6 +29,19 @@ AILEN está en `0.4.0-dev.0` con Foundation/Core/Web, Face/Vision, Audio/STT/TTS
 - Codex Sol Max sigue siendo el agente principal para arquitectura, auditorías amplias, migraciones y cierre de gates.
 - Codex Spark se integra como subagente `spark_worker` para cambios acotados, búsqueda rápida, UI, documentación y regresiones focales. Está definido en `.codex/agents/spark_worker.toml` y debe recibir instrucciones explícitas de ejecutar los tests pertinentes antes de devolver el turno.
 - Comandos y perfiles locales: `.agents/SESSION_REGISTRY.md` y `scripts/resume_codex_ailen.sh`. Cambiar de modelo no cambia de thread.
+
+## Agentes auxiliares de desarrollo: AGY (Gemini) y OpenCode (DeepSeek free)
+
+Orden vigente del propietario: además de Codex, el desarrollo usa estos dos CLIs como agentes auxiliares. Son herramientas de desarrollo; **no** son proveedores runtime de AILEN (AGY/OpenCode siguen retirados del producto, ver ADR-011 y `CURRENT_STATE.md`).
+
+- **AGY (Gemini):** `agy -p "<prompt>"` (no interactivo). Para auditorías, revisión de docs y tareas acotadas. Usar `--mode plan` cuando sólo deba analizar.
+- **OpenCode (DeepSeek free):** `opencode run --model opencode/deepseek-v4.1-flash-free "<prompt>"`. Sólo modelos gratuitos (`*-free`); no usar modelos pagos sin autorización.
+- Deben leer este archivo y `docs/operations/AGENT_HANDOFF.md` antes de actuar y reciben tests concretos a ejecutar antes de devolver el turno.
+- Nunca reciben secretos, API keys, grabaciones, memoria privada ni datos de clientes. No usar `--dangerously-skip-permissions` ni `--auto` sin autorización explícita.
+- Aplican las mismas reglas que el resto: sin commit ni push, sin borrar trabajo ajeno, sin cambios estructurales sin ADR.
+- **Uso obligatorio:** el agente principal delega en AGY y OpenCode toda auditoría, revisión de diff, búsqueda amplia, redacción de tests de regresión y tareas acotadas, para ahorrar tokens y acelerar. Arquitectura, seguridad y cierre de gates los decide el principal.
+- **Todo se documenta:** cada cambio, decisión y delegación se registra en el mismo lote (`TASKS.md`, `CURRENT_STATE.md`, `RECENT_DECISIONS.md`, `CHANGELOG.md`, ADR). Un cambio sin documentación no está cerrado.
+- El agente principal revisa el diff de cualquier cambio que hagan antes de darlo por cerrado.
 
 ## Reglas esenciales
 
