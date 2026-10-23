@@ -3,6 +3,7 @@
 from ailen.tools.builtin.camera import CameraTool
 from ailen.tools.builtin.clock import ClockTool
 from ailen.tools.builtin.face_expression import FaceExpressionTool
+from ailen.tools.builtin.files import FilesTool
 from ailen.tools.builtin.music import (
     DesktopMusicService,
     LocalMusicService,
@@ -39,6 +40,7 @@ __all__ = [
     "FaceExpressionTool",
     "FakeAudioVolumeService",
     "FakeWebSearchProvider",
+    "FilesTool",
     "LocalMusicService",
     "MprisMusicService",
     "MusicService",

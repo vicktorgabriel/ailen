@@ -22,6 +22,19 @@
   `<x>_context(cfg)`; `app.py` solo cablea y aplica `_flash`. Sin SettingsService se
   usan los defaults de Core. Estado en vivo de tools/visión/personalidad evolucionada
   requiere servicios inyectados desde el runtime (siguiente trabajo).
+- gpt-oss-20b (MXFP4) se sirve con `llama-server --jinja` en 127.0.0.1:18080
+  (`ollama pull gpt-oss` falla con Ollama 0.21.2: requiere versión más nueva; el GGUF
+  importado a Ollama sin plantilla Harmony responde basura). `opencode run --model
+  asrock-local/gpt-oss-20b` falla por el esquema de tools (`Pattern must start with
+  '^'`); se usa llamando directo a /v1/chat/completions con `reasoning_effort: low`.
+  Calidad de revisión observada: baja (hallazgos mayormente falsos en la primera
+  prueba); usar como segundo parecer, nunca como único revisor. ~6,7 tok/s.
+- R5C (2026-10-23): reparto de trabajo con agentes: Codex Sol (hilo canónico,
+  `codex exec resume`) para seguridad/confirmación y correcciones; OpenCode para tool
+  de archivos y tests; AGY para realtime; revisión cruzada (el autor no se revisa).
+  gpt-oss queda como segundo parecer. SHOP/PUBLIC limita a N1 sin bloquear efectos
+  laterales N1 (ADR-014 aclarado). Tool sin `autonomy_level` = N1; declarado inválido
+  se deniega siempre.
 - Regla de proceso: todo cambio, decisión y delegación se documenta en el mismo
   lote de trabajo (ver AGENTS.md y REGLAMENTO.md).
 

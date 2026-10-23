@@ -12,6 +12,7 @@
   locales como una persona usando el equipo, bajo niveles N1–N3 de ADR-014 con
   agente en Core, confirmación humana y sin shell general (N4 fuera).
 - R5 Web Admin: además de `/ia`, `/audio`, `/actualizaciones`, `/memoria` y `/diagnostico`, ahora `/herramientas`, `/vision`, `/rostro`, `/personalidad`, `/sistema` y `/setup` consumen config efectiva sin datos sintéticos. Baseline: 1190 tests, Ruff y mypy (174 módulos) limpios; wheel no reverificado en este lote.
+- R5C implementado en software: contrato de autonomía, confirmación humana, FilesTool N2 y base realtime (1286 tests, Ruff/mypy limpios, 181 módulos). Sin validación física; el flujo de confirmación por voz/panel y el proveedor realtime concreto siguen pendientes.
 - Estado: ADR-014/015 aceptados; implementación pendiente (Bloque 22 de TASKS, R5C).
 - AGY (Gemini) y OpenCode (DeepSeek free) son agentes auxiliares de desarrollo
   obligatorios para delegar; no son proveedores runtime.

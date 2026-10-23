@@ -3,6 +3,8 @@
 ## [0.4.0-dev.0] — 2026-08-31
 
 ### Changed
+- 2026-10-23 R5C: servicio de confirmación humana (`core/confirmation.py`), tool de archivos N2 (`tools/builtin/files.py`, `agent.file_roots`) y base del proveedor realtime (`ai/realtime/`). Implementados por Codex Sol (confirmación y correcciones de seguridad), OpenCode DeepSeek (archivos) y AGY Gemini (realtime); revisión adversarial cruzada (AGY/OpenCode) con 25 hallazgos verificados y corregidos (hardlink/TOCTOU, append sin confirmar, contenido en auditoría, JSON no objeto, resultado de tool sin filtrar, autonomía inválida). Suite: 1286 tests.
+- 2026-10-23 R5C: contrato de niveles de autonomía ADR-014 (N1–N3) en `ToolContext`/`ToolExecutor`, config `[agent].max_autonomy_level` y campo en el panel. Sin cambios de comportamiento hasta que existan tools N2/N3. Tests en `tests/unit/test_tool_autonomy.py` (OpenCode DeepSeek); revisión con gpt-oss local vía llama.cpp.
 - 2026-10-23 R5: `/herramientas`, `/vision`, `/rostro`, `/personalidad`, `/sistema` y
   `/setup` leen la configuración efectiva (módulos `web/*_view.py` con funciones
   `*_context`) y dejan de mostrar latencias, benchmarks, modelos de cámara, estados

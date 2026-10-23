@@ -361,6 +361,15 @@ class SocialConfig:
 
 
 @dataclass
+class AgentConfig:
+    """Core agent limits (ADR-014). The cap never raises permissions on its own."""
+    max_autonomy_level: int = 1  # 1=tools, 2=authorized files, 3=isolated browser
+    # Absolute roots the N2 files tool may reach. Empty means the tool is
+    # unavailable and every file action fails closed.
+    file_roots: list[str] = field(default_factory=list)
+
+
+@dataclass
 class WebConfig:
     """Local administration web panel configuration."""
     enabled: bool = True
@@ -414,6 +423,7 @@ class AILENConfig:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     personality: PersonalityConfig = field(default_factory=PersonalityConfig)
     social: SocialConfig = field(default_factory=SocialConfig)
+    agent: AgentConfig = field(default_factory=AgentConfig)
     web: WebConfig = field(default_factory=WebConfig)
     network: NetworkConfig = field(default_factory=NetworkConfig)
     updates: UpdatesConfig = field(default_factory=UpdatesConfig)
@@ -428,11 +438,17 @@ class AILENConfig:
 
 
 def _format_toml_value(value: Any) -> str:
-    """Format a scalar TOML value safely for AILEN's configuration schema."""
+    """Format a scalar or flat list TOML value safely for AILEN's config schema.
+
+    Lists are needed by ``agent.file_roots``. Only flat lists of scalars are
+    supported; nested tables continue to be serialized as dotted sections.
+    """
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return str(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_format_toml_value(item) for item in value) + "]"
     escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
@@ -660,6 +676,14 @@ def load_config_from_dict(raw: dict[str, Any]) -> AILENConfig:
                     pass
             elif hasattr(cfg.social, k):
                 setattr(cfg.social, k, v)
+
+    if "agent" in raw and isinstance(raw["agent"], dict):
+        for k, v in raw["agent"].items():
+            if k == "file_roots":
+                if isinstance(v, list):
+                    cfg.agent.file_roots = [item for item in v if isinstance(item, str)]
+            elif hasattr(cfg.agent, k):
+                setattr(cfg.agent, k, v)
 
     if "web" in raw and isinstance(raw["web"], dict):
         for k, v in raw["web"].items():
@@ -1097,6 +1121,10 @@ def validate_config(config: AILENConfig) -> list[str]:
 
     if config.web.port < 1 or config.web.port > 65535:
         errors.append("web.port must be between 1 and 65535")
+    for root in config.agent.file_roots:
+        if not isinstance(root, str) or not Path(root).expanduser().is_absolute():
+            errors.append("agent.file_roots entries must be absolute paths")
+            break
     if config.logging.level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
         errors.append(f"Invalid logging level: {config.logging.level}")
     return errors

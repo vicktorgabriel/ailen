@@ -33,6 +33,7 @@ from ailen.audio.coordinator import AudioInteractionCoordinator
 from ailen.audio.stt_quality import SttQualityEvaluator
 from ailen.core.capabilities import CapabilityDescriptor, CapabilityProvider, CapabilityRegistry
 from ailen.core.config import AILENConfig
+from ailen.core.confirmation import ConfirmationService
 from ailen.core.conversation import ConversationCoordinator
 from ailen.core.coordinator import InteractionCoordinator
 from ailen.core.events import EventBus
@@ -72,6 +73,7 @@ from ailen.tools.builtin import (
     ClockTool,
     DesktopMusicService,
     FaceExpressionTool,
+    FilesTool,
     MusicTool,
     NotesTool,
     ReminderService,
@@ -83,6 +85,7 @@ from ailen.tools.builtin import (
     WebSearchTool,
 )
 from ailen.tools.builtin.web_search import create_web_search_provider
+from ailen.tools.contracts import AutonomyLevel
 from ailen.tools.executor import ToolExecutor
 from ailen.tools.registry import ToolRegistry
 from ailen.tools.semantic_intent import SemanticToolIntentResolver
@@ -440,7 +443,7 @@ class LabRunner:
                 repository=self.memory_repo,
                 event_bus=self.event_bus,
             )
-        self.tool_registry = ToolRegistry([
+        tools: list[Any] = [
             CameraTool(self.camera_control),
             ClockTool(),
             FaceExpressionTool(self.face_controller),
@@ -457,11 +460,17 @@ class LabRunner:
                 )
             ),
             WebFetchTool(),
-        ])
+        ]
+        if self.config.agent.file_roots:
+            # N2 (ADR-014): inert unless agent.max_autonomy_level >= 2 as well.
+            tools.append(FilesTool(self.config.agent.file_roots))
+        self.tool_registry = ToolRegistry(tools)
+        self.confirmation_service = ConfirmationService()
         self.tool_executor = ToolExecutor(
             registry=self.tool_registry,
             event_bus=self.event_bus,
             repository=self.memory_repo,
+            confirmation_service=self.confirmation_service,
         )
         self.capability_registry = CapabilityRegistry(
             self.tool_registry,
@@ -564,6 +573,7 @@ class LabRunner:
                     or any(name.startswith("remote:") for name in self.ai_backends)
                 ),
                 tool_network_allowed=self.config.network.outbound_web_enabled,
+                tool_max_autonomy=AutonomyLevel(min(max(self.config.agent.max_autonomy_level, 1), 3)),
                 external_allowed=(
                     self.config.ai.allow_remote and self.config.ai.remote.enabled
                 ),

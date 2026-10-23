@@ -277,6 +277,11 @@ FIELD_SPECS: tuple[_FieldSpec, ...] = (
         options=(("ar-es", "Argentina (ar-es)"), ("es-es", "España (es-es)"), ("wt-wt", "Global (wt-wt)")),
     ),
 
+    _FieldSpec(
+        "agent.max_autonomy_level", "Agente", "Nivel máximo de autonomía (ADR-014)", "int",
+        min_value=1, max_value=3,
+    ),
+
     # Actualizaciones
     _FieldSpec(
         "updates.channel", "Actualizaciones", "Canal de actualización", "select",

@@ -488,11 +488,11 @@ Debe quedar funcionando:
 - [x] ADR-014 y ADR-015 aceptados; PRODUCT.md §9, ADR README, CHANGELOG y RECENT_DECISIONS actualizados (2026-10-23).
 - [x] Auditoría delegada del working tree R5 (memoria/diagnóstico) con AGY y OpenCode; 2 fixes aplicados, gates: pytest 1164+1, Ruff y mypy (168) en verde.
 - [ ] Baja prioridad de la auditoría: allowlist en export de memoria, `reports_dir` absoluto, LabDoctor con timeout, tests HTTP 409/503 de `/diagnostico/run`.
-- [ ] Definir contrato `autonomy_level` (N1–N3) en el registro de tools y tope configurable.
-- [ ] Servicio de confirmación humana (voz/panel) con regla de transcripción de baja confianza.
-- [ ] Tool de archivos N2 con raíces autorizadas y tests de traversal/symlink/respaldo.
+- [x] Contrato `autonomy_level` (N1–N3): `AutonomyLevel`/`autonomy_level_of` (valor inválido falla cerrado a N3, sin atributo = N1), `ToolContext.max_autonomy`, gate 2b del `ToolExecutor` (`AUTONOMY_DENIED`; SHOP/PUBLIC limitados a N1) y `agent.max_autonomy_level` (1–3, default 1, editable en panel, requiere reinicio). Todas las tools actuales son N1: sin cambio de comportamiento. Pendiente: mostrarlo en `/herramientas` y que `CapabilityRegistry` use el tope.
+- [x] Servicio de confirmación humana (`core/confirmation.py`): TTL 60 s, un solo uso, hash de argumentos, voz rechazada si truncada/confianza None o < 0.72, panel autenticado puede aprobar, fail-closed sin servicio, resumen por tool sin contenido. Pendiente: flujo conversacional/panel que pida y resuelva la confirmación (hoy `CONFIRMATION_REQUIRED` no tiene UI).
+- [x] Tool de archivos N2 (`tools/builtin/files.py`): list/read/create/append/overwrite en `agent.file_roots`, O_NOFOLLOW+fstat+nlink==1, backup antes de modificar, confirmación para overwrite y append sobre existente, auditoría sin contenido. Registrada en el runner sólo si hay raíces; inerte con `max_autonomy_level` 1. Pendiente: UI de raíces y validación física.
 - [ ] Bucle de agente con presupuesto y cancelación.
-- [ ] Adaptador `remote_realtime` WebSocket + harness dry-run + tests simulados.
+- [x] Base del adaptador realtime (`ai/realtime/`): contrato, cliente WebSocket stdlib RFC 6455, sesión fake, bridge a ToolExecutor con modo/autonomía en vivo, presupuesto por reloj y sample rate, SHOP/PUBLIC denegado. Pendiente: adaptador de un proveedor concreto (protocolo del proveedor), ruta `remote_realtime` en el router, harness dry-run con clave propia y medición TTFT/TTFAR.
 - [ ] Tool de navegador N3 aislado con tests de prompt injection.
 - [ ] Vistas Web Admin de agente (raíces, nivel, historial, cancelar).
 

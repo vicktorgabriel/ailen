@@ -11,13 +11,22 @@ import queue
 import threading
 import time
 import uuid
+from copy import deepcopy
+from dataclasses import replace
 from typing import Any
 
+from ailen.core.confirmation import ConfirmationService
 from ailen.core.events import EventBus
 from ailen.domain.enums import ErrorCode, EventType, PrivacyLevel, SocialMode
 from ailen.domain.models import CoreEvent
 from ailen.memory.repository import MemoryRepository
-from ailen.tools.contracts import ToolContext, ToolResult, validate_args
+from ailen.tools.contracts import (
+    AutonomyLevel,
+    ToolContext,
+    ToolResult,
+    autonomy_level_of,
+    validate_args,
+)
 from ailen.tools.registry import ToolRegistry
 
 logger = logging.getLogger("ailen.tools.executor")
@@ -31,10 +40,12 @@ class ToolExecutor:
         registry: ToolRegistry,
         event_bus: EventBus | None = None,
         repository: MemoryRepository | None = None,
+        confirmation_service: ConfirmationService | None = None,
     ) -> None:
         self.registry = registry
         self.event_bus = event_bus
         self.repository = repository
+        self.confirmation_service = confirmation_service
 
     def is_side_effecting(self, tool_name: str, args: dict[str, Any] | None = None) -> bool:
         """Ask the allowlisted tool whether a request mutates state.
@@ -91,6 +102,26 @@ class ToolExecutor:
                 success=False,
                 tool_name=tool_name,
                 status_code="MODE_DENIED",
+                message=msg,
+                error_code=ErrorCode.TOOL_DENIED,
+                latency_ms=latency_ms,
+            )
+
+        # 2b. Autonomy tier (ADR-014): public/shop modes are capped at N1
+        level = autonomy_level_of(tool)
+        cap = AutonomyLevel.N1 if ctx.mode in {SocialMode.SHOP, SocialMode.PUBLIC} else ctx.max_autonomy
+        if level is None or level > cap:
+            latency_ms = (time.monotonic() - start_time) * 1000.0
+            msg = (
+                f"Herramienta '{tool_name}' declara un nivel de autonomía inválido."
+                if level is None else
+                f"Herramienta '{tool_name}' requiere autonomía N{level.value} y el tope es N{cap.value}"
+            )
+            logger.warning("Tool execution autonomy denied: %s", msg)
+            return ToolResult(
+                success=False,
+                tool_name=tool_name,
+                status_code="AUTONOMY_DENIED",
                 message=msg,
                 error_code=ErrorCode.TOOL_DENIED,
                 latency_ms=latency_ms,
@@ -168,7 +199,9 @@ class ToolExecutor:
 
         # 4. Argument validation
         try:
-            validated_args = validate_args(tool.schema, raw_args)
+            # Freeze nested values before human approval/worker dispatch; a
+            # caller changing its original dictionary cannot swap the action.
+            validated_args = validate_args(deepcopy(tool.schema), deepcopy(raw_args))
         except ValueError as exc:
             latency_ms = (time.monotonic() - start_time) * 1000.0
             msg = f"Argumentos inválidos para {tool_name}: {exc}"
@@ -181,6 +214,58 @@ class ToolExecutor:
                 error_code=ErrorCode.TOOL_ARGS_INVALID,
                 latency_ms=latency_ms,
             )
+
+        # 4b. Human confirmation is tool-owned and applies to validated args.
+        # Missing metadata preserves existing N1 tools. Broken declarations
+        # fail closed instead of silently making a sensitive tool executable.
+        confirmation_policy = getattr(tool, "requires_confirmation", None)
+        try:
+            needs_confirmation = (
+                False if confirmation_policy is None
+                else confirmation_policy(deepcopy(validated_args))
+            )
+            if not isinstance(needs_confirmation, bool):
+                raise TypeError("confirmation policy must return bool")
+        except Exception:  # noqa: BLE001
+            return ToolResult(
+                success=False, tool_name=tool_name,
+                status_code="CONFIRMATION_REQUIRED",
+                message="No se pudo verificar la política de confirmación humana.",
+                error_code=ErrorCode.TOOL_DENIED,
+            )
+        approved = False
+        if needs_confirmation:
+            service = self.confirmation_service
+            try:
+                approved = bool(
+                    service is not None
+                    and ctx.confirmation_id
+                    and service.consume(ctx.confirmation_id, tool_name, validated_args)
+                )
+                if not approved:
+                    summary_factory = getattr(tool, "confirmation_summary", None)
+                    summary = (
+                        summary_factory(deepcopy(validated_args))
+                        if callable(summary_factory) else None
+                    )
+                    request = service.request(
+                        tool_name, validated_args, summary=summary,
+                    ) if service else None
+                    return ToolResult(
+                        success=False, tool_name=tool_name,
+                        status_code="CONFIRMATION_REQUIRED",
+                        message=(request.summary if request else "Confirmación humana no disponible."),
+                        data={"confirmation_id": request.id} if request else {},
+                        error_code=ErrorCode.TOOL_DENIED,
+                        latency_ms=(time.monotonic() - start_time) * 1000.0,
+                    )
+            except Exception:  # noqa: BLE001
+                return ToolResult(
+                    success=False, tool_name=tool_name,
+                    status_code="CONFIRMATION_REQUIRED",
+                    message="Confirmación humana no disponible para esta acción.",
+                    error_code=ErrorCode.TOOL_DENIED,
+                )
 
         # 5. Emit TOOL_REQUESTED event
         self._emit_event(
@@ -200,10 +285,13 @@ class ToolExecutor:
         # shutdown; built-ins must still implement bounded I/O internally.
         timeout = min(ctx.timeout_seconds, getattr(tool, "timeout_seconds", 10.0))
         result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+        execution_context = replace(
+            ctx, confirmation_id=ctx.confirmation_id if approved else None,
+        )
 
         def run_tool() -> None:
             try:
-                result_queue.put(("ok", tool.execute(validated_args, ctx)))
+                result_queue.put(("ok", tool.execute(validated_args, execution_context)))
             except Exception as exc:  # noqa: BLE001
                 result_queue.put(("error", exc))
 
@@ -299,16 +387,18 @@ class ToolExecutor:
             logger.warning("Could not publish tool event %s: %s", event_type, exc)
 
     def _redact_args(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Recursively redact sensitive fields from audit logs."""
-        sensitive_keys = {"password", "secret", "token", "key", "credential", "auth"}
+        """Never persist content or long strings in tool_events arguments."""
+        sensitive_keys = {"content", "password", "secret", "token", "key", "credential", "auth"}
 
-        def redact_value(value: Any) -> Any:
+        def redact_value(value: Any, *, sensitive: bool = False) -> Any:
+            if isinstance(value, str) and len(value) > 200:
+                return f"[redacted len={len(value)}]"
+            if sensitive:
+                return "[REDACTED]"
             if isinstance(value, dict):
                 return {
-                    key: (
-                        "[REDACTED]"
-                        if any(marker in key.lower() for marker in sensitive_keys)
-                        else redact_value(item)
+                    key: redact_value(
+                        item, sensitive=any(marker in key.lower() for marker in sensitive_keys),
                     )
                     for key, item in value.items()
                 }

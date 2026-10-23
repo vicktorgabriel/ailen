@@ -31,7 +31,7 @@ from ailen.face.contracts import (
     bounded_expression_ids,
 )
 from ailen.memory.repository import MemoryRepository
-from ailen.tools.contracts import ToolContext
+from ailen.tools.contracts import AutonomyLevel, ToolContext
 from ailen.tools.executor import ToolExecutor
 from ailen.tools.intent_resolver import IntentResolution, IntentResolver
 from ailen.tools.semantic_intent import SemanticToolIntentResolver
@@ -65,6 +65,7 @@ class ConversationCoordinator:
         tts_voice_id: str = "es_ES-standard",
         internet_available: bool = False,
         tool_network_allowed: bool = False,
+        tool_max_autonomy: AutonomyLevel = AutonomyLevel.N1,
         external_allowed: bool = False,
         allow_sanitized_external_prompts: bool = False,
         lan_brain_trusted: bool = False,
@@ -97,6 +98,7 @@ class ConversationCoordinator:
         self.tts_voice_id = tts_voice_id
         self.internet_available = internet_available
         self.tool_network_allowed = tool_network_allowed
+        self.tool_max_autonomy = tool_max_autonomy
         self.external_allowed = external_allowed
         self.allow_sanitized_external_prompts = allow_sanitized_external_prompts
         self.lan_brain_trusted = lan_brain_trusted
@@ -336,6 +338,7 @@ class ConversationCoordinator:
                 privacy_level=self.privacy_level,
                 internet_available=self.internet_available,
                 network_access_allowed=self.tool_network_allowed,
+                max_autonomy=self.tool_max_autonomy,
             )
             stage_started = time.monotonic()
             tool_result = self.tool_executor.execute(

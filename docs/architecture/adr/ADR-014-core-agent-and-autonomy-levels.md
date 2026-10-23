@@ -36,7 +36,9 @@ prohibiciones: define un modelo de autonomía por niveles que las respeta.
 3. **Confirmación humana.** Acciones destructivas o con efecto externo piden
    confirmación por voz o panel, con resumen de lo que se va a hacer. Una
    transcripción de baja confianza o truncada nunca confirma (reglas STT de R4).
-   `SHOP`/`PUBLIC` limita el nivel máximo a N1 de sólo lectura.
+   `SHOP`/`PUBLIC` limita el nivel máximo a N1 (las tools N1 conservan sus propios
+   `allowed_modes` y nivel de privacidad; no se añade un bloqueo extra de efectos
+   laterales N1, p. ej. volumen, que ya son decisiones de producto por modo).
 4. **Presupuesto del bucle.** Máximo de pasos, tiempo y tokens por tarea; la
    tarea se puede cancelar por voz y desde el panel; sin agentes de larga
    duración sin supervisión en el MVP.
