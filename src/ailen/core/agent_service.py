@@ -219,7 +219,12 @@ class AgentService:
                 context = original_context_factory()
                 if not isinstance(context, ToolContext):
                     return context
-                return replace(context, mode=mode)
+                restricted = {SocialMode.SHOP, SocialMode.PUBLIC}
+                if mode in restricted or context.mode in restricted:
+                    # Live or submitted mode is public: stop the task and keep the stricter mode.
+                    record.cancel_event.set()
+                    return replace(context, mode=context.mode if context.mode in restricted else mode)
+                return context
 
             loop.context_factory = mode_context
             run = loop.run(task)
@@ -263,10 +268,15 @@ class AgentService:
                 request = self.confirmations.status(confirmation_id)
                 if request is None or request.state is not ConfirmationState.PENDING:
                     return loop.resume(run, confirmation_id)
-                run.status = AgentRunStatus.FAILED
-                run.error = self._CONFIRMATION_EXPIRED
-                run.confirmation_id = None
-                run._pending_call = None
+                if not run._lock.acquire(blocking=False):
+                    return run
+                try:
+                    run.status = AgentRunStatus.FAILED
+                    run.error = self._CONFIRMATION_EXPIRED
+                    run.confirmation_id = None
+                    run._pending_call = None
+                finally:
+                    run._lock.release()
                 return run
             cancel_event.wait(min(self._poll_interval, remaining))
 
