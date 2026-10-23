@@ -284,6 +284,54 @@ def test_resume_denegado_o_vencido_no_ejecuta(resolution: str) -> None:
     assert tool.executed == []
 
 
+def test_resume_concurrente_ejecuta_la_confirmacion_una_sola_vez() -> None:
+    service = ConfirmationService()
+    tool = ConfirmableTool()
+    planner = ScriptedPlanner(
+        ToolCallStep("confirmable", {"value": 3}, "c1"),
+        FinalStep("Listo"),
+    )
+    loop = make_loop(planner, tools=[tool], confirmation_service=service)
+    run = loop.run("Ejecutá la acción sensible")
+    assert run.status is AgentRunStatus.AWAITING_CONFIRMATION
+    confirmation_id = run.confirmation_id
+    assert confirmation_id is not None
+    assert service.resolve(confirmation_id, True, "panel")
+
+    thread_count = 8
+    barrier = threading.Barrier(thread_count)
+    errors: list[BaseException] = []
+    results: list[Any] = []
+    results_lock = threading.Lock()
+
+    def resume_worker() -> None:
+        try:
+            barrier.wait(timeout=10)
+            result = loop.resume(run, confirmation_id)
+        except BaseException as exc:  # noqa: BLE001 - surface any thread failure in the test.
+            with results_lock:
+                errors.append(exc)
+            return
+        with results_lock:
+            results.append(result)
+
+    threads = [threading.Thread(target=resume_worker) for _ in range(thread_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert errors == []
+    assert all(not thread.is_alive() for thread in threads)
+    assert tool.executed == [{"value": 3}]
+    assert len(results) == thread_count
+    assert all(result is run for result in results)
+    assert run.status is AgentRunStatus.COMPLETED
+    assert run.confirmation_id is None
+    assert run._pending_call is None
+    assert [step.status_code for step in run.steps] == ["CONFIRMATION_REQUIRED", "OK"]
+
+
 def test_resultados_se_truncan_y_delimitan_marcados_no_confiables() -> None:
     class LongResultTool(FakeNotesTool):
         def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:

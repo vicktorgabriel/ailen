@@ -24,6 +24,7 @@ Estados válidos: `Proposed`, `Accepted`, `Superseded`, `Rejected`.
   autonomía N1–N3 (tools, archivos acotados, navegador aislado); N4 fuera. Accepted.
 - `ADR-015-realtime-voice-provider.md` — proveedor remoto de voz en vivo opcional
   por WebSocket con tools vía function-calling en Core. Accepted.
+- `ADR-016-isolated-browser-n3.md` — navegador N3 aislado con chromium-headless-shell y CDP sobre stdlib WebSocket. Proposed.
 
 
 Vision/STT/TTS continúan sujetos a POC/benchmark físico. FacePack queda aceptado

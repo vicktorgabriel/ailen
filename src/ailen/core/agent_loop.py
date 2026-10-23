@@ -115,6 +115,9 @@ class AgentRun:
     _pending_call: ToolCallStep | None = field(default=None, repr=False)
     _planned_calls: int = field(default=0, repr=False)
     _call_counts: dict[str, int] = field(default_factory=dict, repr=False)
+    # Serializes the whole run/resume transition of this run: at most one
+    # caller may own the run while it is being driven or consumed.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
 
 class AgentLoop:
@@ -149,39 +152,57 @@ class AgentLoop:
             messages=[AgentMessage(role="user", content=task)],
             started_at=self.clock(),
         )
-        return self._drive(run)
+        if not run._lock.acquire(blocking=False):
+            return run
+        try:
+            return self._drive(run)
+        finally:
+            run._lock.release()
 
     def resume(self, run: AgentRun, confirmation_id: str) -> AgentRun:
-        """Continue only the exact pending call after its service marks it approved."""
-        if run.status is not AgentRunStatus.AWAITING_CONFIRMATION:
-            return run
-        if not confirmation_id or confirmation_id != run.confirmation_id:
-            return run
-        if run._pending_call is None:
-            return self._fail(run, "No hay una confirmación pendiente válida para reanudar.")
-        limit = self._limit_status(run)
-        if limit is not None:
-            return self._stop(run, limit)
-        service = self.executor.confirmation_service
-        request = service.status(confirmation_id) if service is not None else None
-        if request is None:
-            return self._fail(run, "La confirmación ya no está disponible.")
-        if request.state is ConfirmationState.PENDING:
-            return run
-        if request.state is ConfirmationState.DENIED:
-            return self._fail(run, "La acción fue denegada por la persona.")
-        if request.state is ConfirmationState.EXPIRED:
-            return self._fail(run, "La confirmación venció antes de ejecutar la acción.")
+        """Continue only the exact pending call after its service marks it approved.
 
-        pending_call = run._pending_call
-        run.status = AgentRunStatus.FAILED
-        run.confirmation_id = None
-        run._pending_call = None
-        result = self._execute_call(run, pending_call, confirmation_id=confirmation_id)
-        if run.status is not AgentRunStatus.COMPLETED:
+        The whole transition is guarded by a per-run lock acquired without
+        blocking. A concurrent caller (panel double click, voice plus web)
+        loses the race, returns the run untouched and never executes the
+        pending call or reopens a confirmation.
+        """
+        if not run._lock.acquire(blocking=False):
             return run
-        self._append_result(run, pending_call, result)
-        return self._drive(run)
+        try:
+            if run.status is not AgentRunStatus.AWAITING_CONFIRMATION:
+                return run
+            if not confirmation_id or confirmation_id != run.confirmation_id:
+                return run
+            if run._pending_call is None:
+                return self._fail(run, "No hay una confirmación pendiente válida para reanudar.")
+            limit = self._limit_status(run)
+            if limit is not None:
+                return self._stop(run, limit)
+            service = self.executor.confirmation_service
+            request = service.status(confirmation_id) if service is not None else None
+            if request is None:
+                return self._fail(run, "La confirmación ya no está disponible.")
+            if request.state is ConfirmationState.PENDING:
+                return run
+            if request.state is ConfirmationState.DENIED:
+                return self._fail(run, "La acción fue denegada por la persona.")
+            if request.state is ConfirmationState.EXPIRED:
+                return self._fail(run, "La confirmación venció antes de ejecutar la acción.")
+
+            pending_call = run._pending_call
+            # Consume the pending confirmation atomically while still holding
+            # the lock: the run is no longer resumable before the tool runs.
+            run.status = AgentRunStatus.FAILED
+            run.confirmation_id = None
+            run._pending_call = None
+            result = self._execute_call(run, pending_call, confirmation_id=confirmation_id)
+            if run.status is not AgentRunStatus.COMPLETED:
+                return run
+            self._append_result(run, pending_call, result)
+            return self._drive(run)
+        finally:
+            run._lock.release()
 
     def _drive(self, run: AgentRun) -> AgentRun:
         while True:
