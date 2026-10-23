@@ -27,15 +27,15 @@ AILEN está en `0.4.0-dev.0` con Foundation/Core/Web, Face/Vision, Audio/STT/TTS
 
 - Thread canónico de AILEN: `01a03a1f-e86e-7213-9581-af295af5c7f1`. Reanudarlo; no hacer `fork` ni iniciar otro chat salvo pedido explícito del usuario.
 - Codex Sol Max sigue siendo el agente principal para arquitectura, auditorías amplias, migraciones y cierre de gates.
-- Codex Spark se integra como subagente `spark_worker` para cambios acotados, búsqueda rápida, UI, documentación y regresiones focales. Está definido en `.codex/agents/spark_worker.toml` y debe recibir instrucciones explícitas de ejecutar los tests pertinentes antes de devolver el turno.
+- Codex Luna (`gpt-6-luna`, esfuerzo alto) es el agente de implementación del hilo canónico para módulos acotados y correcciones; debe recibir instrucciones explícitas de ejecutar los tests pertinentes antes de devolver el turno.
 - Comandos y perfiles locales: `.agents/SESSION_REGISTRY.md` y `scripts/resume_codex_ailen.sh`. Cambiar de modelo no cambia de thread.
 
 ## Agentes auxiliares de desarrollo: AGY (Gemini) y OpenCode (DeepSeek free)
 
 Orden vigente del propietario: además de Codex, el desarrollo usa estos dos CLIs como agentes auxiliares. Son herramientas de desarrollo; **no** son proveedores runtime de AILEN (AGY/OpenCode siguen retirados del producto, ver ADR-011 y `CURRENT_STATE.md`).
 
-- **AGY (Gemini):** `agy -p "<prompt>"` (no interactivo). Para auditorías, revisión de docs y tareas acotadas. Usar `--mode plan` cuando sólo deba analizar.
-- **OpenCode (DeepSeek free):** `opencode run --model opencode/deepseek-v4.1-flash-free "<prompt>"`. Sólo modelos gratuitos (`*-free`); no usar modelos pagos sin autorización.
+- **AGY (Gemini 3.8):** `agy -p "<prompt>" --model gemini-3.8-flash-high` (no interactivo). Para auditorías, revisión de docs y tareas acotadas. Usar `--mode plan` cuando sólo deba analizar y `--mode accept-edits` cuando deba escribir archivos.
+- **OpenCode:** `opencode run --model <modelo> "<prompt>"`. Primero un modelo gratuito disponible (`opencode/*-free`); si el cupo gratuito está agotado, OpenCode Go (`opencode-go/deepseek-v4.1-flash` como opción intermedia). Autorizado por el propietario.
 - Deben leer este archivo y `docs/operations/AGENT_HANDOFF.md` antes de actuar y reciben tests concretos a ejecutar antes de devolver el turno.
 - Nunca reciben secretos, API keys, grabaciones, memoria privada ni datos de clientes. No usar `--dangerously-skip-permissions` ni `--auto` sin autorización explícita.
 - Aplican las mismas reglas que el resto: sin commit ni push, sin borrar trabajo ajeno, sin cambios estructurales sin ADR.

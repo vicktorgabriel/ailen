@@ -1,0 +1,14 @@
+<li>
+  <strong>{{ tool_name }}</strong> — {{ summary }}
+  <span>Vence en {{ seconds_remaining }} s</span>
+  <form method="post" action="/agente/approve">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <input type="hidden" name="confirmation_id" value="{{ confirmation_id }}">
+    <button type="submit">Aprobar</button>
+  </form>
+  <form method="post" action="/agente/deny">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <input type="hidden" name="confirmation_id" value="{{ confirmation_id }}">
+    <button type="submit">Denegar</button>
+  </form>
+</li>

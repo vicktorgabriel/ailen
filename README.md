@@ -68,7 +68,7 @@ El primer prototipo útil debe poder:
 - `docs/architecture/MODULE_CONTRACTS.md`: contratos entre módulos.
 - `ROADMAP.md`: etapas y entregables.
 - `TASKS.md`: trabajo inmediato y primer slice integrable.
-- `docs/operations/AGENT_HANDOFF.md`: continuidad y roles para Codex Sol Max, Codex Spark y otros agentes; OpenCode queda sólo como antecedente histórico.
+- `docs/operations/AGENT_HANDOFF.md`: continuidad y roles para Codex Sol Max, Codex Luna y otros agentes de desarrollo.
 - `docs/operations/R1_PARALLEL_WORK.md`: división concreta del primer trabajo paralelo.
 - `docs/context/COMMERCIAL_MVP.md`: alcance del primer piloto vendible.
 - `docs/testing/ACCEPTANCE_MATRIX.md`: criterios verificables por subsistema.

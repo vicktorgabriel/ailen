@@ -22,6 +22,7 @@ from ailen.models.downloader import ModelDownloader, ModelDownloadError
 from ailen.models.planner import ModelPlanner
 from ailen.models.store import ModelStore
 from ailen.runtime.manager import LocalRuntimeManager
+from ailen.services.agent_admin_service import AgentAdminService
 from ailen.services.config_service import ConfigService
 from ailen.services.settings_service import SettingsService
 from ailen.services.status_service import StatusService
@@ -650,6 +651,9 @@ def cmd_serve(args: argparse.Namespace, config_path: str | None) -> int:
             updates=update_service,
             noise_calibrator=noise_calibrator,
             memory=MemoryAdminService(MemoryRepository(db_mgr)),
+            agent=AgentAdminService(
+                settings.get_config, None, MemoryRepository(db_mgr),
+            ),
             diagnostics=DiagnosticsAdminService(
                 status, settings.get_config, reports_dir=Path("runtime/lab"),
             ),

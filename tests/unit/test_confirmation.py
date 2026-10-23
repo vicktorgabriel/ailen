@@ -2,12 +2,16 @@
 
 import math
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, fields
 from typing import Any, ClassVar
 
 import pytest
 
-from ailen.core.confirmation import ConfirmationService, ConfirmationState
+from ailen.core.confirmation import (
+    ConfirmationService,
+    ConfirmationState,
+    PendingConfirmationView,
+)
 from ailen.domain.enums import PrivacyLevel, SocialMode
 from ailen.tools.contracts import ToolContext, ToolResult
 from ailen.tools.executor import ToolExecutor
@@ -305,3 +309,93 @@ def test_audit_redacts_nested_content_and_long_strings() -> None:
     assert "nested-sensitive" not in str(redacted)
     assert redacted["values"] == ["[redacted len=201]", "safe"]
     assert redacted["long"]["content"] == "[redacted len=202]"
+
+
+def test_pending_requests_empty_when_no_requests() -> None:
+    service = ConfirmationService()
+    assert service.pending_requests() == ()
+
+
+def test_pending_requests_single_pending() -> None:
+    clock = Clock()
+    service = ConfirmationService(ttl_seconds=30, clock=clock)
+    req = service.request("tool_a", {"secret_param": "foo"}, summary="Run tool A")
+    pending = service.pending_requests()
+    assert len(pending) == 1
+    view = pending[0]
+    assert view.id == req.id
+    assert view.tool_name == "tool_a"
+    assert view.summary == "Run tool A"
+    assert view.remaining_seconds == 30
+    assert isinstance(view, PendingConfirmationView)
+
+
+def test_pending_requests_expired_request_does_not_appear() -> None:
+    clock = Clock()
+    service = ConfirmationService(ttl_seconds=10, clock=clock)
+    req = service.request("tool_a", {})
+    assert len(service.pending_requests()) == 1
+    clock.now = 10
+    assert service.pending_requests() == ()
+    status = service.status(req.id)
+    assert status is not None and status.state is ConfirmationState.EXPIRED
+
+
+def test_pending_requests_approved_denied_consumed_do_not_appear() -> None:
+    service = ConfirmationService()
+    r1 = service.request("tool_1", {})
+    r2 = service.request("tool_2", {})
+    r3 = service.request("tool_3", {})
+    r4 = service.request("tool_4", {})
+
+    assert service.resolve(r2.id, True, "panel")
+    assert service.resolve(r3.id, False, "panel")
+    assert service.resolve(r4.id, True, "panel")
+    assert service.consume(r4.id, "tool_4", {})
+
+    pending = service.pending_requests()
+    assert len(pending) == 1
+    assert pending[0].id == r1.id
+
+
+def test_pending_view_does_not_contain_hash_nor_arguments() -> None:
+    service = ConfirmationService()
+    service.request("tool_a", {"secret_key": "supersecret"}, summary="Action summary")
+    views = service.pending_requests()
+    assert len(views) == 1
+    view = views[0]
+    field_names = [f.name for f in fields(view)]
+    assert set(field_names) == {"id", "tool_name", "summary", "remaining_seconds"}
+    assert not hasattr(view, "arguments_hash")
+    assert not hasattr(view, "arguments")
+    assert "supersecret" not in repr(view)
+    assert "arguments_hash" not in repr(view)
+    with pytest.raises(FrozenInstanceError):
+        view.summary = "changed"  # type: ignore[misc]
+
+
+def test_pending_requests_ordered_by_creation() -> None:
+    service = ConfirmationService()
+    r1 = service.request("tool_1", {})
+    r2 = service.request("tool_2", {})
+    r3 = service.request("tool_3", {})
+    views = service.pending_requests()
+    assert tuple(v.id for v in views) == (r1.id, r2.id, r3.id)
+
+
+def test_pending_requests_concurrency_simple() -> None:
+    service = ConfirmationService()
+
+    def worker(i: int) -> None:
+        req = service.request(f"tool_{i}", {})
+        _ = service.pending_requests()
+        if i % 2 == 0:
+            service.resolve(req.id, True, "panel")
+        _ = service.pending_requests()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(worker, range(20)))
+
+    views = service.pending_requests()
+    assert all(isinstance(v, PendingConfirmationView) for v in views)
+    assert len(views) == 10

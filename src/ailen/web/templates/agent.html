@@ -1,0 +1,19 @@
+<main class="page agent-admin">
+  <h1>Agente de Core</h1>
+  <p role="status">{{ flash }}</p>
+  <section aria-labelledby="agent-autonomy-title">
+    <h2 id="agent-autonomy-title">Autonomía</h2>
+    <p>Autonomía máxima: {{ autonomy }}</p>
+    <h3>Raíces de archivos (solo lectura)</h3>
+    <p>Las raíces se editan en /config y requieren reinicio.</p>
+    <ul>{{ raw:roots }}</ul>
+  </section>
+  <section aria-labelledby="agent-confirmations-title">
+    <h2 id="agent-confirmations-title">Confirmaciones pendientes</h2>
+    <ul>{{ raw:confirmations }}</ul>
+  </section>
+  <section aria-labelledby="agent-events-title">
+    <h2 id="agent-events-title">Últimos eventos de herramientas</h2>
+    <ul>{{ raw:events }}</ul>
+  </section>
+</main>

@@ -24,6 +24,7 @@ from ailen.ai.realtime import (
     OPCODE_PING,
     OPCODE_PONG,
     OPCODE_TEXT,
+    PRIVATE_RESULT_TEXT,
     BudgetGuard,
     FakeRealtimeSession,
     RealtimeBudgetExceededError,
@@ -706,8 +707,10 @@ def test_bridge_tool_calls_sanitization_and_no_double_execution() -> None:
     assert call_priv_id == "call-priv"
     assert res_priv["success"] is True
     assert "data" not in res_priv
-    assert len(res_priv["message"]) == MAX_OUTBOUND_TOOL_TEXT_CHARS
-    assert len(res_priv["summary"]) == MAX_OUTBOUND_TOOL_TEXT_CHARS
+    # Tool-authored text of a non-public tool never leaves the device.
+    assert res_priv["message"] == PRIVATE_RESULT_TEXT
+    assert res_priv["summary"] == PRIVATE_RESULT_TEXT
+    assert "M" * 20 not in res_priv["message"]
 
     # Unknown tool omits 'data'
     call_2_id, res_2 = fake_session.tool_results[2]

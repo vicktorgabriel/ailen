@@ -44,6 +44,16 @@ class ConfirmationRequest:
     arguments_hash: str
 
 
+@dataclass(frozen=True)
+class PendingConfirmationView:
+    """Immutable view of a pending confirmation without argument hashes or arguments."""
+
+    id: str
+    tool_name: str
+    summary: str
+    remaining_seconds: int
+
+
 class ConfirmationService:
     """Bounded RAM-only approvals with monotonic expiry and atomic consumption.
 
@@ -231,6 +241,28 @@ class ConfirmationService:
         with self._lock:
             self._expire()
             return self._requests.get(request_id)
+
+    def pending_requests(self) -> tuple[PendingConfirmationView, ...]:
+        """Return unexpired pending confirmations ordered by creation."""
+        with self._lock:
+            self._expire()
+            now = self._clock()
+            pending = [
+                req for req in self._requests.values()
+                if req.state is ConfirmationState.PENDING
+            ]
+            pending.sort(key=lambda req: req.created_at)
+            views = [
+                PendingConfirmationView(
+                    id=req.id,
+                    tool_name=req.tool_name,
+                    summary=req.summary,
+                    remaining_seconds=max(0, math.ceil(self._deadlines[req.id] - now)),
+                )
+                for req in pending
+                if self._deadlines.get(req.id, now) > now
+            ]
+            return tuple(views)
 
     def consume(self, request_id: str, tool_name: str, arguments: dict[str, Any]) -> bool:
         """Atomically redeem an unexpired approval once, for its exact action."""

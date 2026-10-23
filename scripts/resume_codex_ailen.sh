@@ -9,11 +9,11 @@ case "$AGENT" in
   sol)
     exec codex resume "$THREAD_ID" "$@"
     ;;
-  spark)
-    exec codex -p ailen-spark resume "$THREAD_ID" "$@"
+  luna)
+    exec codex -m gpt-6-luna -c model_reasoning_effort='"high"' resume "$THREAD_ID" "$@"
     ;;
   *)
-    printf 'Uso: %s [sol|spark] [opciones de codex resume...]\n' "$0" >&2
+    printf 'Uso: %s [sol|luna] [opciones de codex resume...]\n' "$0" >&2
     exit 2
     ;;
 esac

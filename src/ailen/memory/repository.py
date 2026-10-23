@@ -421,6 +421,27 @@ class MemoryRepository:
             created_at=now,
         )
 
+    def recent_tool_events(self, limit: int = 50) -> list[ToolEvent]:
+        """Most recent tool audit rows, newest first; ``limit`` is clamped to 1..200."""
+        bounded = max(1, min(int(limit), 200))
+        with self.db_manager.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT event_id, session_id, tool_name, arguments_redacted, result_summary,
+                       success, latency_ms, created_at
+                FROM tool_events ORDER BY created_at DESC, rowid DESC LIMIT ?;
+                """,
+                (bounded,),
+            ).fetchall()
+        return [
+            ToolEvent(
+                event_id=row[0], session_id=row[1], tool_name=row[2],
+                arguments_redacted=row[3], result_summary=row[4],
+                success=bool(row[5]), latency_ms=float(row[6]), created_at=row[7],
+            )
+            for row in rows
+        ]
+
     def log_ai_usage(
         self,
         provider: str,

@@ -18,6 +18,7 @@ from ailen.tools.executor import ToolExecutor
 
 DEFAULT_SAMPLE_RATE_HZ: int = 16_000
 PCM16_16K_MONO_BYTES_PER_SECOND: int = DEFAULT_SAMPLE_RATE_HZ * 2  # 32,000 bytes/s
+PRIVATE_RESULT_TEXT: str = "Resultado procesado localmente; el contenido privado no se envía."
 MAX_OUTBOUND_TOOL_TEXT_CHARS: int = 512
 
 
@@ -456,7 +457,7 @@ class RealtimeToolBridge:
             )
             self._session.send_tool_result(
                 call_id,
-                self._serialize_result(denied, include_data=False),
+                self._serialize_result(denied, public=True, data=False),
             )
             return denied
 
@@ -468,7 +469,7 @@ class RealtimeToolBridge:
         is_public = getattr(tool, "privacy_level", None) == PrivacyLevel.PUBLIC
         self._session.send_tool_result(
             call_id,
-            self._serialize_result(result, include_data=is_public),
+            self._serialize_result(result, public=is_public, data=is_public),
         )
         return result
 
@@ -522,25 +523,30 @@ class RealtimeToolBridge:
     def _serialize_result(
         result: ToolResult,
         *,
-        include_data: bool = False,
+        public: bool,
+        data: bool = False,
     ) -> dict[str, Any]:
         """Serialize ToolResult under the minimum OutboundPrivacyPolicy filter (ADR-015).
 
-        Only bounded message and summary strings are sent to the remote provider.
-        Structured 'data' is included exclusively when the tool has PrivacyLevel.PUBLIC;
-        for PRIVATE, RESTRICTED, or unknown tools, 'data' is omitted.
+        Tool-authored text and structured data can carry private content (notes,
+        memories, file names). They are sent only when the tool is PrivacyLevel.PUBLIC
+        (or when the text was authored by the bridge itself). For PRIVATE, RESTRICTED
+        or unknown tools only status fields and a fixed generic text leave the device.
         """
-        bounded_message = (result.message or "")[:MAX_OUTBOUND_TOOL_TEXT_CHARS]
-        bounded_summary = (result.summary or "")[:MAX_OUTBOUND_TOOL_TEXT_CHARS]
+        if public:
+            message = (result.message or "")[:MAX_OUTBOUND_TOOL_TEXT_CHARS]
+            summary = (result.summary or "")[:MAX_OUTBOUND_TOOL_TEXT_CHARS]
+        else:
+            message = summary = PRIVATE_RESULT_TEXT
         payload: dict[str, Any] = {
             "success": result.success,
             "tool_name": result.tool_name,
             "status_code": result.status_code,
-            "message": bounded_message,
-            "summary": bounded_summary,
+            "message": message,
+            "summary": summary,
             "error_code": result.error_code.value if result.error_code else None,
         }
-        if include_data:
+        if public and data:
             payload["data"] = dict(result.data)
         return payload
 
@@ -549,6 +555,7 @@ __all__ = [
     "DEFAULT_SAMPLE_RATE_HZ",
     "MAX_OUTBOUND_TOOL_TEXT_CHARS",
     "PCM16_16K_MONO_BYTES_PER_SECOND",
+    "PRIVATE_RESULT_TEXT",
     "BudgetGuard",
     "ReadOnlyBudgetView",
     "RealtimeBudgetExceededError",

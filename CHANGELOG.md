@@ -3,6 +3,8 @@
 ## [0.4.0-dev.0] — 2026-08-31
 
 ### Changed
+- 2026-10-23 R5C: panel `/agente` (confirmaciones pendientes, tope de autonomía, raíces y auditoría de tools) y `ConfirmationService.pending_requests()`; AGY pasa a `gemini-3.8-flash-high` y OpenCode usa un modelo gratuito o, si el cupo está agotado, OpenCode Go. Se eliminó el agente Spark de la documentación, scripts y configuración.
+- 2026-10-23 R5C (ronda 2): bucle de agente de Core (`core/agent_loop.py`, Codex Luna), investigación del navegador N3 (`docs/research/BROWSER_N3_OPTIONS.md`, AGY) y corrección de seguridad en el bridge realtime: el texto/summary de tools no PUBLIC ya no sale al proveedor remoto (hallazgo de revisión automática). AGY y OpenCode agotaron su cupo gratuito durante la ronda; el panel del agente pasó a Codex Luna.
 - 2026-10-23 R5C: servicio de confirmación humana (`core/confirmation.py`), tool de archivos N2 (`tools/builtin/files.py`, `agent.file_roots`) y base del proveedor realtime (`ai/realtime/`). Implementados por Codex Sol (confirmación y correcciones de seguridad), OpenCode DeepSeek (archivos) y AGY Gemini (realtime); revisión adversarial cruzada (AGY/OpenCode) con 25 hallazgos verificados y corregidos (hardlink/TOCTOU, append sin confirmar, contenido en auditoría, JSON no objeto, resultado de tool sin filtrar, autonomía inválida). Suite: 1286 tests.
 - 2026-10-23 R5C: contrato de niveles de autonomía ADR-014 (N1–N3) en `ToolContext`/`ToolExecutor`, config `[agent].max_autonomy_level` y campo en el panel. Sin cambios de comportamiento hasta que existan tools N2/N3. Tests en `tests/unit/test_tool_autonomy.py` (OpenCode DeepSeek); revisión con gpt-oss local vía llama.cpp.
 - 2026-10-23 R5: `/herramientas`, `/vision`, `/rostro`, `/personalidad`, `/sistema` y

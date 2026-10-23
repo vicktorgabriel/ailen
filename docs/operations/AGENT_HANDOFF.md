@@ -1,6 +1,6 @@
 # Handoff para agentes — AILEN
 
-> Documento operativo para Codex Sol Max, Codex Spark y otros agentes de desarrollo. OpenCode/AGY pueden aparecer en antecedentes históricos, pero no son proveedores runtime de AILEN. Debe leerse junto con `AGENTS.md` antes de modificar el repositorio.
+> Documento operativo para Codex Sol Max, Codex Luna y otros agentes de desarrollo. OpenCode/AGY pueden aparecer en antecedentes históricos, pero no son proveedores runtime de AILEN. Debe leerse junto con `AGENTS.md` antes de modificar el repositorio.
 
 ## 1. Estado
 
@@ -8,15 +8,14 @@ AILEN está en `0.4.0-dev.0` y ya tiene un runtime funcional de laboratorio: Fou
 
 ## 1.1 Continuidad del thread Codex
 
-- Thread canónico: `01a03a1f-e86e-7213-9581-af295af5c7f1`. Todos los trabajos de AILEN deben reanudar ese mismo chat, también cuando se alterna entre Sol Max y Spark.
+- Thread canónico: `01a03a1f-e86e-7213-9581-af295af5c7f1`. Todos los trabajos de AILEN deben reanudar ese mismo chat, también cuando se alterna entre Sol Max y Luna.
 - Sol Max: agente principal para arquitectura, cambios transversales y auditoría final.
-- Spark: subagente `spark_worker` para tareas estrechas y rápidas. Sol puede delegarlo desde el thread canónico; el child thread devuelve su resumen al principal. No se usa para cerrar una migración extensa sin revisión de Sol y sus prompts deben ordenar tests y revisión del diff.
-- Reanudación: `scripts/resume_codex_ailen.sh sol` o `scripts/resume_codex_ailen.sh spark`. No usar `codex fork` ni crear una sesión nueva salvo autorización expresa.
-- El perfil Spark queda preparado, pero su acceso real depende de que la cuenta Codex lo tenga habilitado; un fallo de disponibilidad no cambia de thread ni habilita otro proveedor automáticamente.
+- Luna (`gpt-6-luna`, esfuerzo alto): implementación de módulos acotados y correcciones sobre el thread canónico. Sus prompts deben ordenar tests y revisión del diff; una migración extensa se cierra con revisión de Sol.
+- Reanudación: `scripts/resume_codex_ailen.sh sol` o `scripts/resume_codex_ailen.sh luna`. No usar `codex fork` ni crear una sesión nueva salvo autorización expresa.
 
 ## 1.2 AGY (Gemini) y OpenCode (DeepSeek free)
 
-Agentes auxiliares de desarrollo por orden del propietario (no runtime del producto). Invocación y reglas en `AGENTS.md`: `agy -p "<prompt>"` y `opencode run --model opencode/deepseek-v4.1-flash-free "<prompt>"`.
+Agentes auxiliares de desarrollo por orden del propietario (no runtime del producto). Invocación y reglas en `AGENTS.md` (AGY con `gemini-3.8-flash-high`; OpenCode con modelo gratuito o, si se agotó, OpenCode Go).
 
 ## 2. Lectura obligatoria
 
@@ -69,7 +68,7 @@ Trabajar sobre R4 y deudas verificables sin reabrir bloques cerrados:
 6. conservar tests, seguridad, privacidad y límites de hardware como gates de cada entrega.
 ```
 
-En Debian de desarrollo se permite implementar y probar software, pero no declarar hardware físico validado sin evidencia real. Codex Sol Max y Codex Spark son agentes de desarrollo; Gemini/OpenCode/AGY pueden figurar en documentos históricos, pero ninguno es proveedor conversacional runtime por ese solo hecho. Los agentes no hacen commit/push ni cambian arquitectura sin ADR o coordinación explícita.
+En Debian de desarrollo se permite implementar y probar software, pero no declarar hardware físico validado sin evidencia real. Codex Sol Max y Codex Luna son agentes de desarrollo; Gemini/OpenCode/AGY pueden figurar en documentos históricos, pero ninguno es proveedor conversacional runtime por ese solo hecho. Los agentes no hacen commit/push ni cambian arquitectura sin ADR o coordinación explícita.
 
 
 > **Nota:** las secciones de carriles Foundation/Web/POC que siguen se conservan como referencia histórica de responsabilidades. No representan trabajo pendiente salvo que `TASKS.md` abra explícitamente una regresión o refactor.

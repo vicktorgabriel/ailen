@@ -35,6 +35,12 @@
   gpt-oss queda como segundo parecer. SHOP/PUBLIC limita a N1 sin bloquear efectos
   laterales N1 (ADR-014 aclarado). Tool sin `autonomy_level` = N1; declarado inválido
   se deniega siempre.
+- Ronda 2 R5C: el propietario pidió no usar Sol (o sólo en medio) y usar Luna en
+  alto: `codex exec resume <hilo> -m gpt-6-luna -c model_reasoning_effort='"high"'`.
+  Cupos gratuitos: OpenCode
+  ("Free usage limit reached") y AGY (429, reset ~122 h) se agotan tras rondas largas:
+  repartir carga y tener a Codex Luna como respaldo. Resultados de tools hacia
+  proveedores remotos: sólo status y texto genérico salvo tools PUBLIC (ADR-015).
 - Regla de proceso: todo cambio, decisión y delegación se documenta en el mismo
   lote de trabajo (ver AGENTS.md y REGLAMENTO.md).
 

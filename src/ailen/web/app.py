@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, quote
 
 from ailen.audio.calibration import NoiseCalibrator
 from ailen.domain.models import utc_now_iso
+from ailen.services.agent_admin_service import AgentAdmin, AgentAdminError
 from ailen.services.diagnostics_admin_service import DiagnosticsAdmin
 from ailen.services.memory_admin_service import MemoryAdmin
 from ailen.updates.contracts import (
@@ -27,6 +28,7 @@ from ailen.updates.contracts import (
     UpdatePhase,
 )
 from ailen.updates.service import DisabledUpdateService
+from ailen.web.agent_view import agent_content
 from ailen.web.diagnostics_view import diagnostics_content
 from ailen.web.face_view import face_context
 from ailen.web.memory_view import memory_content
@@ -212,6 +214,7 @@ class AILENWebApp:
         noise_calibrator: NoiseCalibrator | None = None,
         memory: MemoryAdmin | None = None,
         diagnostics: DiagnosticsAdmin | None = None,
+        agent: AgentAdmin | None = None,
     ) -> None:
         self._auth = auth
         self._status = status
@@ -227,6 +230,7 @@ class AILENWebApp:
         self._noise_calibrator = noise_calibrator
         self._memory = memory
         self._diagnostics = diagnostics
+        self._agent = agent
         self._updates = updates or DisabledUpdateService(
             channel=UpdateChannel.BETA,
             reason="update service is not configured",
@@ -251,7 +255,7 @@ class AILENWebApp:
         nav_keys = (
             "dashboard", "config", "comercio", "personalidad", "ia",
             "audio", "memoria", "herramientas", "vision", "rostro",
-            "sistema", "actualizaciones", "diagnostico", "setup",
+            "sistema", "actualizaciones", "diagnostico", "setup", "agente",
         )
         nav_flags = {f"nav_{k}": "" for k in nav_keys}
         if active and active in nav_keys:
@@ -331,6 +335,23 @@ class AILENWebApp:
                 return self._admin_error(request, "Ya hay una comprobación en curso.", 409)
             return WebResponse.redirect("/diagnostico")
 
+        if path in ("/agente/approve", "/agente/deny"):
+            if method != "POST":
+                return WebResponse.json({"error": "método no permitido"}, status=405)
+            if not self._check_csrf(request):
+                return self._admin_error(request, "CSRF inválido.", 403)
+            if self._agent is None:
+                return self._admin_error(request, "Agente no disponible.", 503)
+            confirmation_id = request.form().get("confirmation_id", "")
+            try:
+                if path.endswith("/approve"):
+                    self._agent.approve(confirmation_id)
+                else:
+                    self._agent.deny(confirmation_id)
+            except AgentAdminError:
+                return self._admin_error(request, "Confirmación inválida o vencida.", 400)
+            return WebResponse.redirect("/agente?saved=1")
+
         if path.startswith("/memoria/"):
             if method != "POST":
                 return WebResponse.json({"error": "método no permitido"}, status=405)
@@ -399,6 +420,8 @@ class AILENWebApp:
             return self._ai_page(request)
         if path == "/memoria":
             return self._memory_page(request)
+        if path == "/agente":
+            return self._agent_page(request)
         if path == "/herramientas":
             return self._tools_page(request)
         if path == "/vision":
@@ -1669,6 +1692,18 @@ class AILENWebApp:
             logger.error("Memory administration failed")
             return self._admin_error(request, "Memoria no disponible.", 503)
         return WebResponse.redirect("/memoria?saved=1")
+
+    def _agent_page(self, request: WebRequest) -> WebResponse:
+        if self._agent is None:
+            return self._admin_error(request, "Agente no disponible.", 503)
+        _, csrf = self._session(request)
+        try:
+            snapshot = self._agent.snapshot()
+        except Exception:  # noqa: BLE001 - do not expose backend errors
+            logger.error("Agent administration failed")
+            return self._admin_error(request, "Agente no disponible.", 503)
+        content = agent_content(snapshot, csrf or "", self._flash(request))
+        return self._page(request, "Agente", content, active="agente")
 
     def _tools_page(self, request: WebRequest) -> WebResponse:
         _, csrf = self._session(request)
