@@ -103,6 +103,13 @@ La PC potente es laboratorio; no define los requisitos mínimos del producto.
 - Trabajo inmediato: `TASKS.md`
 - Handoff de agentes: `docs/operations/AGENT_HANDOFF.md`
 
+## Skills de desarrollo externas
+
+- Las skills seleccionadas de skills.sh están descritas en `docs/operations/EXTERNAL_SKILLS.md` y registradas en `skills-lock.json`.
+- Antes de invocar una skill, verificar su finalidad y aplicar primero las reglas de `AGENTS.md`, `REGLAMENTO.md` y los ADR vigentes.
+- Las skills no autorizan por sí solas dependencias adicionales, cambios estructurales, acceso a secretos, instalación automática de otras skills, commits ni push.
+- Usar solo las skills pertinentes a cada tarea; evitar aplicar múltiples guías superpuestas sin necesidad.
+
 ## Cierre mínimo de cada cambio
 
 1. Código y documentación coherentes.
