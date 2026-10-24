@@ -3,6 +3,7 @@
 ## [0.4.0-dev.0] — 2026-08-31
 
 ### Changed
+- 2026-10-24 R5C: el planner del agente usa function-calling nativo en backends locales (gpt-oss/llama.cpp y Ollama); `AiRequest.tool_specs` y mensajes `tool` sólo viajan a destinos locales; filtro incremental de canales Harmony en streaming; historial del agente conserva los argumentos de cada llamada (acotados/redactados, nunca en auditoría). Arnés de evaluación `scripts/agent_planner_eval.py` y reporte `docs/testing/AGENT_PLANNER_EVAL.md`. Revisión adversarial AGY (Gemini 3.8) y correcciones de Codex Luna. Suite: 1463 tests.
 - 2026-10-24 R5C: `AgentService` cableado al runner Lab con disparador por voz explícito y confirmación acotada a ventana tras el anuncio; estado `RUNNING`; correcciones de la revisión adversarial (AGY). Implementado por Codex Luna y AGY Gemini 3.8. Suite: 1391+ tests.
 - 2026-10-23 R5C: planner del agente sobre el orquestador (`ai/agent_planner.py`), `AgentService` de tareas en segundo plano y ADR-016 (navegador N3, Proposed). Corrección de carrera en `AgentLoop.resume()`. Implementado por Codex Luna, AGY (Gemini 3.8) y OpenCode Go; revisión cruzada AGY. Suite: 1354 tests.
 - 2026-10-23 R5C: panel `/agente` (confirmaciones pendientes, tope de autonomía, raíces y auditoría de tools) y `ConfirmationService.pending_requests()`; AGY pasa a `gemini-3.8-flash-high` y OpenCode usa un modelo gratuito o, si el cupo está agotado, OpenCode Go. Se eliminó el agente Spark de la documentación, scripts y configuración.

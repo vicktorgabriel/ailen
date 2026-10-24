@@ -85,7 +85,16 @@ class OutboundPrivacyPolicy:
             messages=[current_user_message] if current_user_message is not None else [],
             retrieved_memory=[],
             allowed_tools=[],
+            tool_specs=[],
             metadata=safe_metadata,
+        )
+
+    @staticmethod
+    def _has_native_tool_messages(request: AiRequest) -> bool:
+        return any(
+            message.role == "tool"
+            or (message.role == "assistant" and bool(message.tool_calls))
+            for message in request.messages
         )
 
     @classmethod
@@ -141,6 +150,10 @@ class OutboundPrivacyPolicy:
         callers and future integrations from leaking message content accidentally.
         """
         dest = destination.lower().strip()
+        if request.tool_specs and dest != "local":
+            raise PermissionError("Outbound AI request blocked: NATIVE_TOOLS_LOCAL_ONLY")
+        if cls._has_native_tool_messages(request) and dest != "local":
+            raise PermissionError("Outbound AI request blocked: NATIVE_TOOL_MESSAGES_LOCAL_ONLY")
         if (
             allow_sanitized_private
             and request.privacy_level is PrivacyLevel.PRIVATE

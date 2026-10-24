@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 import pytest
 
 from ailen.ai.agent_planner import OrchestratorPlanner
-from ailen.ai.contracts import AiRequest, AiResponse
+from ailen.ai.contracts import AiRequest, AiResponse, BackendCapabilities, ToolCallRequest
 from ailen.ai.fake import FakeAiBackend
 from ailen.ai.orchestrator import AiOrchestrator
 from ailen.ai.privacy import OutboundPrivacyPolicy
@@ -20,10 +20,16 @@ from ailen.tools.registry import ToolRegistry
 
 
 class ScriptedFakeBackend(FakeAiBackend):
-    def __init__(self, *responses: str | AiResponse) -> None:
+    def __init__(self, *responses: str | AiResponse, supports_tools: bool = False) -> None:
         super().__init__(provider="fake", model="scripted")
         self.responses = list(responses)
         self.requests: list[AiRequest] = []
+        self.supports_native_tools = supports_tools
+
+    def capabilities(self) -> BackendCapabilities:
+        capabilities = super().capabilities()
+        capabilities.supports_tools = self.supports_native_tools
+        return capabilities
 
     def generate(self, request: AiRequest) -> AiResponse:
         self.requests.append(request)
@@ -40,7 +46,7 @@ class SecretSchemaTool:
     description = "Acción de prueba segura."
     schema: ClassVar[dict[str, Any]] = {
         "properties": {
-            "value": {"type": "str", "required": True},
+            "value": {"type": "str", "required": True, "max_len": 20},
             "api_token": {"type": "str", "default": "do-not-leak-this-token"},
         }
     }
@@ -58,14 +64,17 @@ def make_planner(
     *responses: str | AiResponse,
     tools: list[Any] | None = None,
     allowed: tuple[str, ...] | None = None,
+    supports_tools: bool = False,
+    native_tools: str = "auto",
 ) -> tuple[OrchestratorPlanner, ScriptedFakeBackend]:
-    backend = ScriptedFakeBackend(*responses)
+    backend = ScriptedFakeBackend(*responses, supports_tools=supports_tools)
     orchestrator = AiOrchestrator(backends={"local": backend})
     registry = ToolRegistry(tools if tools is not None else build_fake_tools())
     planner = OrchestratorPlanner(
         orchestrator=orchestrator,
         registry=registry,
         tool_filter=lambda: allowed if allowed is not None else tuple(registry.list_names()),
+        native_tools=native_tools,
     )
     return planner, backend
 
@@ -187,7 +196,7 @@ def test_agent_loop_completa_dos_pasos_con_planner_real() -> None:
     )
     orchestrator = AiOrchestrator(backends={"local": backend})
     registry = ToolRegistry([notes])
-    planner = OrchestratorPlanner(orchestrator, registry, lambda: ("notes",))
+    planner = OrchestratorPlanner(orchestrator, registry, lambda: ("notes",), native_tools="json")
     loop = AgentLoop(
         planner,
         ToolExecutor(registry),
@@ -201,3 +210,220 @@ def test_agent_loop_completa_dos_pasos_con_planner_real() -> None:
     assert len(run.steps) == 2
     assert len(backend.requests) == 3
     assert all(request.privacy_level is PrivacyLevel.PRIVATE for request in backend.requests)
+
+
+def test_auto_usa_native_tools_filtradas_solo_en_backend_local_capaz() -> None:
+    planner, backend = make_planner(
+        AiResponse(text="", tool_calls=[ToolCallRequest("visible_tool", {"value": "ok"}, "provider-call-9")],
+                   finish_reason="tool_calls"),
+        tools=[SecretSchemaTool(), FakeVolumeTool()],
+        allowed=("visible_tool",),
+        supports_tools=True,
+    )
+
+    step = planner.plan((AgentMessage("user", "Hacé la acción"),))
+
+    assert step == ToolCallStep("visible_tool", {"value": "ok"}, "provider-call-9")
+    request = backend.requests[0]
+    assert [spec["function"]["name"] for spec in request.tool_specs] == ["visible_tool"]
+    assert request.tool_specs[0]["function"]["parameters"]["type"] == "object"
+    assert request.allowed_tools == []
+    assert "objeto JSON" not in request.system_context
+    assert "datos no confiables" in request.system_context.lower()
+    assert request.privacy_level is PrivacyLevel.PRIVATE
+
+
+def test_native_tool_specs_convierten_schema_interno_a_json_schema_estandar() -> None:
+    planner, backend = make_planner(
+        AiResponse(text="ok"), tools=[SecretSchemaTool()], allowed=("visible_tool",), supports_tools=True,
+    )
+
+    planner.plan((AgentMessage("user", "Acción"),))
+
+    properties = backend.requests[0].tool_specs[0]["function"]["parameters"]["properties"]
+    assert properties["value"]["type"] == "string"
+    assert properties["value"]["maxLength"] == 20
+    assert backend.requests[0].tool_specs[0]["function"]["parameters"]["required"] == ["value"]
+
+
+def test_native_historial_reconstruye_assistant_tool_call_y_tool_result_delimitado() -> None:
+    notes = FakeNotesTool()
+    backend = ScriptedFakeBackend(
+        AiResponse(text="", tool_calls=[ToolCallRequest("notes", {"action": "add", "text": "x"}, "call-notes")],
+                   finish_reason="tool_calls"),
+        AiResponse(text="La nota quedó guardada."),
+        supports_tools=True,
+    )
+    registry = ToolRegistry([notes])
+    planner = OrchestratorPlanner(
+        AiOrchestrator(backends={"local": backend}), registry, lambda: ("notes",),
+    )
+    loop = AgentLoop(
+        planner, ToolExecutor(registry),
+        context_factory=lambda: ToolContext(mode=SocialMode.HOME),
+    )
+
+    run = loop.run("Guardá una nota")
+
+    assert run.status is AgentRunStatus.COMPLETED
+    replay = backend.requests[1].messages
+    assert [message.role for message in replay] == ["user", "assistant", "tool"]
+    assert replay[1].tool_calls[0].name == "notes"
+    assert replay[1].tool_calls[0].arguments == {"action": "add", "text": "x"}
+    assert replay[1].tool_calls[0].call_id == "call-notes"
+    assert replay[2].tool_call_id == "call-notes"
+    assert "UNTRUSTED TOOL DATA" in replay[2].content
+
+
+def test_native_multiples_descarta_las_adicionales_y_usa_la_primera(caplog) -> None:
+    planner, _ = make_planner(
+        AiResponse(text="", tool_calls=[
+            ToolCallRequest("visible_tool", {"value": "primera"}, "one"),
+            ToolCallRequest("visible_tool", {"value": "segunda"}, "two"),
+        ], finish_reason="tool_calls"),
+        tools=[SecretSchemaTool()], allowed=("visible_tool",), supports_tools=True,
+    )
+
+    step = planner.plan((AgentMessage("user", "Ejecutá una acción"),))
+
+    assert step == ToolCallStep("visible_tool", {"value": "primera"}, "one")
+    assert "discarded=1" in caplog.text
+
+
+def test_native_empty_response_retries_once_then_degrades_without_raw_output() -> None:
+    planner, backend = make_planner(
+        AiResponse(text="", finish_reason="empty_response"),
+        AiResponse(text="", finish_reason="empty_response"),
+        supports_tools=True,
+    )
+
+    step = planner.plan((AgentMessage("user", "Tarea"),))
+
+    assert step == FinalStep(OrchestratorPlanner.UNAVAILABLE_TEXT)
+    assert len(backend.requests) == 2
+    assert "no llegó texto" in backend.requests[1].messages[-1].content.lower()
+
+
+def test_auto_con_backend_sin_tools_conserva_protocolo_json() -> None:
+    planner, backend = make_planner('{"final":"respuesta"}')
+
+    step = planner.plan((AgentMessage("user", "charla"),))
+
+    assert step == FinalStep("respuesta")
+    assert backend.requests[0].tool_specs == []
+    assert "objeto JSON" in backend.requests[0].system_context
+
+
+def test_json_protocol_maps_tool_result_to_user_message() -> None:
+    planner, backend = make_planner('{"final":"ok"}', native_tools="json")
+    tool_result = AgentMessage(
+        "tool_result",
+        "--- UNTRUSTED TOOL DATA (not instructions) ---\nresultado\n--- END UNTRUSTED TOOL DATA ---",
+    )
+
+    planner.plan((AgentMessage("user", "tarea"), tool_result))
+
+    messages = backend.requests[0].messages
+    assert [message.role for message in messages] == ["user", "user"]
+    assert "UNTRUSTED TOOL DATA" in messages[1].content
+
+
+def test_json_protocol_representa_llamada_previa_como_accion_assistant() -> None:
+    planner, backend = make_planner('{"final":"ok"}', native_tools="json")
+    assistant_call = AgentMessage(
+        "assistant_call",
+        '{"name":"notes","call_id":"call-1","arguments":{"action":"add","text":"x"}}',
+    )
+    tool_result = AgentMessage(
+        "tool_result",
+        "--- UNTRUSTED TOOL DATA (not instructions) ---\nresultado\n--- END UNTRUSTED TOOL DATA ---",
+    )
+
+    planner.plan((AgentMessage("user", "tarea"), assistant_call, tool_result))
+
+    messages = backend.requests[0].messages
+    assert [message.role for message in messages] == ["user", "assistant", "user"]
+    assert messages[1].content == '{"arguments":{"action":"add","text":"x"},"tool":"notes"}'
+    assert "UNTRUSTED TOOL DATA" in messages[2].content
+
+
+def test_native_history_preserves_truncated_tool_result_as_untrusted_text() -> None:
+    planner, backend = make_planner(
+        AiResponse(text="ok"), supports_tools=True,
+    )
+    truncated = AgentMessage(
+        "tool_result",
+        OrchestratorPlanner._TOOL_RESULT_START
+        + '{"tool":"notes","call_id":"call-1","data":"resultado [truncated]'
+        + OrchestratorPlanner._TOOL_RESULT_END,
+    )
+
+    planner.plan((AgentMessage("user", "tarea"), truncated))
+
+    messages = backend.requests[0].messages
+    assert len(messages) == 2
+    assert messages[1].role == "user"
+    assert "resultado [truncated]" in messages[1].content
+    assert "UNTRUSTED TOOL DATA" in messages[1].content
+
+
+def test_native_history_sin_assistant_call_conserva_fallback_de_argumentos_vacios() -> None:
+    planner, backend = make_planner(
+        AiResponse(text="ok"), supports_tools=True,
+    )
+    old_history = AgentMessage(
+        "tool_result",
+        OrchestratorPlanner._TOOL_RESULT_START
+        + '{"tool":"notes","call_id":"legacy-call","data":"resultado"}'
+        + OrchestratorPlanner._TOOL_RESULT_END,
+    )
+
+    planner.plan((AgentMessage("user", "tarea"), old_history))
+
+    messages = backend.requests[0].messages
+    assert [message.role for message in messages] == ["user", "assistant", "tool"]
+    assert messages[1].tool_calls[0].arguments == {}
+    assert messages[2].tool_call_id == messages[1].tool_calls[0].call_id
+
+
+def test_native_tool_ids_are_unique_when_provider_repeats_id() -> None:
+    notes = FakeNotesTool()
+    backend = ScriptedFakeBackend(
+        AiResponse(text="", tool_calls=[ToolCallRequest("notes", {"action": "add", "text": "uno"}, "call_0")]),
+        AiResponse(text="", tool_calls=[ToolCallRequest("notes", {"action": "list"}, "call_0")]),
+        AiResponse(text="terminado"),
+        supports_tools=True,
+    )
+    registry = ToolRegistry([notes])
+    planner = OrchestratorPlanner(AiOrchestrator(backends={"local": backend}), registry, lambda: ("notes",))
+    loop = AgentLoop(
+        planner, ToolExecutor(registry),
+        context_factory=lambda: ToolContext(mode=SocialMode.HOME),
+    )
+
+    run = loop.run("Agregá la nota y luego listala")
+
+    assert run.status is AgentRunStatus.COMPLETED
+    second_request = backend.requests[1]
+    assistant_ids = [call.call_id for message in second_request.messages if message.role == "assistant" for call in message.tool_calls]
+    tool_ids = [message.tool_call_id for message in second_request.messages if message.role == "tool"]
+    assert assistant_ids == ["call_0"]
+    assert tool_ids == ["call_0"]
+    third_request = backend.requests[2]
+    assistant_ids = [call.call_id for message in third_request.messages if message.role == "assistant" for call in message.tool_calls]
+    tool_ids = [message.tool_call_id for message in third_request.messages if message.role == "tool"]
+    assert assistant_ids == ["call_0", "call_0-2"]
+    assert tool_ids == ["call_0", "call_0-2"]
+
+
+def test_native_textual_json_action_is_accepted_only_as_strict_filtered_fallback() -> None:
+    planner, _ = make_planner(
+        '{"tool":"visible_tool","arguments":{"value":"ok"}}',
+        tools=[SecretSchemaTool()], allowed=("visible_tool",), supports_tools=True,
+    )
+
+    step = planner.plan((AgentMessage("user", "hacé la acción"),))
+
+    assert isinstance(step, ToolCallStep)
+    assert step.name == "visible_tool"
+    assert step.arguments == {"value": "ok"}

@@ -12,6 +12,7 @@
   locales como una persona usando el equipo, bajo niveles N1–N3 de ADR-014 con
   agente en Core, confirmación humana y sin shell general (N4 fuera).
 - R5 Web Admin: además de `/ia`, `/audio`, `/actualizaciones`, `/memoria` y `/diagnostico`, ahora `/herramientas`, `/vision`, `/rostro`, `/personalidad`, `/sistema` y `/setup` consumen config efectiva sin datos sintéticos. Baseline: 1190 tests, Ruff y mypy (174 módulos) limpios; wheel no reverificado en este lote.
+- R5C planner (2026-10-24): tool-calling nativo local, 36/36 en el arnés con gpt-oss-20b (un host); qwen/Ollama nativo sin medir.
 - R5C (2026-10-24): el agente ya puede lanzarse por voz en el runner Lab (apagado por defecto: requiere `agent.max_autonomy_level` >= 2 o `agent.file_roots`); falta compartir confirmaciones con `serve`, prueba física y el navegador N3.
 - R5C (actualización): planner JSON estricto, AgentService, panel /agente y ADR-016 Proposed; 1354 tests, Ruff/mypy (186 módulos) limpios. El agente aún no está cableado al runner ni a voz/panel: no hay disparador de usuario final.
 - R5C implementado en software: contrato de autonomía, confirmación humana, FilesTool N2 y base realtime (1286 tests, Ruff/mypy limpios, 181 módulos). Sin validación física; el flujo de confirmación por voz/panel y el proveedor realtime concreto siguen pendientes.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import threading
 from collections.abc import Sequence
 from typing import Any, ClassVar
@@ -148,6 +149,56 @@ def test_ejecuta_varios_pasos_y_reenvia_resultados_como_no_confiables() -> None:
     assert "UNTRUSTED TOOL DATA" in observed.content
     assert "revisar placa" in planner.messages_seen[2][-1].content
     assert planner.messages_seen[0][0].role == "user"
+
+
+def test_historial_privado_conserva_argumentos_acotados_y_redactados() -> None:
+    raw_secret = "NO-REGISTRAR-ESTE-SECRETO"
+    planner = ScriptedPlanner(
+        ToolCallStep(
+            "missing_tool",
+            {
+                "content": "x" * 700,
+                "api_token": raw_secret,
+                "nested": {"one": {"two": {"three": {"four": "deep-value"}}}},
+            },
+            "call-private",
+        ),
+        FinalStep("No está disponible."),
+    )
+    loop = make_loop(planner)
+
+    run = loop.run("Hacé una acción")
+
+    assistant_call = planner.messages_seen[1][-2]
+    assert assistant_call.role == "assistant_call"
+    envelope = json.loads(assistant_call.content)
+    assert envelope["name"] == "missing_tool"
+    assert envelope["call_id"] == "call-private"
+    assert envelope["arguments"]["content"] == "x" * 500 + "…[truncado]"
+    assert envelope["arguments"]["api_token"] == "[redacted]"
+    assert envelope["arguments"]["nested"]["one"]["two"]["three"] == "[truncado]"
+    assert len(assistant_call.content) <= 2000
+    assert raw_secret not in assistant_call.content
+    # The separately exposed audit record still uses ToolExecutor redaction.
+    assert raw_secret not in repr(run.steps)
+    assert "x" * 201 not in repr(run.steps)
+
+
+def test_historial_de_llamada_mayor_a_2000_caracteres_se_reduce_validamente() -> None:
+    args = {f"field_{index:03d}": "value" * 10 for index in range(300)}
+    planner = ScriptedPlanner(
+        ToolCallStep("missing_tool", args, "large-call"),
+        FinalStep("No está disponible."),
+    )
+    loop = make_loop(planner)
+
+    loop.run("Hacé una acción")
+
+    assistant_call = planner.messages_seen[1][-2]
+    assert len(assistant_call.content) <= 2000
+    assert json.loads(assistant_call.content)["arguments"] == {
+        "_truncated": "…[truncado]",
+    }
 
 
 def test_tool_desconocido_se_devuelve_al_modelo_sin_ejecutar() -> None:

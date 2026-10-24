@@ -8,8 +8,10 @@ from ailen.ai.contracts import (
     AiRequest,
     AiResponse,
     AiUsage,
+    BackendCapabilities,
     BackendHealth,
     ChatMessage,
+    ToolCallRequest,
 )
 from ailen.ai.fake import FakeAiBackend
 from ailen.ai.orchestrator import AiOrchestrator
@@ -33,6 +35,50 @@ def test_orchestrator_executes_primary_backend() -> None:
     assert resp.finish_reason == "stop"
     assert resp.provider == "local_llm"
     assert "Hola" in resp.text
+
+
+def test_orchestrator_accepts_tool_only_local_response_as_success() -> None:
+    local = Mock()
+    local.capabilities.return_value = BackendCapabilities(supports_tools=True, is_local=True)
+    local.health.return_value = BackendHealth(ServiceStatus.HEALTHY, "ok")
+    local.generate.return_value = AiResponse(
+        text="",
+        tool_calls=[ToolCallRequest("clock", {"format": "time"}, "call-1")],
+        finish_reason="tool_calls",
+        provider="local",
+        model="gpt-oss-20b",
+    )
+    request = AiRequest(request_id="tool-only", tool_specs=[{"type": "function"}])
+
+    response, _ = AiOrchestrator(backends={"local": local}).execute(
+        request, RoutePlan("local")
+    )
+
+    assert response.error_kind is None
+    assert response.tool_calls[0].call_id == "call-1"
+
+
+def test_orchestrator_blocks_native_tool_schemas_before_remote_backend() -> None:
+    remote = Mock()
+    remote.capabilities.return_value = BackendCapabilities(
+        supports_tools=True, is_local=False, requires_internet=True,
+    )
+    remote.health.return_value = BackendHealth(ServiceStatus.HEALTHY, "ok")
+    request = AiRequest(
+        request_id="private-tools-remote",
+        tool_specs=[{"type": "function", "function": {"name": "clock"}}],
+        privacy_level=PrivacyLevel.PRIVATE,
+    )
+
+    response, _ = AiOrchestrator(backends={"remote:test": remote}).execute(
+        request,
+        RoutePlan("remote:test", allow_sanitized_external=True),
+    )
+
+    assert response.finish_reason == "degraded"
+    remote.health.assert_not_called()
+    remote.generate.assert_not_called()
+    assert response.attempts[0].detail == "privacy_blocked"
 
 
 def test_orchestrator_fallback_when_primary_fails() -> None:

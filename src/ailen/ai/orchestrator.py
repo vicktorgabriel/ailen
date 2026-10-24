@@ -123,6 +123,26 @@ class AiOrchestrator:
                 )
                 continue
 
+            if request.tool_specs:
+                try:
+                    capabilities = backend.capabilities()
+                except Exception as exc:  # noqa: BLE001
+                    attempts.append(AiAttempt(
+                        backend=candidate_name,
+                        outcome="failed",
+                        error_kind=AiErrorKind.INTERNAL_ERROR,
+                        detail=f"capabilities_{type(exc).__name__}",
+                    ))
+                    continue
+                if not capabilities.is_local or not capabilities.supports_tools:
+                    attempts.append(AiAttempt(
+                        backend=candidate_name,
+                        outcome="blocked",
+                        error_kind=AiErrorKind.UNAVAILABLE,
+                        detail="native_tools_not_supported_locally",
+                    ))
+                    continue
+
             # Check health. Only HEALTHY/DEGRADED backends are eligible for inference.
             try:
                 health = backend.health()
@@ -290,6 +310,25 @@ class AiOrchestrator:
                     )
                 )
                 continue
+            if request.tool_specs:
+                try:
+                    capabilities = backend.capabilities()
+                except Exception as exc:  # noqa: BLE001
+                    attempts.append(AiAttempt(
+                        backend=candidate_name,
+                        outcome="failed",
+                        error_kind=AiErrorKind.INTERNAL_ERROR,
+                        detail=f"capabilities_{type(exc).__name__}",
+                    ))
+                    continue
+                if not capabilities.is_local or not capabilities.supports_tools:
+                    attempts.append(AiAttempt(
+                        backend=candidate_name,
+                        outcome="blocked",
+                        error_kind=AiErrorKind.UNAVAILABLE,
+                        detail="native_tools_not_supported_locally",
+                    ))
+                    continue
             try:
                 health = backend.health()
             except Exception as exc:
@@ -388,7 +427,7 @@ class AiOrchestrator:
 
     @staticmethod
     def _is_success(response: AiResponse) -> bool:
-        return bool(response.text) and response.error_kind is None and response.finish_reason not in {
+        return bool(response.text or response.tool_calls) and response.error_kind is None and response.finish_reason not in {
             "empty_response",
             "error",
             "malformed_response",

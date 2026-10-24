@@ -25,6 +25,7 @@ from ailen.ai.contracts import (
     StreamingAiBackend,
     ToolCallRequest,
 )
+from ailen.ai.harmony import HarmonyStreamFilter, strip_harmony_channels
 from ailen.ai.providers import (
     AiProvider,
     AuthMode,
@@ -77,6 +78,7 @@ class GenericOpenAiBackend(AiProvider, StreamingAiBackend):
         self.supports_reasoning_effort = supports_reasoning_effort
         self.streaming_enabled = streaming_enabled
         self.requires_api_key = requires_api_key
+        self._parallel_tool_calls_supported: bool | None = None
         self._last_health = BackendHealth(ServiceStatus.UNKNOWN, "Unchecked")
         self._health_checked_at = 0.0
         self._health_ttl_seconds = 30.0
@@ -158,7 +160,7 @@ class GenericOpenAiBackend(AiProvider, StreamingAiBackend):
     def capabilities(self) -> BackendCapabilities:
         """Return backend capabilities."""
         return BackendCapabilities(
-            supports_tools=False,
+            supports_tools=self.is_local,
             supports_streaming=self.streaming_enabled,
             max_context_tokens=4096,
             is_local=self.is_local,
@@ -168,6 +170,14 @@ class GenericOpenAiBackend(AiProvider, StreamingAiBackend):
     def generate(self, request: AiRequest) -> AiResponse:
         """Execute chat completion request against endpoint."""
         start_t = time.monotonic()
+        if (
+            (request.tool_specs and not self.capabilities().supports_tools)
+            or not self.is_local and self._has_native_tool_messages(request.messages)
+        ):
+            return self._failure_response(
+                kind=AiErrorKind.INVALID_RESPONSE,
+                latency_ms=0.0,
+            )
         if self.requires_api_key and not self.api_key:
             return self._failure_response(
                 kind=AiErrorKind.AUTHENTICATION,
@@ -186,8 +196,14 @@ class GenericOpenAiBackend(AiProvider, StreamingAiBackend):
         if system_parts:
             formatted_messages.append({"role": "system", "content": "\n\n".join(system_parts)})
 
-        for msg in request.messages:
-            formatted_messages.append({"role": msg.role, "content": msg.content})
+        try:
+            formatted_messages.extend(self._format_message(msg) for msg in request.messages)
+            formatted_tools = self._format_tool_specs(request.tool_specs)
+        except (TypeError, ValueError):
+            return self._failure_response(
+                kind=AiErrorKind.INVALID_RESPONSE,
+                latency_ms=(time.monotonic() - start_t) * 1000.0,
+            )
 
         payload: dict[str, Any] = {
             "model": self.model,
@@ -195,6 +211,11 @@ class GenericOpenAiBackend(AiProvider, StreamingAiBackend):
             "max_tokens": request.max_output_tokens,
             "temperature": request.temperature,
         }
+        if formatted_tools:
+            payload["tools"] = formatted_tools
+            payload["tool_choice"] = "auto"
+            if self.is_local and self._parallel_tool_calls_supported is not False:
+                payload["parallel_tool_calls"] = False
         effort = request.metadata.get("reasoning_effort") or self.reasoning_effort
         if (
             self.supports_reasoning_effort
@@ -215,7 +236,29 @@ class GenericOpenAiBackend(AiProvider, StreamingAiBackend):
         timeout = request.timeout_seconds or self.timeout_seconds
 
         try:
-            with urllib.request.urlopen(http_req, timeout=timeout) as resp:
+            try:
+                response_context = urllib.request.urlopen(http_req, timeout=timeout)
+            except urllib.error.HTTPError as error:
+                if "parallel_tool_calls" not in payload:
+                    raise
+                error_body = self._read_http_error(error)
+                if self._is_parallel_tool_calls_rejection(error.code, error_body):
+                    self._parallel_tool_calls_supported = False
+                    payload.pop("parallel_tool_calls", None)
+                    data = json.dumps(payload).encode("utf-8")
+                    http_req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+                    response_context = urllib.request.urlopen(http_req, timeout=timeout)
+                else:
+                    latency_ms = (time.monotonic() - start_t) * 1000.0
+                    return self._failure_response(
+                        kind=self._classify_http_error(error.code, error_body),
+                        latency_ms=latency_ms,
+                        retry_after_seconds=self._parse_retry_after(error),
+                    )
+            else:
+                if "parallel_tool_calls" in payload:
+                    self._parallel_tool_calls_supported = True
+            with response_context as resp:
                 raw_body = resp.read().decode("utf-8")
                 latency_ms = (time.monotonic() - start_t) * 1000.0
                 return self._parse_success_response(
@@ -275,6 +318,18 @@ class GenericOpenAiBackend(AiProvider, StreamingAiBackend):
     ) -> AiResponse:
         """Stream an OpenAI-compatible chat completion using SSE ``data:`` events."""
         start_t = time.monotonic()
+        if request.tool_specs:
+            # Tool-call deltas are not implemented on this SSE path. Never send
+            # a schema while silently discarding streamed function arguments.
+            return self._failure_response(
+                kind=AiErrorKind.INVALID_RESPONSE,
+                latency_ms=0.0,
+            )
+        if not self.is_local and self._has_native_tool_messages(request.messages):
+            return self._failure_response(
+                kind=AiErrorKind.INVALID_RESPONSE,
+                latency_ms=0.0,
+            )
         if not self.streaming_enabled:
             response = self.generate(request)
             if response.text:
@@ -326,6 +381,8 @@ class GenericOpenAiBackend(AiProvider, StreamingAiBackend):
         )
         timeout = request.timeout_seconds or self.timeout_seconds
         emitted: list[str] = []
+        harmony_filter = HarmonyStreamFilter()
+        client_stopped = False
         finish_reason = "stop"
         response_model = self.model
         first_text_ms: float | None = None
@@ -370,14 +427,27 @@ class GenericOpenAiBackend(AiProvider, StreamingAiBackend):
                     content = delta.get("content") if isinstance(delta, dict) else None
                     if not isinstance(content, str) or not content:
                         continue
+                    visible = harmony_filter.feed(content)
+                    if not visible:
+                        continue
                     if first_text_ms is None:
                         first_text_ms = (time.monotonic() - start_t) * 1000.0
-                    emitted.append(content)
-                    if on_text_delta(content) is False:
+                    emitted.append(visible)
+                    if on_text_delta(visible) is False:
                         finish_reason = "client_stop"
+                        client_stopped = True
                         break
+            if not client_stopped:
+                tail = harmony_filter.finish()
+                if tail:
+                    if first_text_ms is None:
+                        first_text_ms = (time.monotonic() - start_t) * 1000.0
+                    emitted.append(tail)
+                    if on_text_delta(tail) is False:
+                        finish_reason = "client_stop"
+            visible_text = strip_harmony_channels("".join(emitted)).strip()
             return AiResponse(
-                text="".join(emitted).strip(),
+                text=visible_text,
                 finish_reason=finish_reason,
                 usage=usage,
                 latency_ms=(time.monotonic() - start_t) * 1000.0,
@@ -385,7 +455,7 @@ class GenericOpenAiBackend(AiProvider, StreamingAiBackend):
                 model=response_model,
                 first_text_ms=first_text_ms,
                 request_chars=len(data),
-                error_kind=(AiErrorKind.INVALID_RESPONSE if not emitted else None),
+                error_kind=(AiErrorKind.INVALID_RESPONSE if not visible_text else None),
             )
         except urllib.error.HTTPError as exc:
             logger.warning("HTTP %d from streaming backend %s", exc.code, self.endpoint)
@@ -422,6 +492,29 @@ class GenericOpenAiBackend(AiProvider, StreamingAiBackend):
                 kind=AiErrorKind.INTERNAL_ERROR,
                 latency_ms=(time.monotonic() - start_t) * 1000.0,
             )
+
+    @staticmethod
+    def _read_http_error(error: urllib.error.HTTPError) -> str:
+        try:
+            return error.read().decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    @staticmethod
+    def _is_parallel_tool_calls_rejection(status_code: int, body: str) -> bool:
+        lowered = body.lower()
+        return status_code in {400, 422} and "parallel_tool_calls" in lowered and any(
+            marker in lowered
+            for marker in ("unsupported", "unknown", "unrecognized", "not support", "unexpected")
+        )
+
+    @staticmethod
+    def _has_native_tool_messages(messages: list[ChatMessage]) -> bool:
+        return any(
+            message.role == "tool"
+            or (message.role == "assistant" and bool(message.tool_calls))
+            for message in messages
+        )
 
     @staticmethod
     def _classify_http_error(status_code: int, body: str) -> AiErrorKind:
@@ -482,6 +575,88 @@ class GenericOpenAiBackend(AiProvider, StreamingAiBackend):
             retry_after_seconds=retry_after_seconds,
         )
 
+    @staticmethod
+    def _format_message(message: ChatMessage) -> dict[str, Any]:
+        if message.role == "tool":
+            if not message.tool_call_id:
+                raise ValueError("tool message requires tool_call_id")
+            return {
+                "role": "tool",
+                "tool_call_id": message.tool_call_id,
+                "content": message.content,
+            }
+        if message.role == "assistant" and message.tool_calls:
+            calls = []
+            for call in message.tool_calls:
+                arguments = json.dumps(
+                    call.arguments, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+                )
+                calls.append({
+                    "id": call.call_id or "",
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": arguments},
+                })
+            return {"role": "assistant", "content": message.content or None, "tool_calls": calls}
+        return {"role": message.role, "content": message.content}
+
+    @staticmethod
+    def _format_tool_specs(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        formatted: list[dict[str, Any]] = []
+        for spec in specs:
+            if not isinstance(spec, dict) or spec.get("type") != "function":
+                raise ValueError("invalid function tool spec")
+            function = spec.get("function")
+            if not isinstance(function, dict):
+                raise TypeError("function tool spec must contain a function object")
+            name = function.get("name")
+            description = function.get("description", "")
+            parameters = function.get("parameters")
+            if (
+                not isinstance(name, str) or not name or len(name) > 128
+                or not isinstance(description, str) or not isinstance(parameters, dict)
+            ):
+                raise ValueError("invalid function name, description or parameters")
+            json.dumps(parameters, ensure_ascii=False, allow_nan=False)
+            formatted.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": description,
+                    "parameters": parameters,
+                },
+            })
+        return formatted
+
+    @staticmethod
+    def _parse_tool_calls(raw_calls: object) -> list[ToolCallRequest]:
+        if not isinstance(raw_calls, list):
+            raise TypeError("tool_calls must be a list")
+        parsed: list[ToolCallRequest] = []
+        for raw_call in raw_calls:
+            if not isinstance(raw_call, dict):
+                raise TypeError("tool call must be an object")
+            function = raw_call.get("function")
+            if not isinstance(function, dict):
+                raise TypeError("tool call function must be an object")
+            name = function.get("name")
+            raw_arguments = function.get("arguments", "{}")
+            arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+            call_id = raw_call.get("id")
+            if (
+                not isinstance(name, str) or not name or len(name) > 128
+                or not isinstance(arguments, dict)
+                or any(not isinstance(key, str) for key in arguments)
+                or call_id is not None and not isinstance(call_id, str)
+            ):
+                raise ValueError("invalid tool call fields")
+            json.dumps(arguments, ensure_ascii=False, allow_nan=False)
+            parsed.append(ToolCallRequest(
+                name=name,
+                arguments=arguments,
+                call_id=call_id[:128] if isinstance(call_id, str) else None,
+            ))
+        return parsed
+
     def _parse_success_response(
         self,
         raw_body: str,
@@ -506,21 +681,40 @@ class GenericOpenAiBackend(AiProvider, StreamingAiBackend):
             choice = choices[0]
             message = choice.get("message", {})
             text = message.get("content") or ""
+            if isinstance(text, str):
+                text = strip_harmony_channels(text)
             finish_reason = choice.get("finish_reason") or "stop"
 
             # Parse tool calls if present
-            tool_calls: list[ToolCallRequest] = []
-            if "tool_calls" in message and isinstance(message["tool_calls"], list):
-                for tc in message["tool_calls"]:
-                    func = tc.get("function", {})
-                    name = func.get("name", "")
-                    args_str = func.get("arguments", "{}")
-                    try:
-                        args = json.loads(args_str) if isinstance(args_str, str) else args_str
-                    except Exception:  # noqa: BLE001
-                        args = {}
-                    if name:
-                        tool_calls.append(ToolCallRequest(name=name, arguments=args))
+            try:
+                tool_calls = self._parse_tool_calls(message.get("tool_calls", []))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return AiResponse(
+                    text="",
+                    finish_reason="malformed_response",
+                    latency_ms=latency_ms,
+                    provider=self.provider_name,
+                    model=self.model,
+                    error_kind=AiErrorKind.INVALID_RESPONSE,
+                )
+            if finish_reason == "tool_calls" and not tool_calls:
+                return AiResponse(
+                    text="",
+                    finish_reason="malformed_response",
+                    latency_ms=latency_ms,
+                    provider=self.provider_name,
+                    model=self.model,
+                    error_kind=AiErrorKind.INVALID_RESPONSE,
+                )
+            if not text.strip() and not tool_calls:
+                return AiResponse(
+                    text="",
+                    finish_reason="empty_response",
+                    latency_ms=latency_ms,
+                    provider=self.provider_name,
+                    model=self.model,
+                    error_kind=AiErrorKind.INVALID_RESPONSE,
+                )
 
             # Parse token usage
             usage_data = data.get("usage", {})

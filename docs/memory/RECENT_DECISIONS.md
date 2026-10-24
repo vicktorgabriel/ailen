@@ -41,6 +41,12 @@
   ("Free usage limit reached") y AGY (429, reset ~122 h) se agotan tras rondas largas:
   repartir carga y tener a Codex Luna como respaldo. Resultados de tools hacia
   proveedores remotos: sólo status y texto genérico salvo tools PUBLIC (ADR-015).
+- Planner nativo (2026-10-24): el protocolo JSON textual rendía 19 % (qwen3.5:9b) y 0 %
+  (gpt-oss) porque gpt-oss intenta tool-calling nativo y el servidor corta al cerrar el
+  canal analysis; con `tools` nativo mide 36/36. Regla: tool_specs y mensajes `tool`
+  sólo a backends locales (`is_local` real); la historia de la llamada previa incluye
+  sus argumentos (acotados) para que el modelo encadene pasos. El propietario detectó
+  que el defecto era de integración, no del modelo.
 - Regla de proceso: todo cambio, decisión y delegación se documenta en el mismo
   lote de trabajo (ver AGENTS.md y REGLAMENTO.md).
 

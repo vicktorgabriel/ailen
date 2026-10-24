@@ -11,17 +11,22 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from typing import Any
 from urllib.parse import urlparse
 
 from ailen.ai.contracts import (
     AiBackend,
+    AiErrorKind,
     AiRequest,
     AiResponse,
     AiUsage,
     BackendCapabilities,
     BackendHealth,
+    ChatMessage,
     StreamingAiBackend,
+    ToolCallRequest,
 )
+from ailen.ai.harmony import HarmonyStreamFilter, strip_harmony_channels
 from ailen.domain.enums import ServiceStatus
 
 logger = logging.getLogger("ailen.ai.ollama")
@@ -48,6 +53,7 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
                 "Ollama native backend must use loopback unless trusted remote access is explicit"
             )
         self.endpoint = base.rstrip("/")
+        self.is_local = is_loopback
         self.model = model
         self.timeout_seconds = max(0.1, timeout_seconds)
         self.think = think
@@ -77,10 +83,10 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
 
     def capabilities(self) -> BackendCapabilities:
         return BackendCapabilities(
-            supports_tools=False,
+            supports_tools=True,
             supports_streaming=True,
             max_context_tokens=self.context_tokens,
-            is_local=True,
+            is_local=self.is_local,
             requires_internet=False,
         )
 
@@ -156,7 +162,13 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
 
     def _generate_unlocked(self, request: AiRequest) -> AiResponse:
         start_t = time.monotonic()
-        messages: list[dict[str, str]] = []
+        if not self.is_local and (
+            request.tool_specs or self._has_native_tool_messages(request.messages)
+        ):
+            return self._failure(
+                "malformed_response", 0.0, error_kind=AiErrorKind.INVALID_RESPONSE,
+            )
+        messages: list[dict[str, Any]] = []
         system_parts: list[str] = []
         if request.system_context:
             system_parts.append(request.system_context)
@@ -164,7 +176,12 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
             system_parts.append("Información de contexto:\n" + "\n".join(f"- {m}" for m in request.retrieved_memory))
         if system_parts:
             messages.append({"role": "system", "content": "\n\n".join(system_parts)})
-        messages.extend({"role": msg.role, "content": msg.content} for msg in request.messages)
+        try:
+            messages.extend(self._format_message(msg) for msg in request.messages)
+            tools = self._format_tool_specs(request.tool_specs)
+        except (TypeError, ValueError):
+            return self._failure("malformed_response", (time.monotonic() - start_t) * 1000.0,
+                                 error_kind=AiErrorKind.INVALID_RESPONSE)
 
         payload = {
             "model": self.model,
@@ -178,6 +195,8 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
                 "num_ctx": self.context_tokens,
             },
         }
+        if tools:
+            payload["tools"] = tools
         req = urllib.request.Request(
             f"{self.endpoint}/api/chat",
             data=json.dumps(payload).encode("utf-8"),
@@ -193,9 +212,17 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
                     return self._failure("malformed_response", latency_ms)
                 data = json.loads(raw.decode("utf-8"))
                 message = data.get("message") or {}
-                text = str(message.get("content") or "").strip()
-                if not text:
-                    return self._failure("empty_response", latency_ms)
+                text = strip_harmony_channels(str(message.get("content") or "")).strip()
+                try:
+                    tool_calls = self._parse_tool_calls(message.get("tool_calls", []))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    return self._failure(
+                        "malformed_response", latency_ms, error_kind=AiErrorKind.INVALID_RESPONSE,
+                    )
+                if not text and not tool_calls:
+                    return self._failure(
+                        "empty_response", latency_ms, error_kind=AiErrorKind.INVALID_RESPONSE,
+                    )
                 eval_count = data.get("eval_count")
                 eval_duration = data.get("eval_duration")
                 prompt_eval_duration = data.get("prompt_eval_duration")
@@ -232,6 +259,7 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
                 )
                 return AiResponse(
                     text=text,
+                    tool_calls=tool_calls,
                     finish_reason=str(data.get("done_reason") or "stop"),
                     usage=usage,
                     latency_ms=latency_ms,
@@ -257,6 +285,12 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
         on_text_delta: Callable[[str], bool | None],
     ) -> AiResponse:
         """Stream Ollama chat deltas and allow voice Core to stop after a useful phrase."""
+        if request.tool_specs or (
+            not self.is_local and self._has_native_tool_messages(request.messages)
+        ):
+            return self._failure(
+                "malformed_response", 0.0, error_kind=AiErrorKind.INVALID_RESPONSE,
+            )
         with self._request_lock:
             return self._generate_stream_unlocked(request, on_text_delta)
 
@@ -266,7 +300,7 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
         on_text_delta: Callable[[str], bool | None],
     ) -> AiResponse:
         start_t = time.monotonic()
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         system_parts: list[str] = []
         if request.system_context:
             system_parts.append(request.system_context)
@@ -299,6 +333,7 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
         )
         timeout = request.timeout_seconds or self.timeout_seconds
         text_parts: list[str] = []
+        harmony_filter = HarmonyStreamFilter()
         final_data: dict[str, object] = {}
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -310,11 +345,13 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
                     message = data.get("message") or {}
                     delta = str(message.get("content") or "") if isinstance(message, dict) else ""
                     if delta:
-                        text_parts.append(delta)
-                        if on_text_delta(delta) is False:
+                        visible = harmony_filter.feed(delta)
+                        if visible:
+                            text_parts.append(visible)
+                        if visible and on_text_delta(visible) is False:
                             latency_ms = (time.monotonic() - start_t) * 1000.0
                             return AiResponse(
-                                text="".join(text_parts).strip(),
+                                text=strip_harmony_channels("".join(text_parts)).strip(),
                                 finish_reason="client_stop",
                                 latency_ms=latency_ms,
                                 provider="ollama",
@@ -322,8 +359,14 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
                             )
                     if bool(data.get("done", False)):
                         break
+            tail = harmony_filter.finish()
+            finish_reason = str(final_data.get("done_reason") or "stop")
+            if tail:
+                text_parts.append(tail)
+                if on_text_delta(tail) is False:
+                    finish_reason = "client_stop"
             latency_ms = (time.monotonic() - start_t) * 1000.0
-            text = "".join(text_parts).strip()
+            text = strip_harmony_channels("".join(text_parts)).strip()
             if not text:
                 return self._failure("empty_response", latency_ms)
             eval_count = final_data.get("eval_count")
@@ -363,7 +406,7 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
             )
             return AiResponse(
                 text=text,
-                finish_reason=str(final_data.get("done_reason") or "stop"),
+                finish_reason=finish_reason,
                 usage=usage,
                 latency_ms=latency_ms,
                 provider="ollama",
@@ -377,11 +420,92 @@ class OllamaNativeBackend(AiBackend, StreamingAiBackend):
             logger.warning("Ollama native streaming API error: %s", exc)
             return self._failure("error", latency_ms)
 
-    def _failure(self, finish_reason: str, latency_ms: float) -> AiResponse:
+    @staticmethod
+    def _format_message(message: ChatMessage) -> dict[str, Any]:
+        if message.role == "assistant" and message.tool_calls:
+            calls = []
+            for call in message.tool_calls:
+                calls.append({
+                    "function": {"name": call.name, "arguments": call.arguments},
+                })
+            return {"role": "assistant", "content": message.content, "tool_calls": calls}
+        return {"role": message.role, "content": message.content}
+
+    @staticmethod
+    def _has_native_tool_messages(messages: list[ChatMessage]) -> bool:
+        return any(
+            message.role == "tool"
+            or (message.role == "assistant" and bool(message.tool_calls))
+            for message in messages
+        )
+
+    @staticmethod
+    def _format_tool_specs(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        formatted: list[dict[str, Any]] = []
+        for spec in specs:
+            if not isinstance(spec, dict) or spec.get("type") != "function":
+                raise ValueError("invalid function tool spec")
+            function = spec.get("function")
+            if not isinstance(function, dict):
+                raise TypeError("function tool spec must contain an object")
+            name = function.get("name")
+            description = function.get("description", "")
+            parameters = function.get("parameters")
+            if (
+                not isinstance(name, str) or not name or len(name) > 128
+                or not isinstance(description, str) or not isinstance(parameters, dict)
+            ):
+                raise ValueError("invalid function tool spec fields")
+            json.dumps(parameters, ensure_ascii=False, allow_nan=False)
+            formatted.append({
+                "type": "function",
+                "function": {"name": name, "description": description, "parameters": parameters},
+            })
+        return formatted
+
+    @staticmethod
+    def _parse_tool_calls(raw_calls: object) -> list[ToolCallRequest]:
+        if not isinstance(raw_calls, list):
+            raise TypeError("tool_calls must be a list")
+        parsed: list[ToolCallRequest] = []
+        for raw_call in raw_calls:
+            if not isinstance(raw_call, dict):
+                raise TypeError("tool call must be an object")
+            function = raw_call.get("function")
+            if not isinstance(function, dict):
+                raise TypeError("tool call function must be an object")
+            name = function.get("name")
+            arguments = function.get("arguments", {})
+            if isinstance(arguments, str):
+                arguments = json.loads(arguments)
+            call_id = raw_call.get("id")
+            if (
+                not isinstance(name, str) or not name or len(name) > 128
+                or not isinstance(arguments, dict)
+                or any(not isinstance(key, str) for key in arguments)
+                or call_id is not None and not isinstance(call_id, str)
+            ):
+                raise ValueError("invalid tool call fields")
+            json.dumps(arguments, ensure_ascii=False, allow_nan=False)
+            parsed.append(ToolCallRequest(
+                name=name,
+                arguments=arguments,
+                call_id=call_id[:128] if isinstance(call_id, str) else None,
+            ))
+        return parsed
+
+    def _failure(
+        self,
+        finish_reason: str,
+        latency_ms: float,
+        *,
+        error_kind: AiErrorKind | None = None,
+    ) -> AiResponse:
         return AiResponse(
             text="",
             finish_reason=finish_reason,
             latency_ms=latency_ms,
             provider="ollama",
             model=self.model,
+            error_kind=error_kind,
         )

@@ -115,6 +115,7 @@ messages
 retrieved_memory
 mode
 allowed_tools
+tool_specs? (JSON Schema function specs; local native-tool backends only)
 max_output_tokens
 timeout_seconds
 privacy_level
@@ -132,6 +133,11 @@ latency_ms
 provider
 model
 ```
+
+`AiRequest.tool_specs` habilita function-calling nativo únicamente en backends
+locales que declaran `supports_tools`; `AiOrchestrator` y
+`OutboundPrivacyPolicy` bloquean esos requests para LAN y proveedores remotos.
+El Core valida cada llamada y sólo `ToolExecutor` ejecuta tools autorizadas.
 
 ### `AiUsage`
 

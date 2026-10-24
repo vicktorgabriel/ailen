@@ -82,3 +82,49 @@ def test_restricted_request_to_untrusted_lan_fails_closed() -> None:
         OutboundPrivacyPolicy.sanitize_request_for_destination(
             req, "lan_brain", lan_trusted=False
         )
+
+
+@pytest.mark.parametrize("destination, trusted", [("remote:test", False), ("lan_brain", False), ("lan_brain", True)])
+def test_native_tool_schemas_never_leave_local_backend(destination: str, trusted: bool) -> None:
+    request = AiRequest(
+        request_id="private-native-tools",
+        tool_specs=[{"type": "function", "function": {"name": "clock"}}],
+        privacy_level=PrivacyLevel.PRIVATE,
+    )
+
+    with pytest.raises(PermissionError, match="NATIVE_TOOLS_LOCAL_ONLY"):
+        OutboundPrivacyPolicy.sanitize_request_for_destination(
+            request,
+            destination,
+            lan_trusted=trusted,
+            allow_sanitized_private=True,
+        )
+
+
+@pytest.mark.parametrize("destination", ["remote:test", "lan_brain"])
+def test_native_tool_messages_never_leave_local_backend(destination: str) -> None:
+    request = AiRequest(
+        request_id="private-tool-history",
+        messages=[
+            ChatMessage(role="assistant", content="", tool_calls=[]),
+            ChatMessage(role="tool", content="sensitive tool result", tool_call_id="c1"),
+        ],
+        privacy_level=PrivacyLevel.PUBLIC,
+    )
+
+    with pytest.raises(PermissionError, match="NATIVE_TOOL_MESSAGES_LOCAL_ONLY"):
+        OutboundPrivacyPolicy.sanitize_request_for_destination(
+            request, destination, lan_trusted=True,
+        )
+
+
+def test_remote_sanitizer_always_drops_native_tool_schemas() -> None:
+    request = AiRequest(
+        request_id="sanitized-tools",
+        tool_specs=[{"type": "function", "function": {"name": "clock"}}],
+        privacy_level=PrivacyLevel.PRIVATE,
+    )
+
+    sanitized = OutboundPrivacyPolicy._sanitize_remote_request(request)
+
+    assert sanitized.tool_specs == []

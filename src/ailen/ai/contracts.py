@@ -13,13 +13,6 @@ from ailen.domain.enums import PrivacyLevel, ServiceStatus, SocialMode
 
 
 @dataclass
-class ChatMessage:
-    """A single message in an AI conversation context."""
-    role: str  # "user", "assistant", "system", "tool"
-    content: str
-
-
-@dataclass
 class AiUsage:
     """Token/cost usage of an inference call."""
     input_tokens: int | None = None
@@ -37,6 +30,17 @@ class ToolCallRequest:
     """A tool invocation requested by the AI backend."""
     name: str
     arguments: dict[str, Any] = field(default_factory=dict)
+    call_id: str | None = None
+
+
+@dataclass
+class ChatMessage:
+    """A single message, including native assistant/tool protocol turns."""
+
+    role: str  # "user", "assistant", "system", "tool"
+    content: str
+    tool_call_id: str | None = None
+    tool_calls: list[ToolCallRequest] = field(default_factory=list)
 
 
 class AiErrorKind(StrEnum):
@@ -74,6 +78,7 @@ class AiRequest:
     retrieved_memory: list[str] = field(default_factory=list)
     mode: SocialMode = SocialMode.WORKSHOP
     allowed_tools: list[str] = field(default_factory=list)
+    tool_specs: list[dict[str, Any]] = field(default_factory=list)
     max_output_tokens: int = 512
     temperature: float = 0.4
     timeout_seconds: float = 10.0
