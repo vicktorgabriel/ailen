@@ -537,6 +537,20 @@ error_code?
 
 Prohibido exponer shell general como tool.
 
+### Agente supervisado de Core
+
+`AgentService.submit(task, mode)` ejecuta una sola tarea acotada por vez mediante
+`AgentLoop`, `OrchestratorPlanner` y el mismo `ToolExecutor`; el planner recibe
+sólo tools permitidas por el modo social y el tope de autonomía vivos. Lab no
+crea el servicio en el nivel default N1: requiere habilitación administrativa
+N2/N3 o raíces configuradas. `parse_agent_command()` reconoce únicamente
+prefijos/comandos explícitos (`agente, …`, `modo agente …`, confirmación,
+denegación o cancelación); frases ordinarias siguen el flujo conversacional.
+Una confirmación por voz transmite confianza y truncamiento reales del
+`Transcript` a `ConfirmationService`; confianza ausente, baja o turno truncado
+no autoriza la acción. El planner usa protocolo JSON privado, sin tool-calling
+remoto; la confirmación humana permanece de un solo uso y expira.
+
 Para WebSearch, el request puede declarar `category=text|news` y frescura
 `day|week|month`. Un resultado fechado expone `published_at`; Core conserva esa
 metadata al proyectar evidencia al LLM. Una búsqueda sin resultados es éxito con

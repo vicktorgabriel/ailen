@@ -23,6 +23,7 @@ from ailen.ai.router import RoutePlan, RouteRequest, RuleBasedRouter
 from ailen.audio.contracts import SpeechRequest, Transcript
 from ailen.audio.coordinator import AudioInteractionCoordinator
 from ailen.audio.speech_text import IncrementalSpeechSegmenter, normalize_text_for_speech
+from ailen.core.agent_trigger import parse_agent_command
 from ailen.core.capabilities import CapabilityRegistry
 from ailen.core.personality import PersonalityService
 from ailen.domain.enums import DeviceProfile, PrivacyLevel, SocialMode
@@ -82,6 +83,7 @@ class ConversationCoordinator:
         voice_action_min_confidence: float = 0.72,
         speech_join_timeout_seconds: float = 30.0,
         telemetry_sink: TurnTelemetrySink | None = None,
+        agent_command_handler: Callable[[Transcript, str], str | None] | None = None,
     ) -> None:
         self.context_builder = context_builder
         self.router = router
@@ -115,6 +117,7 @@ class ConversationCoordinator:
         self.voice_action_min_confidence = max(0.0, min(1.0, voice_action_min_confidence))
         self.speech_join_timeout_seconds = max(0.1, min(120.0, speech_join_timeout_seconds))
         self.telemetry_sink = telemetry_sink
+        self.agent_command_handler = agent_command_handler
 
     def handle_user_input(
         self,
@@ -133,6 +136,33 @@ class ConversationCoordinator:
             empty_resp = AiResponse(text="", finish_reason="empty_input")
             empty_plan = RoutePlan(primary_backend="rule", reason_code="EMPTY_INPUT")
             return empty_resp, empty_plan
+
+        # The supervised agent is opt-in and addressed only by explicit
+        # phrases. With no handler, ordinary conversation routing is unchanged.
+        if (
+            self.agent_command_handler is not None
+            and voice_turn is not None
+            and parse_agent_command(text) is not None
+        ):
+            command_response = self.agent_command_handler(voice_turn, text)
+            if command_response is not None and command_response.strip():
+                response = AiResponse(
+                    text=command_response.strip(),
+                    provider="core",
+                    model="agent",
+                    finish_reason="agent_command",
+                )
+                plan = RoutePlan(
+                    primary_backend="rule",
+                    reason_code="AGENT_COMMAND",
+                    context_budget=0,
+                    request_timeout=0.0,
+                    privacy_decision="LOCAL_RULE_ONLY",
+                )
+                self._speak_if_enabled(response.text, turn_id=turn_id)
+                self._persist_turn(session_id, user_text, response)
+                self._log_timing(turn_id, "turn_total", turn_started)
+                return response, plan
 
         # Explicit style feedback is local, bounded and deterministic. It can
         # evolve personality only in private/trusted operating modes.

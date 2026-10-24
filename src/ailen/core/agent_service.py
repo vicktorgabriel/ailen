@@ -67,6 +67,7 @@ class AgentService:
         AgentTaskStatus.RUNNING, AgentTaskStatus.AWAITING_CONFIRMATION,
     })
     _RUN_STATUS: ClassVar[dict[AgentRunStatus, AgentTaskStatus]] = {
+        AgentRunStatus.RUNNING: AgentTaskStatus.RUNNING,
         AgentRunStatus.COMPLETED: AgentTaskStatus.COMPLETED,
         AgentRunStatus.CANCELLED: AgentTaskStatus.CANCELLED,
         AgentRunStatus.BUDGET_EXCEEDED: AgentTaskStatus.BUDGET_EXCEEDED,

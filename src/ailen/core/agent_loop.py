@@ -82,6 +82,7 @@ class AgentPlanner(Protocol):
 
 
 class AgentRunStatus(str, Enum):
+    RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
     BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
@@ -148,11 +149,12 @@ class AgentLoop:
             raise ValueError("task debe ser texto no vacío de hasta 20000 caracteres")
         run = AgentRun(
             task=task,
-            status=AgentRunStatus.FAILED,
+            status=AgentRunStatus.RUNNING,
             messages=[AgentMessage(role="user", content=task)],
             started_at=self.clock(),
         )
         if not run._lock.acquire(blocking=False):
+            run.status = AgentRunStatus.FAILED
             return run
         try:
             return self._drive(run)
@@ -193,11 +195,11 @@ class AgentLoop:
             pending_call = run._pending_call
             # Consume the pending confirmation atomically while still holding
             # the lock: the run is no longer resumable before the tool runs.
-            run.status = AgentRunStatus.FAILED
+            run.status = AgentRunStatus.RUNNING
             run.confirmation_id = None
             run._pending_call = None
             result = self._execute_call(run, pending_call, confirmation_id=confirmation_id)
-            if run.status is not AgentRunStatus.COMPLETED:
+            if run.status is not AgentRunStatus.RUNNING:
                 return run
             self._append_result(run, pending_call, result)
             return self._drive(run)
@@ -205,6 +207,7 @@ class AgentLoop:
             run._lock.release()
 
     def _drive(self, run: AgentRun) -> AgentRun:
+        run.status = AgentRunStatus.RUNNING
         while True:
             limit = self._limit_status(run)
             if limit is not None:
@@ -261,7 +264,7 @@ class AgentLoop:
                 self._append_result(run, call, result)
                 continue
             result = self._execute_call(run, call)
-            if run.status is not AgentRunStatus.COMPLETED:
+            if run.status is not AgentRunStatus.RUNNING:
                 return run
             self._append_result(run, call, result)
 
@@ -280,6 +283,10 @@ class AgentLoop:
             context = self.context_factory()
             if not isinstance(context, ToolContext):
                 raise TypeError("context_factory must return ToolContext")
+            limit = self._limit_status(run)
+            if limit is not None:
+                self._stop(run, limit)
+                return ToolResult(success=False, status_code=limit.value, message="El agente se detuvo.")
             context = replace(context, confirmation_id=confirmation_id)
             result = self.executor.execute(call.name, call.arguments, context)
         except Exception:  # noqa: BLE001
@@ -295,7 +302,7 @@ class AgentLoop:
             run._pending_call = call
             return result
         self._record(run, call, result)
-        run.status = AgentRunStatus.COMPLETED  # Interim state; _drive continues planning.
+        run.status = AgentRunStatus.RUNNING  # Interim state; _drive continues planning.
         return result
 
     def _freeze_call(self, step: ToolCallStep) -> tuple[ToolCallStep | None, str | None]:

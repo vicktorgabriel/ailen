@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import threading
 from collections.abc import Sequence
 from typing import Any, ClassVar
@@ -12,6 +13,7 @@ from ailen.core.agent_loop import (
     AgentBudget,
     AgentLoop,
     AgentMessage,
+    AgentRun,
     AgentRunStatus,
     FinalStep,
     ToolCallStep,
@@ -415,3 +417,71 @@ def test_autonomy_y_social_mode_shop_public_se_respetan(restricted_mode: SocialM
 def test_budget_rechaza_limites_invalidos(invalid: object) -> None:
     with pytest.raises((TypeError, ValueError)):
         AgentBudget(max_steps=invalid)  # type: ignore[arg-type]
+
+
+def test_run_y_resume_pasan_por_running_y_mantienen_estados_finales() -> None:
+    # 1. RUNNING es miembro de AgentRunStatus y no es un estado terminal/final
+    assert AgentRunStatus.RUNNING in AgentRunStatus
+    final_statuses = {
+        AgentRunStatus.COMPLETED,
+        AgentRunStatus.CANCELLED,
+        AgentRunStatus.BUDGET_EXCEEDED,
+        AgentRunStatus.FAILED,
+        AgentRunStatus.AWAITING_CONFIRMATION,
+    }
+    assert AgentRunStatus.RUNNING not in final_statuses
+
+    # 2. run() pasa por RUNNING mientras itera
+    observed_in_plan: list[AgentRunStatus] = []
+
+    class InspectingPlanner:
+        def __init__(self, steps: list[object]) -> None:
+            self.steps = steps
+
+        def plan(self, messages: Sequence[AgentMessage]) -> object:
+            del messages
+            cur = inspect.currentframe()
+            while cur:
+                if "run" in cur.f_locals and isinstance(cur.f_locals["run"], AgentRun):
+                    observed_in_plan.append(cur.f_locals["run"].status)
+                    break
+                cur = cur.f_back
+            return self.steps.pop(0)
+
+    loop1 = make_loop(
+        InspectingPlanner([ToolCallStep("volume", {"level": 25}, "c1"), FinalStep("listo")]),
+        tools=[FakeVolumeTool()],
+    )
+    run1 = loop1.run("Ajustar volumen")
+    assert observed_in_plan == [AgentRunStatus.RUNNING, AgentRunStatus.RUNNING]
+    assert run1.status is AgentRunStatus.COMPLETED
+
+    # 3. resume() usa RUNNING como estado interino (no FAILED) mientras ejecuta la llamada confirmada
+    class InterimInspectConfirmTool(ConfirmableTool):
+        def __init__(self) -> None:
+            super().__init__()
+            self.run_ref: AgentRun | None = None
+            self.status_during_execute: AgentRunStatus | None = None
+
+        def execute(self, validated_args: dict[str, Any], context: ToolContext) -> ToolResult:
+            if self.run_ref is not None:
+                self.status_during_execute = self.run_ref.status
+            return super().execute(validated_args, context)
+
+    confirm_tool = InterimInspectConfirmTool()
+    confirm_service = ConfirmationService()
+    loop2 = make_loop(
+        ScriptedPlanner(ToolCallStep("confirmable", {"value": 42}, "c1"), FinalStep("resumed_done")),
+        tools=[confirm_tool],
+        confirmation_service=confirm_service,
+    )
+    run2 = loop2.run("Acción con confirmación")
+    assert run2.status is AgentRunStatus.AWAITING_CONFIRMATION
+    confirm_tool.run_ref = run2
+
+    assert confirm_service.resolve(run2.confirmation_id, True, "panel")
+    resumed = loop2.resume(run2, run2.confirmation_id)
+
+    assert confirm_tool.status_during_execute is AgentRunStatus.RUNNING
+    assert resumed.status is AgentRunStatus.COMPLETED
+    assert resumed.status in final_statuses

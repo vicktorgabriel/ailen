@@ -13,6 +13,7 @@ from pathlib import Path
 from types import FrameType
 from typing import Any
 
+from ailen.ai.agent_planner import OrchestratorPlanner
 from ailen.ai.budget import BudgetPolicy
 from ailen.ai.context import AiContextBuilder
 from ailen.ai.contracts import AiBackend
@@ -31,9 +32,12 @@ from ailen.audio.contracts import (
 )
 from ailen.audio.coordinator import AudioInteractionCoordinator
 from ailen.audio.stt_quality import SttQualityEvaluator
+from ailen.core.agent_loop import AgentBudget, AgentLoop
+from ailen.core.agent_service import AgentService, AgentTaskStatus, AgentTaskView
+from ailen.core.agent_trigger import parse_agent_command
 from ailen.core.capabilities import CapabilityDescriptor, CapabilityProvider, CapabilityRegistry
 from ailen.core.config import AILENConfig
-from ailen.core.confirmation import ConfirmationService
+from ailen.core.confirmation import ConfirmationService, ConfirmationState
 from ailen.core.conversation import ConversationCoordinator
 from ailen.core.coordinator import InteractionCoordinator
 from ailen.core.events import EventBus
@@ -46,6 +50,7 @@ from ailen.domain.enums import (
     InferenceProfile,
     PrivacyLevel,
     ServiceStatus,
+    SocialMode,
 )
 from ailen.face.contracts import FaceController
 from ailen.face.null import NullFaceController
@@ -85,7 +90,7 @@ from ailen.tools.builtin import (
     WebSearchTool,
 )
 from ailen.tools.builtin.web_search import create_web_search_provider
-from ailen.tools.contracts import AutonomyLevel
+from ailen.tools.contracts import AutonomyLevel, ToolContext, autonomy_level_of
 from ailen.tools.executor import ToolExecutor
 from ailen.tools.registry import ToolRegistry
 from ailen.tools.semantic_intent import SemanticToolIntentResolver
@@ -94,6 +99,7 @@ from ailen.vision.control import CameraControl, create_camera_control
 from ailen.vision.debouncer import VisionDebouncer
 
 logger = logging.getLogger("ailen.runtime.runner")
+_AGENT_CONFIRMATION_VOICE_WINDOW_SECONDS = 60.0
 
 
 class LabRunner:
@@ -180,6 +186,7 @@ class LabRunner:
         self.stt_backend: SttBackend | None = None
         self.tts_backend: TtsBackend | None = None
         self.ai_backends: dict[str, AiBackend] = {}
+        self.ai_orchestrator: AiOrchestrator | None = None
 
         # Coordinators & Tools
         self.social_engine: SocialEngine | None = None
@@ -188,10 +195,16 @@ class LabRunner:
         self.tool_registry: ToolRegistry | None = None
         self.capability_registry: CapabilityRegistry | None = None
         self.tool_executor: ToolExecutor | None = None
+        self.agent_service: AgentService | None = None
         self.conversation_coordinator: ConversationCoordinator | None = None
         self.personality_service: PersonalityService | None = None
         self.reminder_service: ReminderService | None = None
         self._pending_reminder_announcements: queue.Queue[dict[str, str]] = queue.Queue()
+        self._pending_agent_confirmation_announcements: queue.Queue[tuple[str, str]] = queue.Queue()
+        self._queued_agent_confirmation_ids: set[str] = set()
+        self._agent_announcement_lock = threading.Lock()
+        self._announced_agent_confirmations: dict[str, float] = {}
+        self._agent_announcement_thread: threading.Thread | None = None
         self.managed_runtime = managed_runtime
         self.local_selection_store = local_selection_store or LocalAiSelectionStore(
             Path(config.node.data_dir) / "provisioning" / "local-ai-selection.json"
@@ -493,6 +506,39 @@ class LabRunner:
             if isinstance(provider, CapabilityProvider):
                 self.capability_registry.register_provider(provider)
 
+        router = RuleBasedRouter()
+        orchestrator = AiOrchestrator(
+            backends=self.ai_backends,
+            router=router,
+            repository=self.memory_repo,
+            event_bus=self.event_bus,
+        )
+        self.ai_orchestrator = orchestrator
+
+        # Default N1 does not allocate an agent service or worker. Raising the
+        # autonomy cap or configuring roots is an explicit administrator opt-in.
+        if self._agent_enabled() and self.tool_registry is not None and self.tool_executor is not None:
+            registry = self.tool_registry
+            executor = self.tool_executor
+            self.agent_service = AgentService(
+                loop_factory=lambda cancel_event: AgentLoop(
+                    planner=OrchestratorPlanner(
+                        orchestrator=orchestrator,
+                        registry=registry,
+                        tool_filter=self._agent_tool_filter,
+                        router=router,
+                        max_output_tokens=min(self.config.ai.max_tokens, 256),
+                        timeout=self.config.ai.timeout_seconds,
+                    ),
+                    executor=executor,
+                    budget=AgentBudget(),
+                    context_factory=self._agent_tool_context,
+                    cancel_event=cancel_event,
+                ),
+                confirmations=self.confirmation_service,
+                on_event=self._on_agent_task_event,
+            )
+
         # 11. Wire Conversation Coordinator. Named-remote/LAN policies are the same
         # audited policies used by normal Core, including budget enforcement.
         if self.ai_backends:
@@ -503,13 +549,6 @@ class LabRunner:
                 max_char_budget=self.config.ai.context_char_budget,
                 max_output_tokens=min(self.config.ai.max_tokens, 128),
                 temperature=self.config.ai.temperature,
-            )
-            router = RuleBasedRouter()
-            orchestrator = AiOrchestrator(
-                backends=self.ai_backends,
-                router=router,
-                repository=self.memory_repo,
-                event_bus=self.event_bus,
             )
             remote_budget_policies = {
                 f"remote:{provider_id}": BudgetPolicy(
@@ -591,6 +630,9 @@ class LabRunner:
                 voice_action_min_confidence=self.config.speech.voice_action_min_confidence,
                 capability_registry=self.capability_registry,
                 telemetry_sink=self.metrics.record_turn_stage,
+                agent_command_handler=(
+                    self._handle_agent_command if self.agent_service is not None else None
+                ),
             )
 
         # 12. Subscribe to lightweight events for single-flight conversation and
@@ -654,6 +696,144 @@ class LabRunner:
             intent_model,
         )
         return fallback
+
+    def _agent_enabled(self) -> bool:
+        """Whether the administrator explicitly enabled Agent N2/N3 capability."""
+        return self.config.agent.max_autonomy_level >= 2 or bool(self.config.agent.file_roots)
+
+    def _agent_social_mode(self) -> SocialMode:
+        """Read the live mode, including changes made by Core's interaction coordinator."""
+        if self.interaction_coordinator is not None:
+            return self.interaction_coordinator.mode
+        return self.config.social.default_mode
+
+    def _agent_autonomy(self) -> AutonomyLevel:
+        """Return the live autonomy cap; SHOP/PUBLIC always constrain tools to N1."""
+        if self._agent_social_mode() in {SocialMode.SHOP, SocialMode.PUBLIC}:
+            return AutonomyLevel.N1
+        level = self.config.agent.max_autonomy_level
+        if isinstance(level, bool) or not isinstance(level, int):
+            return AutonomyLevel.N1
+        return AutonomyLevel(min(max(level, int(AutonomyLevel.N1)), int(AutonomyLevel.N3)))
+
+    def _agent_tool_filter(self) -> tuple[str, ...]:
+        """Expose only tools currently allowed by mode, autonomy and network policy."""
+        registry = self.tool_registry
+        if registry is None:
+            return ()
+        mode = self._agent_social_mode()
+        autonomy = self._agent_autonomy()
+        allowed: list[str] = []
+        for tool in registry.list_tools():
+            declared_level = autonomy_level_of(tool)
+            if declared_level is None or declared_level > autonomy:
+                continue
+            if mode not in getattr(tool, "allowed_modes", set()):
+                continue
+            if bool(getattr(tool, "requires_network", False)) and not self.config.network.outbound_web_enabled:
+                continue
+            allowed.append(tool.name)
+        return tuple(allowed)
+
+    def _agent_tool_context(self) -> ToolContext:
+        """Build each action context from current Core mode/config, not a startup snapshot."""
+        mode = self._agent_social_mode()
+        return ToolContext(
+            mode=mode,
+            privacy_level=PrivacyLevel.PRIVATE,
+            internet_available=(
+                self.config.network.outbound_web_enabled
+                or any(name.startswith("remote:") for name in self.ai_backends)
+            ),
+            network_access_allowed=self.config.network.outbound_web_enabled,
+            max_autonomy=self._agent_autonomy(),
+        )
+
+    def _handle_agent_command(self, transcript: Transcript, text: str) -> str | None:
+        """Execute an explicit, bounded voice control for the supervised agent."""
+        command = parse_agent_command(text)
+        service = self.agent_service
+        if command is None or service is None:
+            return None
+        mode = self._agent_social_mode()
+        if mode in {SocialMode.SHOP, SocialMode.PUBLIC} and command.kind in {
+            "submit", "confirm", "deny"
+        }:
+            return "En este modo, las acciones del agente se gestionan desde el panel."
+        if command.kind == "submit":
+            if (
+                transcript.truncated
+                or transcript.confidence is None
+                or transcript.confidence < self.config.speech.voice_action_min_confidence
+            ):
+                return "No escuché la tarea completa con suficiente claridad. ¿Podés repetirla?"
+            assert command.task is not None
+            handle = service.submit(command.task, mode=mode)
+            if handle.status is AgentTaskStatus.REJECTED:
+                return handle.reason or "No pude iniciar esa tarea del agente."
+            return "Entendido, trabajando en eso."
+
+        if command.kind == "cancel":
+            active = next(
+                (
+                    task for task in service.recent()
+                    if task.status in {
+                        AgentTaskStatus.RUNNING, AgentTaskStatus.AWAITING_CONFIRMATION
+                    }
+                ),
+                None,
+            )
+            if active is None:
+                return "No hay una tarea del agente en curso."
+            return "Tarea cancelada." if service.cancel(active.id) else "No pude cancelar la tarea."
+
+        now = time.monotonic()
+        eligible: list[tuple[Any, AgentTaskView]] = []
+        for task in service.recent():
+            if task.status is not AgentTaskStatus.AWAITING_CONFIRMATION or not task.confirmation_id:
+                continue
+            announced_at = self._announced_agent_confirmations.get(task.confirmation_id)
+            if (
+                announced_at is None
+                or now - announced_at > _AGENT_CONFIRMATION_VOICE_WINDOW_SECONDS
+            ):
+                self._announced_agent_confirmations.pop(task.confirmation_id, None)
+                continue
+            request = self.confirmation_service.status(task.confirmation_id)
+            if request is not None and request.state is ConfirmationState.PENDING:
+                eligible.append((request.created_at, task))
+        eligible.sort(key=lambda pair: pair[0])
+        if not eligible:
+            return "No hay nada pendiente de confirmar."
+        if len(eligible) > 1:
+            return "Hay varias acciones pendientes; para evitar confusiones, usá el panel."
+        task = eligible[0][1]
+        confirmation_id = task.confirmation_id
+        if confirmation_id is None:
+            return "No hay nada pendiente de confirmar."
+        request = self.confirmation_service.status(confirmation_id)
+        if request is None or request.state is not ConfirmationState.PENDING:
+            self._announced_agent_confirmations.pop(confirmation_id, None)
+            return "No hay nada pendiente de confirmar."
+
+        approved = command.kind == "confirm"
+        resolved = self.confirmation_service.resolve(
+            confirmation_id,
+            approved,
+            source="voice",
+            stt_confidence=transcript.confidence,
+            truncated=transcript.truncated,
+        )
+        if not resolved:
+            return (
+                f"Necesito tu confirmación para {request.summary}. "
+                "Repetí la confirmación con claridad o usá el panel."
+            )
+        return (
+            "Confirmación recibida; sigo con la tarea."
+            if approved
+            else "Tarea cancelada."
+        )
 
     def _prewarm_ai_models(self) -> None:
         """Load local conversational/intent models before live microphone capture."""
@@ -1078,6 +1258,133 @@ class LabRunner:
                 {"reminder_id": reminder_id, "content": content, "due_at": due_at}
             )
 
+    def _on_agent_task_event(self, event_name: str, task: AgentTaskView) -> None:
+        """Queue only the tool-authored safe confirmation summary for main-loop TTS."""
+        if event_name != "TASK_AWAITING_CONFIRMATION" or not task.confirmation_id:
+            return
+        confirmation = self.confirmation_service.status(task.confirmation_id)
+        if confirmation is None or confirmation.state is not ConfirmationState.PENDING:
+            return
+        with self._agent_announcement_lock:
+            if task.confirmation_id in self._queued_agent_confirmation_ids:
+                return
+            self._queued_agent_confirmation_ids.add(task.confirmation_id)
+        self._pending_agent_confirmation_announcements.put(
+            (task.confirmation_id, confirmation.summary)
+        )
+
+    def _try_start_pending_agent_confirmation_announcement(self) -> None:
+        """Speak a pending request only after the current interaction releases audio."""
+        if self.audio_coordinator is None or self._pending_agent_confirmation_announcements.empty():
+            return
+        if self.state_manager.current_state not in {AssistantState.IDLE, AssistantState.ATTENTION}:
+            return
+        with self._interaction_lock:
+            if self._is_processing_interaction:
+                return
+            try:
+                confirmation_id, summary = self._pending_agent_confirmation_announcements.get_nowait()
+            except queue.Empty:
+                return
+            self._is_processing_interaction = True
+        gate_started = False
+        worker_started = False
+        announcement_thread: threading.Thread | None = None
+        try:
+            confirmation = self.confirmation_service.status(confirmation_id)
+            if confirmation is None or confirmation.state is not ConfirmationState.PENDING:
+                with self._agent_announcement_lock:
+                    self._queued_agent_confirmation_ids.discard(confirmation_id)
+                return
+            gate_started = True
+            self.audio_coordinator.turn_gate.start_processing()
+            self.audio_coordinator.collector.reset()
+            announcement_thread = threading.Thread(
+                target=self._announce_agent_confirmation,
+                args=(confirmation_id, summary),
+                name="ailen-agent-confirmation-tts",
+                daemon=True,
+            )
+            self._agent_announcement_thread = announcement_thread
+            announcement_thread.start()
+            worker_started = True
+            gate_started = False  # The announcement worker now owns the gate.
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not schedule agent confirmation announcement: %s", exc)
+            with self._agent_announcement_lock:
+                self._queued_agent_confirmation_ids.discard(confirmation_id)
+            self._requeue_agent_confirmation_if_pending(confirmation_id, summary)
+        finally:
+            if gate_started and self.audio_coordinator is not None:
+                try:
+                    self.audio_coordinator.turn_gate.stop_processing()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Could not release audio turn gate after announcement setup: %s", exc)
+            if not worker_started:
+                if self._agent_announcement_thread is announcement_thread:
+                    self._agent_announcement_thread = None
+                with self._interaction_lock:
+                    self._is_processing_interaction = False
+
+    def _announce_agent_confirmation(self, confirmation_id: str, summary: str) -> None:
+        """Announce a bounded confirmation summary, then return the audio turn gate."""
+        completed = False
+        try:
+            if self.audio_coordinator is not None:
+                mode = self._agent_social_mode()
+                if mode in {SocialMode.SHOP, SocialMode.PUBLIC}:
+                    text = "Hay una acción pendiente en el panel."
+                else:
+                    text = (
+                        f"Necesito tu confirmación para {summary}. "
+                        "Decí confirmo o denegá, o usá el panel."
+                    )
+                self.audio_coordinator.speak(
+                    text,
+                    voice_id=self.config.speech.tts_voice,
+                )
+                completed = not self.audio_coordinator.last_speech_interrupted
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not announce agent confirmation: %s", exc)
+        finally:
+            try:
+                request = self.confirmation_service.status(confirmation_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not inspect confirmation after announcement: %s", exc)
+                request = None
+            still_pending = request is not None and request.state is ConfirmationState.PENDING
+            if completed and still_pending and self._agent_social_mode() not in {
+                SocialMode.SHOP, SocialMode.PUBLIC
+            }:
+                self._announced_agent_confirmations[confirmation_id] = time.monotonic()
+            with self._agent_announcement_lock:
+                self._queued_agent_confirmation_ids.discard(confirmation_id)
+            if self.audio_coordinator is not None:
+                try:
+                    self.audio_coordinator.turn_gate.stop_processing()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Could not release audio turn gate after announcement: %s", exc)
+            with self._interaction_lock:
+                self._is_processing_interaction = False
+            current = threading.current_thread()
+            if self._agent_announcement_thread is current:
+                self._agent_announcement_thread = None
+            if still_pending and not completed and request is not None:
+                self._requeue_agent_confirmation_if_pending(confirmation_id, request.summary)
+
+    def _requeue_agent_confirmation_if_pending(self, confirmation_id: str, summary: str) -> None:
+        """Keep unresolved requests queued after an interrupted/failed announcement."""
+        request = self.confirmation_service.status(confirmation_id)
+        if request is None or request.state is not ConfirmationState.PENDING:
+            with self._agent_announcement_lock:
+                self._queued_agent_confirmation_ids.discard(confirmation_id)
+            return
+        with self._agent_announcement_lock:
+            if confirmation_id in self._queued_agent_confirmation_ids:
+                return
+            self._queued_agent_confirmation_ids.add(confirmation_id)
+        self._pending_agent_confirmation_announcements.put((confirmation_id, summary))
+
     def _try_start_pending_reminder_announcement(self) -> None:
         """Start one queued reminder only when the interaction channel is idle."""
         if self.audio_coordinator is None or self._pending_reminder_announcements.empty():
@@ -1472,6 +1779,7 @@ class LabRunner:
                     logger.info("Duration limit reached (%s s). Stopping...", self.duration)
                     break
 
+                self._try_start_pending_agent_confirmation_announcement()
                 self._try_start_pending_reminder_announcement()
 
                 if self.face_controller and hasattr(self.face_controller, "update"):
@@ -1512,6 +1820,21 @@ class LabRunner:
                 "Shutdown grace expired with an interaction still active; continuing teardown"
             )
 
+        agent_shutdown_timeout = min(
+            15.0, max(1.0, float(self.config.ai.timeout_seconds) + 1.0)
+        )
+        agent_stopped = True
+        if self.agent_service is not None:
+            try:
+                agent_stopped = self.agent_service.shutdown(timeout=agent_shutdown_timeout)
+                if not agent_stopped:
+                    logger.warning("Agent task did not stop within the shutdown budget")
+            except Exception as exc:  # noqa: BLE001
+                agent_stopped = False
+                logger.warning("Error stopping Core agent service: %s", exc)
+            if agent_stopped:
+                self.agent_service = None
+
         self.metrics.finalize()
 
         # Stop scheduler before audio/database teardown so no new due events are
@@ -1542,6 +1865,17 @@ class LabRunner:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Error stopping audio coordinator: %s", exc)
             self.audio_coordinator = None
+        if self._agent_announcement_thread is not None:
+            announcement_thread = self._agent_announcement_thread
+            if announcement_thread is not threading.current_thread():
+                try:
+                    announcement_thread.join(timeout=agent_shutdown_timeout)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Error joining agent announcement thread: %s", exc)
+                if announcement_thread.is_alive():
+                    logger.warning("Agent confirmation announcement thread remains active")
+                else:
+                    self._agent_announcement_thread = None
 
         # Close Face Window
         if self.face_controller:
@@ -1552,7 +1886,7 @@ class LabRunner:
                 logger.warning("Error closing face controller: %s", exc)
 
         # Close persisted conversation session after all turn-producing components stop.
-        if self.memory_repo and self._conversation_session_id:
+        if agent_stopped and self.memory_repo and self._conversation_session_id:
             try:
                 self.memory_repo.end_session(self._conversation_session_id)
             except Exception as exc:  # noqa: BLE001

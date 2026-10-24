@@ -3,6 +3,7 @@
 ## [0.4.0-dev.0] — 2026-08-31
 
 ### Changed
+- 2026-10-24 R5C: `AgentService` cableado al runner Lab con disparador por voz explícito y confirmación acotada a ventana tras el anuncio; estado `RUNNING`; correcciones de la revisión adversarial (AGY). Implementado por Codex Luna y AGY Gemini 3.8. Suite: 1391+ tests.
 - 2026-10-23 R5C: planner del agente sobre el orquestador (`ai/agent_planner.py`), `AgentService` de tareas en segundo plano y ADR-016 (navegador N3, Proposed). Corrección de carrera en `AgentLoop.resume()`. Implementado por Codex Luna, AGY (Gemini 3.8) y OpenCode Go; revisión cruzada AGY. Suite: 1354 tests.
 - 2026-10-23 R5C: panel `/agente` (confirmaciones pendientes, tope de autonomía, raíces y auditoría de tools) y `ConfirmationService.pending_requests()`; AGY pasa a `gemini-3.8-flash-high` y OpenCode usa un modelo gratuito o, si el cupo está agotado, OpenCode Go. Se eliminó el agente Spark de la documentación, scripts y configuración.
 - 2026-10-23 R5C (ronda 2): bucle de agente de Core (`core/agent_loop.py`, Codex Luna), investigación del navegador N3 (`docs/research/BROWSER_N3_OPTIONS.md`, AGY) y corrección de seguridad en el bridge realtime: el texto/summary de tools no PUBLIC ya no sale al proveedor remoto (hallazgo de revisión automática). AGY y OpenCode agotaron su cupo gratuito durante la ronda; el panel del agente pasó a Codex Luna.
